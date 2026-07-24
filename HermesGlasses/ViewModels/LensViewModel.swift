@@ -63,6 +63,7 @@ final class LensViewModel {
     @ObservationIgnored private var aggregator = LensLogAggregator()
     @ObservationIgnored private var logImages: [String: UIImage] = [:]
     @ObservationIgnored private var sessionStart = Date()
+    @ObservationIgnored private var didStop = false
 
     init(hermesVM: HermesSessionViewModel) {
         self.hermesVM = hermesVM
@@ -126,6 +127,8 @@ final class LensViewModel {
     }
 
     func stop() {
+        guard !didStop else { return }
+        didStop = true
         // Capture the object still under the reticle, then persist the log.
         if let ended = dwell.flush(at: CACurrentMediaTime()) {
             aggregator.recordLook(
