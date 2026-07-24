@@ -3,14 +3,17 @@
 //
 // End-of-session review of the Lens object log: saved sessions grouped by
 // day, each a list of objects (crop + name + total look-time + count) with
-// PDF export. Reads through the view model to LensSessionStore. Pushed as a
-// Settings sub-page, so it carries no NavigationStack of its own.
+// PDF export. Reads through the view model to LensSessionStore. Presented as
+// a sheet from the Lens screen's History button, so it owns its
+// NavigationStack and a Done button (like PeopleView).
 //
 
 import SwiftUI
 
 struct ObjectLogView: View {
     let hermesVM: HermesSessionViewModel
+
+    @Environment(\.dismiss) private var dismiss
 
     private var days: [(label: String, sessions: [LensSession])] {
         let all = hermesVM.allLensSessions()  // newest first
@@ -31,36 +34,44 @@ struct ObjectLogView: View {
     }
 
     var body: some View {
-        Group {
-            if days.isEmpty {
-                emptyState
-            } else {
-                List {
-                    ForEach(days, id: \.label) { day in
-                        Section(day.label) {
-                            ForEach(day.sessions) { session in
-                                NavigationLink {
-                                    LensSessionDetailView(
-                                        hermesVM: hermesVM, session: session
-                                    )
-                                } label: {
-                                    sessionRow(session)
+        NavigationStack {
+            Group {
+                if days.isEmpty {
+                    emptyState
+                } else {
+                    List {
+                        ForEach(days, id: \.label) { day in
+                            Section(day.label) {
+                                ForEach(day.sessions) { session in
+                                    NavigationLink {
+                                        LensSessionDetailView(
+                                            hermesVM: hermesVM, session: session
+                                        )
+                                    } label: {
+                                        sessionRow(session)
+                                    }
                                 }
-                            }
-                            .onDelete { offsets in
-                                for index in offsets {
-                                    hermesVM.deleteLensSession(id: day.sessions[index].id)
+                                .onDelete { offsets in
+                                    for index in offsets {
+                                        hermesVM.deleteLensSession(id: day.sessions[index].id)
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+            // Re-read the store after a save/delete.
+            .id(hermesVM.lensSessionRevision)
+            .navigationTitle("Object Log")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
-        // Re-read the store after a save/delete.
-        .id(hermesVM.lensSessionRevision)
-        .navigationTitle("Object Log")
-        .navigationBarTitleDisplayMode(.inline)
+        .tint(HermesTheme.accent)
     }
 
     private func sessionRow(_ session: LensSession) -> some View {
@@ -95,8 +106,7 @@ private struct LensSessionDetailView: View {
     let hermesVM: HermesSessionViewModel
     let session: LensSession
 
-    @State private var shareURL: URL?
-    @State private var showShare = false
+    @State private var shareItem: ShareItem?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -133,8 +143,8 @@ private struct LensSessionDetailView: View {
             session.startedAt.formatted(date: .abbreviated, time: .shortened)
         )
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showShare) {
-            if let url = shareURL { ShareSheet(items: [url]) }
+        .sheet(item: $shareItem) { item in
+            ShareSheet(items: [item.url])
         }
     }
 
@@ -172,7 +182,6 @@ private struct LensSessionDetailView: View {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("object-log-\(session.id.uuidString).pdf")
         try? data.write(to: url, options: .atomic)
-        shareURL = url
-        showShare = true
+        shareItem = ShareItem(url: url)
     }
 }

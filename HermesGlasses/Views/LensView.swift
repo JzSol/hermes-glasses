@@ -12,11 +12,14 @@ import SwiftUI
 struct LensView: View {
     @State private var model: LensViewModel
     @State private var selectedSnap: LensSnap?
-    @State private var shareURL: URL?
-    @State private var showShare = false
+    @State private var shareItem: ShareItem?
+    @State private var showObjectLog = false
     @Environment(\.dismiss) private var dismiss
 
+    private let hermesVM: HermesSessionViewModel
+
     init(hermesVM: HermesSessionViewModel) {
+        self.hermesVM = hermesVM
         _model = State(initialValue: LensViewModel(hermesVM: hermesVM))
     }
 
@@ -34,8 +37,11 @@ struct LensView: View {
         .sheet(item: $selectedSnap) { snap in
             snapDetail(snap)
         }
-        .sheet(isPresented: $showShare) {
-            if let url = shareURL { ShareSheet(items: [url]) }
+        .sheet(item: $shareItem) { item in
+            ShareSheet(items: [item.url])
+        }
+        .sheet(isPresented: $showObjectLog) {
+            ObjectLogView(hermesVM: hermesVM)
         }
     }
 
@@ -56,6 +62,12 @@ struct LensView: View {
                 Text("\(model.fps) fps")
                     .font(.system(size: 12, weight: .medium).monospacedDigit())
                     .foregroundStyle(.tertiary)
+            }
+            Button {
+                showObjectLog = true
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 17, weight: .semibold))
             }
             Button {
                 exportPDF()
@@ -311,7 +323,6 @@ struct LensView: View {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("object-log.pdf")
         try? data.write(to: url, options: .atomic)
-        shareURL = url
-        showShare = true
+        shareItem = ShareItem(url: url)
     }
 }
