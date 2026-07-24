@@ -24,6 +24,13 @@ struct Detection: Equatable {
     let rect: CGRect
 }
 
+/// A finished look: a snapped gaze segment that has now ended. `duration`
+/// runs from when the gaze first landed on the object until it left.
+struct CompletedLook: Equatable {
+    let label: String
+    let duration: TimeInterval
+}
+
 struct DwellUpdate: Equatable {
     /// 0...1 fraction of the dwell completed for the current target.
     let progress: Double
@@ -31,6 +38,9 @@ struct DwellUpdate: Equatable {
     let target: Detection?
     /// Non-nil exactly once per completed dwell: crop this object now.
     let snap: Detection?
+    /// Non-nil exactly once when a snapped look ends: the object left the
+    /// reticle (or a different object took over). Carries its total duration.
+    let completedLook: CompletedLook?
 }
 
 final class DwellTracker {
@@ -41,6 +51,7 @@ final class DwellTracker {
     private var currentTarget: Detection?
     private var dwellStart: TimeInterval?
     private var inCooldown = false
+    private var currentSnapped = false
 
     init(dwellDuration: TimeInterval = 2.0, iouThreshold: Double = 0.3) {
         self.dwellDuration = dwellDuration
@@ -54,10 +65,8 @@ final class DwellTracker {
             .min { distanceToReticle($0) < distanceToReticle($1) }
 
         guard let candidate else {
-            currentTarget = nil
-            dwellStart = nil
-            inCooldown = false
-            return DwellUpdate(progress: 0, target: nil, snap: nil)
+            let ended = finishSegment(at: time)
+            return DwellUpdate(progress: 0, target: nil, snap: nil, completedLook: ended)
         }
 
         let sameObject = currentTarget.map {
@@ -65,10 +74,14 @@ final class DwellTracker {
         } ?? false
 
         guard sameObject else {
+            let ended = finishSegment(at: time)
             currentTarget = candidate
             dwellStart = time
             inCooldown = false
-            return DwellUpdate(progress: 0, target: candidate, snap: nil)
+            currentSnapped = false
+            return DwellUpdate(
+                progress: 0, target: candidate, snap: nil, completedLook: ended
+            )
         }
 
         // Follow the box as it drifts so IoU is judged frame-to-frame,
@@ -76,17 +89,41 @@ final class DwellTracker {
         currentTarget = candidate
 
         if inCooldown {
-            return DwellUpdate(progress: 1, target: candidate, snap: nil)
+            return DwellUpdate(progress: 1, target: candidate, snap: nil, completedLook: nil)
         }
 
         let elapsed = time - (dwellStart ?? time)
         if elapsed >= dwellDuration {
             inCooldown = true
-            return DwellUpdate(progress: 1, target: candidate, snap: candidate)
+            currentSnapped = true
+            return DwellUpdate(
+                progress: 1, target: candidate, snap: candidate, completedLook: nil
+            )
         }
         return DwellUpdate(
-            progress: elapsed / dwellDuration, target: candidate, snap: nil
+            progress: elapsed / dwellDuration, target: candidate,
+            snap: nil, completedLook: nil
         )
+    }
+
+    /// End the current gaze segment and reset. Returns a CompletedLook only
+    /// if the segment had already snapped (a real "look").
+    private func finishSegment(at time: TimeInterval) -> CompletedLook? {
+        var ended: CompletedLook? = nil
+        if currentSnapped, let target = currentTarget, let start = dwellStart {
+            ended = CompletedLook(label: target.label, duration: time - start)
+        }
+        currentTarget = nil
+        dwellStart = nil
+        inCooldown = false
+        currentSnapped = false
+        return ended
+    }
+
+    /// Called on session stop: emit the in-progress look if it had snapped,
+    /// then reset. Pass the same clock used for `update` (CACurrentMediaTime).
+    func flush(at time: TimeInterval) -> CompletedLook? {
+        finishSegment(at: time)
     }
 
     // MARK: - Geometry
