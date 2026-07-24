@@ -21,6 +21,36 @@ enum HermesTheme {
     static let assistantBubble = Color(uiColor: .systemGray5)
 }
 
+// MARK: - Appearance
+
+/// Light/dark override for the whole app. `.system` follows the phone.
+/// Persisted under `appearance_mode`; read at the app root as a
+/// `.preferredColorScheme`. The UI already uses adaptive system colors, so
+/// both schemes render correctly - this just lets the user force one.
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    static let storageKey = "appearance_mode"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
 struct ContentView: View {
     let wearablesVM: WearablesViewModel
     let hermesVM: HermesSessionViewModel

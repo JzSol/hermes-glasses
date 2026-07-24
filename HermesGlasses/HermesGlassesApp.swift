@@ -19,6 +19,13 @@ struct HermesGlassesApp: App {
     @State private var wearablesViewModel: WearablesViewModel
     @State private var hermesSessionViewModel: HermesSessionViewModel
 
+    // Light/dark override, applied to the whole window (see AppearanceMode).
+    @AppStorage(AppearanceMode.storageKey) private var appearanceRaw =
+        AppearanceMode.system.rawValue
+    private var appearance: AppearanceMode {
+        AppearanceMode(rawValue: appearanceRaw) ?? .system
+    }
+
     init() {
         // Step 1: Configure the DAT SDK once at launch
         do {
@@ -49,30 +56,34 @@ struct HermesGlassesApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(
-                wearablesVM: wearablesViewModel,
-                hermesVM: hermesSessionViewModel
-            )
-            // Handle Meta AI URL callback after registration
-            .onOpenURL { url in
-                Task {
-                    _ = try? await Wearables.shared.handleUrl(url)
+            Group {
+                ContentView(
+                    wearablesVM: wearablesViewModel,
+                    hermesVM: hermesSessionViewModel
+                )
+                // Handle Meta AI URL callback after registration
+                .onOpenURL { url in
+                    Task {
+                        _ = try? await Wearables.shared.handleUrl(url)
+                    }
                 }
-            }
-            // Error alerts
-            .alert("Error", isPresented: $wearablesViewModel.showError) {
-                Button("OK") { wearablesViewModel.dismissError() }
-            } message: {
-                Text(wearablesViewModel.errorMessage)
-            }
-            .alert("Hermes Error", isPresented: $hermesSessionViewModel.showError) {
-                Button("OK") { hermesSessionViewModel.dismissError() }
-            } message: {
-                Text(hermesSessionViewModel.errorMessage)
-            }
+                // Error alerts
+                .alert("Error", isPresented: $wearablesViewModel.showError) {
+                    Button("OK") { wearablesViewModel.dismissError() }
+                } message: {
+                    Text(wearablesViewModel.errorMessage)
+                }
+                .alert("Hermes Error", isPresented: $hermesSessionViewModel.showError) {
+                    Button("OK") { hermesSessionViewModel.dismissError() }
+                } message: {
+                    Text(hermesSessionViewModel.errorMessage)
+                }
 
-            // Registration overlay
-            RegistrationView(viewModel: wearablesViewModel)
+                // Registration overlay
+                RegistrationView(viewModel: wearablesViewModel)
+            }
+            // Force light/dark for the whole window (sheets included).
+            .preferredColorScheme(appearance.colorScheme)
         }
     }
 }

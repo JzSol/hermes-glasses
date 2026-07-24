@@ -21,7 +21,13 @@ struct SettingsView: View {
     @State private var endpoint: String = ""
     @State private var providerKey: String = ""
     @AppStorage("show_test_panel") private var showTestPanel: Bool = true
+    @AppStorage(AppearanceMode.storageKey) private var appearanceRaw =
+        AppearanceMode.system.rawValue
     @Environment(\.dismiss) private var dismiss
+
+    private var appearance: AppearanceMode {
+        AppearanceMode(rawValue: appearanceRaw) ?? .system
+    }
 
     var body: some View {
         NavigationStack {
@@ -54,6 +60,12 @@ struct SettingsView: View {
                     } label: {
                         row("Glasses Display", "eyeglasses",
                             value: hermesVM.displayHUDEnabled ? "On" : "Off")
+                    }
+                    NavigationLink {
+                        AppearancePage()
+                    } label: {
+                        row("Appearance", "circle.lefthalf.filled",
+                            value: appearance.label)
                     }
                 }
 
@@ -458,6 +470,30 @@ private struct DisplayPage: View {
             }
         }
         .navigationTitle("Glasses Display")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - Appearance
+
+private struct AppearancePage: View {
+    @AppStorage(AppearanceMode.storageKey) private var appearanceRaw =
+        AppearanceMode.system.rawValue
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Appearance", selection: $appearanceRaw) {
+                    ForEach(AppearanceMode.allCases) { mode in
+                        Text(mode.label).tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+            } footer: {
+                Text("Force light or dark, or follow the phone's setting. Applies to the whole app.")
+            }
+        }
+        .navigationTitle("Appearance")
         .navigationBarTitleDisplayMode(.inline)
     }
 }

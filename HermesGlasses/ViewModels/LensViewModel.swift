@@ -122,6 +122,13 @@ final class LensViewModel {
             }
         }
 
+        await beginStream()
+    }
+
+    /// Start (or restart) the live camera stream. Assumes the camera session
+    /// and detector are already set up by `start()`; used both on first open
+    /// and when resuming after the History sheet paused it.
+    private func beginStream() async {
         statusText = "Starting glasses camera…"
         do {
             try await camera.startLiveStream(
@@ -146,6 +153,27 @@ final class LensViewModel {
             errorBanner = error.localizedDescription
             statusText = "Camera unavailable"
         }
+    }
+
+    /// Pause the live stream while the History sheet is up: stop the camera
+    /// but keep the session, log, and camera-session alive. Flushes the
+    /// in-progress look so its time is recorded and the dwell resets clean.
+    func pauseStreaming() {
+        guard isStreaming else { return }
+        camera.stopLiveStream()
+        isStreaming = false
+        statusText = "Paused"
+        if let ended = dwell.flush(at: CACurrentMediaTime()) {
+            aggregator.recordLook(
+                label: ended.label, duration: ended.duration, at: Date()
+            )
+        }
+    }
+
+    /// Resume after the History sheet closes.
+    func resumeStreaming() {
+        guard !isStreaming, !didStop else { return }
+        Task { await beginStream() }
     }
 
     func stop() {

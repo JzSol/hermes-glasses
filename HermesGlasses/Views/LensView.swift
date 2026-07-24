@@ -40,7 +40,7 @@ struct LensView: View {
         .sheet(item: $shareItem) { item in
             ShareSheet(items: [item.url])
         }
-        .sheet(isPresented: $showObjectLog) {
+        .sheet(isPresented: $showObjectLog, onDismiss: { model.resumeStreaming() }) {
             ObjectLogView(hermesVM: hermesVM)
         }
     }
@@ -64,6 +64,7 @@ struct LensView: View {
                     .foregroundStyle(.tertiary)
             }
             Button {
+                model.pauseStreaming()
                 showObjectLog = true
             } label: {
                 Image(systemName: "clock.arrow.circlepath")
