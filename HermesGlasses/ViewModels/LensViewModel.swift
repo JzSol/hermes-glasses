@@ -20,6 +20,15 @@ struct LensSnap: Identifiable {
     let date: Date
 }
 
+/// One aggregated object in the exportable log (image joined to the numbers).
+struct LensLogEntry: Identifiable {
+    let id: String   // the YOLO label
+    let label: String
+    let totalLookTime: TimeInterval
+    let lookCount: Int
+    let image: UIImage?
+}
+
 @MainActor
 @Observable
 final class LensViewModel {
@@ -41,12 +50,19 @@ final class LensViewModel {
     var fps = 0
     var captureStage: CaptureStage?
 
+    /// Distinct labels logged so far - drives the Export button's enabled
+    /// state (observed; the aggregator itself is ObservationIgnored).
+    var loggedObjectCount = 0
+
     @ObservationIgnored private let hermesVM: HermesSessionViewModel
     @ObservationIgnored private let camera: HermesCameraManager
     @ObservationIgnored private let detector = ObjectDetector()
     @ObservationIgnored private let dwell = DwellTracker()
     @ObservationIgnored private var frameCount = 0
     @ObservationIgnored private var fpsWindowStart = Date()
+    @ObservationIgnored private var aggregator = LensLogAggregator()
+    @ObservationIgnored private var logImages: [String: UIImage] = [:]
+    @ObservationIgnored private var sessionStart = Date()
 
     init(hermesVM: HermesSessionViewModel) {
         self.hermesVM = hermesVM
@@ -55,6 +71,7 @@ final class LensViewModel {
 
     func start() async {
         errorBanner = nil
+        sessionStart = Date()
 
         // Connect the glasses camera WITHOUT the voice loop - opening
         // Lens must never leave the mic listening in the background.
@@ -109,6 +126,25 @@ final class LensViewModel {
     }
 
     func stop() {
+        // Capture the object still under the reticle, then persist the log.
+        if let ended = dwell.flush(at: CACurrentMediaTime()) {
+            aggregator.recordLook(
+                label: ended.label, duration: ended.duration, at: Date()
+            )
+        }
+        let entries = aggregator.entries()
+        if !entries.isEmpty {
+            hermesVM.saveLensSession(
+                startedAt: sessionStart, endedAt: Date(),
+                entries: entries.map { entry in
+                    LensSessionInput(
+                        label: entry.label, totalLookTime: entry.totalLookTime,
+                        lookCount: entry.lookCount,
+                        photo: logImages[entry.label]?.jpegData(compressionQuality: 0.8)
+                    )
+                }
+            )
+        }
         camera.stopLiveStream()
         detector.onDetections = nil
         isStreaming = false
@@ -138,7 +174,14 @@ final class LensViewModel {
         dwellProgress = update.progress
         targetLabel = update.target?.label
         if let snap = update.snap, let frame = feedImage {
+            aggregator.recordSnap(label: snap.label, at: Date())
+            loggedObjectCount = aggregator.entries().count
             runCaptureEffect(frame: frame, detection: snap)
+        }
+        if let look = update.completedLook {
+            aggregator.recordLook(
+                label: look.label, duration: look.duration, at: Date()
+            )
         }
     }
 
@@ -157,8 +200,22 @@ final class LensViewModel {
                     LensSnap(image: cropped, label: detection.label, date: Date()),
                     at: 0
                 )
+                if logImages[detection.label] == nil {
+                    logImages[detection.label] = cropped
+                }
             }
             captureStage = nil
+        }
+    }
+
+    /// The aggregated log joined to its crop images, longest-looked first.
+    var logEntries: [LensLogEntry] {
+        aggregator.entries().map { entry in
+            LensLogEntry(
+                id: entry.label, label: entry.label,
+                totalLookTime: entry.totalLookTime, lookCount: entry.lookCount,
+                image: logImages[entry.label]
+            )
         }
     }
 
