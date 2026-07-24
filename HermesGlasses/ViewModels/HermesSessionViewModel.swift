@@ -169,6 +169,7 @@ final class HermesSessionViewModel {
     /// Bumped whenever an encounter is saved/edited/deleted so the People
     /// screen re-reads the store.
     var encounterRevision: Int = 0
+    var lensSessionRevision: Int = 0
     /// Whether a Mapbox token is stored (drives Settings UI + notices).
     var hasMapboxToken: Bool = MapCredentials.hasToken
     /// Attach time/location/status context to every query
@@ -264,6 +265,7 @@ final class HermesSessionViewModel {
     @ObservationIgnored private let contextProvider = DeviceContextProvider()
     @ObservationIgnored private let navigation = NavigationController()
     @ObservationIgnored private let encounterStore = EncounterStore()
+    @ObservationIgnored private let lensSessionStore = LensSessionStore()
     /// In-flight glasses capture for the encounter whose note we're awaiting.
     /// Joined by `finishEncounter`, so the note and the photo can land in
     /// either order.
@@ -1230,6 +1232,26 @@ final class HermesSessionViewModel {
     func deleteEncounter(id: UUID) {
         encounterStore.delete(id: id)
         encounterRevision &+= 1
+    }
+
+    // MARK: - Lens object log (read-through, like People)
+
+    func saveLensSession(
+        startedAt: Date, endedAt: Date, entries: [LensSessionInput]
+    ) {
+        lensSessionStore.save(startedAt: startedAt, endedAt: endedAt, entries: entries)
+        lensSessionRevision &+= 1
+    }
+
+    func allLensSessions() -> [LensSession] { lensSessionStore.all() }
+
+    func lensSessionPhoto(_ entry: LensSession.Entry) -> Data? {
+        lensSessionStore.photoData(for: entry)
+    }
+
+    func deleteLensSession(id: UUID) {
+        lensSessionStore.delete(id: id)
+        lensSessionRevision &+= 1
     }
 
     /// On-lens Repeat button: re-speak (or re-show, in silent mode).
