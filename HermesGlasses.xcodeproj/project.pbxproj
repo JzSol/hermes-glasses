@@ -46,6 +46,7 @@
 		AAAA00000000000000000035 /* ObjectDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000138 /* ObjectDetector.swift */; };
 		AAAA00000000000000000036 /* LensViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000139 /* LensViewModel.swift */; };
 		AAAA00000000000000000037 /* LensView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000140 /* LensView.swift */; };
+		AAAA00000000000000000815 /* ObjectLogView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000816 /* ObjectLogView.swift */; };
 		AAAA00000000000000000805 /* LensLogAggregator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000806 /* LensLogAggregator.swift */; };
 		AAAA00000000000000000807 /* LensSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000808 /* LensSession.swift */; };
 		AAAA00000000000000000809 /* LensSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000810 /* LensSessionStore.swift */; };
@@ -101,6 +102,7 @@
 		AAAA00000000000000000138 /* ObjectDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lens/ObjectDetector.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000139 /* LensViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LensViewModel.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000140 /* LensView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LensView.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000816 /* ObjectLogView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectLogView.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000806 /* LensLogAggregator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lens/LensLogAggregator.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000808 /* LensSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lens/LensSession.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000810 /* LensSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lens/LensSessionStore.swift; sourceTree = "<group>"; };
@@ -154,6 +156,7 @@
 				AAAA00000000000000000134 /* PeopleView.swift */,
 				AAAA00000000000000000136 /* SettingsView.swift */,
 				AAAA00000000000000000140 /* LensView.swift */,
+				AAAA00000000000000000816 /* ObjectLogView.swift */,
 				AAAA00000000000000000814 /* ShareSheet.swift */,
 			);
 			path = Views;
@@ -340,6 +343,7 @@
 				AAAA00000000000000000035 /* ObjectDetector.swift in Sources */,
 				AAAA00000000000000000036 /* LensViewModel.swift in Sources */,
 				AAAA00000000000000000037 /* LensView.swift in Sources */,
+				AAAA00000000000000000815 /* ObjectLogView.swift in Sources */,
 				AAAA00000000000000000805 /* LensLogAggregator.swift in Sources */,
 				AAAA00000000000000000807 /* LensSession.swift in Sources */,
 				AAAA00000000000000000809 /* LensSessionStore.swift in Sources */,

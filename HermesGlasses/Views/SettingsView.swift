@@ -65,6 +65,12 @@ struct SettingsView: View {
                             value: hermesVM.socialNotesEnabled ? "On" : "Off")
                     }
                     NavigationLink {
+                        ObjectLogView(hermesVM: hermesVM)
+                    } label: {
+                        row("Object Log", "square.stack.3d.up",
+                            value: "\(hermesVM.allLensSessions().count)")
+                    }
+                    NavigationLink {
                         NavigationPage(hermesVM: hermesVM)
                     } label: {
                         row("Navigation & Maps", "map",
