@@ -12,6 +12,8 @@ import SwiftUI
 struct LensView: View {
     @State private var model: LensViewModel
     @State private var selectedSnap: LensSnap?
+    @State private var shareURL: URL?
+    @State private var showShare = false
     @Environment(\.dismiss) private var dismiss
 
     init(hermesVM: HermesSessionViewModel) {
@@ -30,6 +32,9 @@ struct LensView: View {
         .onDisappear { model.stop() }
         .sheet(item: $selectedSnap) { snap in
             snapDetail(snap)
+        }
+        .sheet(isPresented: $showShare) {
+            if let url = shareURL { ShareSheet(items: [url]) }
         }
     }
 
@@ -51,6 +56,13 @@ struct LensView: View {
                     .font(.system(size: 12, weight: .medium).monospacedDigit())
                     .foregroundStyle(.tertiary)
             }
+            Button {
+                exportPDF()
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 17, weight: .semibold))
+            }
+            .disabled(model.loggedObjectCount == 0)
             Button("Done") { dismiss() }
                 .font(.system(size: 16, weight: .semibold))
         }
@@ -259,5 +271,23 @@ struct LensView: View {
         }
         .padding(.vertical, 24)
         .presentationDetents([.medium, .large])
+    }
+
+    private func exportPDF() {
+        let rows = model.logEntries.map { entry in
+            LensPDFRenderer.Row(
+                label: entry.label, totalLookTime: entry.totalLookTime,
+                lookCount: entry.lookCount, image: entry.image
+            )
+        }
+        let title = "Object Log — " + Date().formatted(
+            date: .abbreviated, time: .shortened
+        )
+        let data = LensPDFRenderer.makePDF(title: title, rows: rows)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("object-log.pdf")
+        try? data.write(to: url, options: .atomic)
+        shareURL = url
+        showShare = true
     }
 }
