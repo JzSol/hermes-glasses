@@ -24,6 +24,7 @@ struct LensView: View {
         VStack(spacing: 0) {
             header
             feed
+            gazeSlider
             snapStrip
             Spacer(minLength: 0)
         }
@@ -68,6 +69,29 @@ struct LensView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
+    }
+
+    // MARK: - Gaze duration
+
+    /// Live control over how long a look must last before it snaps. Drag it
+    /// while pointing at an object and the reticle fills at the new speed.
+    private var gazeSlider: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "eye")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+            Slider(
+                value: $model.dwellSeconds,
+                in: LensViewModel.minDwell...LensViewModel.maxDwell,
+                step: 0.5
+            )
+            Text(String(format: "Gaze %.1fs", model.dwellSeconds))
+                .font(.system(size: 13, weight: .medium).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 78, alignment: .trailing)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 8)
     }
 
     // MARK: - Live feed + overlay

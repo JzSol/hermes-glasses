@@ -54,6 +54,23 @@ final class LensViewModel {
     /// state (observed; the aggregator itself is ObservationIgnored).
     var loggedObjectCount = 0
 
+    /// Seconds the reticle must cover an object before it snaps. Tunable
+    /// live from the Lens screen (0.5...3.0); persisted in UserDefaults and
+    /// pushed straight to the dwell tracker so the reticle fills at the new
+    /// speed immediately. Lens-only - conversation capture keeps its own.
+    var dwellSeconds: Double {
+        didSet {
+            let clamped = min(max(dwellSeconds, Self.minDwell), Self.maxDwell)
+            if clamped != dwellSeconds { dwellSeconds = clamped; return }
+            UserDefaults.standard.set(dwellSeconds, forKey: Self.dwellKey)
+            dwell.setDwellDuration(dwellSeconds)
+        }
+    }
+
+    static let minDwell = 0.5
+    static let maxDwell = 3.0
+    static let dwellKey = "lens_dwell_seconds"
+
     @ObservationIgnored private let hermesVM: HermesSessionViewModel
     @ObservationIgnored private let camera: HermesCameraManager
     @ObservationIgnored private let detector = ObjectDetector()
@@ -68,6 +85,11 @@ final class LensViewModel {
     init(hermesVM: HermesSessionViewModel) {
         self.hermesVM = hermesVM
         self.camera = hermesVM.camera
+
+        // Restore the saved dwell time (default 2 s) and sync the tracker.
+        let stored = UserDefaults.standard.object(forKey: Self.dwellKey) as? Double
+        dwellSeconds = min(max(stored ?? 2.0, Self.minDwell), Self.maxDwell)
+        dwell.setDwellDuration(dwellSeconds)
     }
 
     func start() async {

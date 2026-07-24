@@ -44,7 +44,7 @@ struct DwellUpdate: Equatable {
 }
 
 final class DwellTracker {
-    private let dwellDuration: TimeInterval
+    private var dwellDuration: TimeInterval
     private let iouThreshold: Double
     private let reticle = CGPoint(x: 0.5, y: 0.5)
 
@@ -56,6 +56,12 @@ final class DwellTracker {
     init(dwellDuration: TimeInterval = 2.0, iouThreshold: Double = 0.3) {
         self.dwellDuration = dwellDuration
         self.iouThreshold = iouThreshold
+    }
+
+    /// Change the dwell threshold live. Takes effect immediately: the
+    /// in-progress dwell's `progress` and snap point both use the new value.
+    func setDwellDuration(_ seconds: TimeInterval) {
+        dwellDuration = seconds
     }
 
     func update(detections: [Detection], at time: TimeInterval) -> DwellUpdate {

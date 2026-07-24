@@ -138,5 +138,30 @@ u = t.update(detections: [bowl2], at: 603.0) // switch target
 expect(u.completedLook?.label == "cup", "target switch ends previous look")
 expectClose(u.completedLook?.duration ?? 0, 3.0, "switch look duration")
 
+// 15. setDwellDuration moves the snap threshold live
+t = DwellTracker()
+t.setDwellDuration(1.0)
+_ = t.update(detections: [cup], at: 700.0)
+u = t.update(detections: [cup], at: 700.5)   // 0.5 s, below the new 1.0 s
+expect(u.snap == nil, "no snap before shortened threshold")
+u = t.update(detections: [cup], at: 701.0)   // 1.0 s
+expect(u.snap != nil, "snap fires at shortened threshold")
+
+// 16. A shorter duration reaches full progress sooner
+t = DwellTracker()
+t.setDwellDuration(0.5)
+_ = t.update(detections: [cup], at: 800.0)
+u = t.update(detections: [cup], at: 800.25)  // half of 0.5 s
+expectClose(u.progress, 0.5, "progress scales to the new duration")
+
+// 17. A longer duration delays the snap past the old 2 s default
+t = DwellTracker()
+t.setDwellDuration(3.0)
+_ = t.update(detections: [cup], at: 900.0)
+u = t.update(detections: [cup], at: 902.0)   // 2 s, below the new 3.0 s
+expect(u.snap == nil, "no snap at 2 s when threshold is 3 s")
+u = t.update(detections: [cup], at: 903.0)   // 3.0 s
+expect(u.snap != nil, "snap fires at 3 s threshold")
+
 if failures > 0 { print("\n\(failures) FAILURES"); exit(1) }
 print("\nAll dwell tests passed")
