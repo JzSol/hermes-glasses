@@ -57,6 +57,7 @@ struct ContentView: View {
     @State private var showTranscript: Bool = false
     /// Set when Settings should open straight onto a sub-page.
     @State private var settingsRoute: SettingsRoute?
+    @State private var showAppDrawer: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -104,6 +105,14 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showMap) {
             NavigationMapView(hermesVM: hermesVM)
+        }
+        .sheet(isPresented: $showAppDrawer) {
+            AppDrawerView(
+                apps: HermesAppRegistry.all,
+                unavailable: unavailableReason,
+                onOpen: open
+            )
+            .presentationDetents([.medium, .large])
         }
         // fullScreenCover, not sheet - an accidental drag-dismiss would
         // tear down the live stream mid-use; Done is the exit.
@@ -663,23 +672,55 @@ struct ContentView: View {
     /// The four feature screens, one tap from the conversation. Lens is
     /// the only one that needs the glasses; the rest read stored data.
     private var quickActions: some View {
-        HStack(spacing: 8) {
-            quickAction("Lens", icon: "camera.viewfinder",
-                        enabled: hermesVM.canStartSession) {
-                showLens = true
-            }
-            quickAction("People", icon: "person.crop.circle") {
-                showPeople = true
-            }
-            quickAction("Map", icon: "mappin.and.ellipse") {
-                showMap = true
-            }
-            quickAction("Log", icon: "list.bullet.rectangle") {
-                showObjectLog = true
+        VStack(spacing: 6) {
+            // Grab handle: the row is the top of a drawer, not the whole
+            // set. Dragging up opens everything.
+            Capsule()
+                .fill(Color.secondary.opacity(0.25))
+                .frame(width: 36, height: 4)
+                .contentShape(Rectangle().inset(by: -12))
+                .onTapGesture { showAppDrawer = true }
+
+            HStack(spacing: 8) {
+                ForEach(HermesAppRegistry.pinned) { app in
+                    quickAction(app)
+                }
             }
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 10)
+        .gesture(
+            DragGesture(minimumDistance: 12)
+                .onEnded { value in
+                    if value.translation.height < -20 { showAppDrawer = true }
+                }
+        )
+    }
+
+    /// Why this app can't be opened right now, or nil. Stated in the drawer
+    /// instead of letting the tap fail.
+    private func unavailableReason(_ app: HermesApp) -> String? {
+        if app.capabilities.contains(.vision), !hermesVM.canStartSession {
+            return "Needs a camera - no glasses, and phone mode is off."
+        }
+        return nil
+    }
+
+    private func open(_ app: HermesApp) {
+        switch app.id {
+        case "lens": showLens = true
+        case "people": showPeople = true
+        case "map": showMap = true
+        case "log": showObjectLog = true
+        default: break
+        }
+    }
+
+    private func quickAction(_ app: HermesApp) -> some View {
+        let blocked = unavailableReason(app) != nil
+        return quickAction(app.title, icon: app.systemImage, enabled: !blocked) {
+            open(app)
+        }
     }
 
     private func quickAction(

@@ -42,6 +42,8 @@
 		AAAA00000000000000000032 /* VoiceCommandCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000135 /* VoiceCommandCatalog.swift */; };
 		AAAA00000000000000000821 /* LensContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000822 /* LensContent.swift */; };
 		AAAA00000000000000000841 /* ChoiceDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000842 /* ChoiceDetector.swift */; };
+		AAAA00000000000000000843 /* HermesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000844 /* HermesApp.swift */; };
+		AAAA00000000000000000845 /* AppDrawerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000846 /* AppDrawerView.swift */; };
 		AAAA00000000000000000823 /* VisionSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000824 /* VisionSource.swift */; };
 		AAAA00000000000000000835 /* VisionRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000836 /* VisionRouting.swift */; };
 		AAAA00000000000000000837 /* Bearing.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000838 /* Bearing.swift */; };
@@ -111,6 +113,8 @@
 		AAAA00000000000000000135 /* VoiceCommandCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceCommandCatalog.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000822 /* LensContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LensContent.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000842 /* ChoiceDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChoiceDetector.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000844 /* HermesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesApp.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000846 /* AppDrawerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDrawerView.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000824 /* VisionSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionSource.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000836 /* VisionRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisionRouting.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000838 /* Bearing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Navigation/Bearing.swift; sourceTree = "<group>"; };
@@ -189,6 +193,7 @@
 				AAAA00000000000000000830 /* OnboardingView.swift */,
 				AAAA00000000000000000832 /* SimulatedLensView.swift */,
 				AAAA00000000000000000834 /* PhoneModeSessionView.swift */,
+				AAAA00000000000000000846 /* AppDrawerView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -234,6 +239,7 @@
 				AAAA00000000000000000135 /* VoiceCommandCatalog.swift */,
 				AAAA00000000000000000822 /* LensContent.swift */,
 				AAAA00000000000000000842 /* ChoiceDetector.swift */,
+				AAAA00000000000000000844 /* HermesApp.swift */,
 				AAAA00000000000000000824 /* VisionSource.swift */,
 				AAAA00000000000000000836 /* VisionRouting.swift */,
 				AAAA00000000000000000838 /* Bearing.swift */,
@@ -378,6 +384,8 @@
 				AAAA00000000000000000032 /* VoiceCommandCatalog.swift in Sources */,
 				AAAA00000000000000000821 /* LensContent.swift in Sources */,
 				AAAA00000000000000000841 /* ChoiceDetector.swift in Sources */,
+				AAAA00000000000000000843 /* HermesApp.swift in Sources */,
+				AAAA00000000000000000845 /* AppDrawerView.swift in Sources */,
 				AAAA00000000000000000823 /* VisionSource.swift in Sources */,
 				AAAA00000000000000000835 /* VisionRouting.swift in Sources */,
 				AAAA00000000000000000837 /* Bearing.swift in Sources */,
