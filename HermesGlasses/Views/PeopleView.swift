@@ -5,6 +5,11 @@
 // day. Reads straight through the view model to EncounterStore and
 // re-reads whenever `encounterRevision` changes.
 //
+// Screen 4e: the note leads and the face comes second - what you said
+// about someone is what you'll search for - and the on-device badge sits
+// at the top, because "does this leave my phone?" is the first question
+// anyone asks of this feature.
+//
 
 import SwiftUI
 
@@ -35,21 +40,32 @@ struct PeopleView: View {
                 if days.isEmpty {
                     emptyState
                 } else {
-                    List {
-                        ForEach(days, id: \.label) { day in
-                            Section(day.label) {
-                                ForEach(day.encounters) { encounter in
+                    HermesScrollPage {
+                        HermesNotice(text: "Stored on this iPhone only")
+
+                        ForEach(Array(days.enumerated()), id: \.element.label) { index, day in
+                            HermesSection(
+                                header: day.label,
+                                footer: index == days.count - 1
+                                    ? "Say \"remember this person\" while looking at them."
+                                    : nil
+                            ) {
+                                ForEach(Array(day.encounters.enumerated()), id: \.element.id) { row, encounter in
+                                    if row > 0 { HermesDivider() }
                                     NavigationLink {
                                         EncounterDetailView(
                                             hermesVM: hermesVM, encounter: encounter
                                         )
                                     } label: {
-                                        EncounterRow(hermesVM: hermesVM, encounter: encounter)
+                                        EncounterRow(
+                                            hermesVM: hermesVM, encounter: encounter
+                                        )
                                     }
-                                }
-                                .onDelete { offsets in
-                                    for index in offsets {
-                                        hermesVM.deleteEncounter(id: day.encounters[index].id)
+                                    .buttonStyle(.plain)
+                                    .contextMenu {
+                                        Button("Delete", role: .destructive) {
+                                            hermesVM.deleteEncounter(id: encounter.id)
+                                        }
                                     }
                                 }
                             }
@@ -61,9 +77,11 @@ struct PeopleView: View {
             .id(hermesVM.encounterRevision)
             .navigationTitle("People")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(HermesTheme.groupedCanvas, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
+                        .fontWeight(.semibold)
                 }
             }
         }
@@ -72,18 +90,19 @@ struct PeopleView: View {
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: "person.crop.rectangle.stack")
+            Image(systemName: "person.crop.circle")
                 .font(.system(size: 40))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(HermesTheme.accent.opacity(0.5))
             Text("No one yet")
-                .font(.headline)
+                .font(.system(size: 17, weight: .semibold))
             Text("Say \"remember this person\" while wearing the glasses. Hermes takes a photo and saves the note you speak next.")
-                .font(.caption)
+                .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(HermesTheme.groupedCanvas.ignoresSafeArea())
     }
 
     static func dayLabel(_ day: Date) -> String {
@@ -99,19 +118,44 @@ private struct EncounterRow: View {
     let encounter: Encounter
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             thumbnail
-            VStack(alignment: .leading, spacing: 3) {
-                Text(encounter.note.isEmpty ? "No note" : encounter.note)
-                    .font(.subheadline)
-                    .foregroundStyle(encounter.note.isEmpty ? .secondary : .primary)
-                    .lineLimit(2)
-                Text(encounter.timestamp.formatted(date: .omitted, time: .shortened))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(encounter.note.isEmpty ? "No note" : "\u{201C}\(encounter.note)\u{201D}")
+                    .font(.system(size: 15))
+                    .foregroundStyle(encounter.note.isEmpty
+                        ? AnyShapeStyle(Color.secondary)
+                        : AnyShapeStyle(Color.primary))
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 6) {
+                    Image(systemName: photoCount > 1 ? "waveform" : "mic.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(HermesTheme.accent)
+                    Text(metaLine)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
             }
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .contentShape(Rectangle())
+    }
+
+    private var photoCount: Int {
+        encounter.photoFilenames.count
+    }
+
+    private var metaLine: String {
+        let time = encounter.timestamp.formatted(date: .omitted, time: .shortened)
+        // A multi-photo entry is a recorded conversation, not a single snap.
+        if photoCount > 1 {
+            return "conversation · \(photoCount) snaps · \(time)"
+        }
+        return "spoken note · \(time)"
     }
 
     @ViewBuilder
@@ -122,13 +166,14 @@ private struct EncounterRow: View {
                 .resizable()
                 .scaledToFill()
                 .frame(width: 52, height: 52)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         } else {
-            RoundedRectangle(cornerRadius: 8)
-                .fill(HermesTheme.chipFill)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(HermesTheme.mediaPlaceholder)
                 .frame(width: 52, height: 52)
                 .overlay {
                     Image(systemName: "person.fill")
+                        .font(.system(size: 20))
                         .foregroundStyle(.secondary)
                 }
         }
@@ -157,7 +202,7 @@ private struct EncounterDetailView: View {
                         .resizable()
                         .scaledToFit()
                         .frame(maxWidth: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .listRowInsets(EdgeInsets())
             } else if photos.count > 1 {
@@ -169,7 +214,7 @@ private struct EncounterDetailView: View {
                                     .resizable()
                                     .scaledToFill()
                                     .frame(width: 180, height: 220)
-                                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                             }
                         }
                         .padding(.horizontal, 4)
@@ -200,8 +245,11 @@ private struct EncounterDetailView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(HermesTheme.groupedCanvas.ignoresSafeArea())
         .navigationTitle("Person")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(HermesTheme.groupedCanvas, for: .navigationBar)
         .onAppear { note = encounter.note }
         .onDisappear {
             // Swipe-back must not discard an edit (same contract as Settings).

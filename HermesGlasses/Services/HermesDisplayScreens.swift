@@ -41,11 +41,47 @@ enum HermesDisplayScreens {
     static func reply(
         text: String,
         speaking: Bool,
+        choices: [ReplyChoice] = [],
         onStop: @escaping @Sendable () -> Void,
         onRepeat: @escaping @Sendable () -> Void,
-        onNewChat: @escaping @Sendable () -> Void
+        onNewChat: @escaping @Sendable () -> Void,
+        onChoose: @escaping @Sendable (ReplyChoice) -> Void = { _ in }
     ) -> FlexBox {
         var buttons: [Button] = []
+
+        // When the reply offered options, THOSE are the useful controls -
+        // answering by tapping beats reading the letters back aloud. Stop
+        // stays available while speech is playing; Repeat/New chat step
+        // aside rather than crowd the lens.
+        if !choices.isEmpty {
+            if speaking {
+                buttons.append(Button(label: "Stop", style: .secondary, onClick: onStop))
+            }
+            for choice in choices {
+                buttons.append(Button(
+                    label: choice.shortLabel,
+                    style: .primary,
+                    onClick: { onChoose(choice) }
+                ))
+            }
+            return FlexBox(direction: .column, spacing: 12) {
+                FlexBox(direction: .column) {
+                    Text(text, style: .body)
+                }
+                .padding(24)
+                .background(.card)
+
+                FlexBox(
+                    direction: .row, spacing: 8,
+                    alignment: .center, crossAlignment: .center, wrap: true
+                ) {
+                    for button in buttons {
+                        button
+                    }
+                }
+            }
+        }
+
         if speaking {
             buttons.append(Button(label: "Stop", style: .primary, onClick: onStop))
         }
@@ -87,9 +123,27 @@ enum HermesDisplayScreens {
         title: String,
         step: String,
         eta: String,
-        onStop: @escaping @Sendable () -> Void
+        mode: TransportMode,
+        onStop: @escaping @Sendable () -> Void,
+        onWalk: @escaping @Sendable () -> Void,
+        onDrive: @escaping @Sendable () -> Void
     ) -> FlexBox {
-        FlexBox(direction: .column, spacing: 12) {
+        // The mode was previously decided by how the request was phrased and
+        // never shown, so a walking route to somewhere 5 km away could only
+        // be fixed by asking again. The active mode is the primary button.
+        var buttons: [Button] = [
+            Button(
+                label: "Walk", style: mode == .walking ? .primary : .secondary,
+                onClick: onWalk
+            ),
+            Button(
+                label: "Drive", style: mode == .driving ? .primary : .secondary,
+                onClick: onDrive
+            ),
+            Button(label: "Stop", style: .secondary, onClick: onStop),
+        ]
+
+        return FlexBox(direction: .column, spacing: 12) {
             if let mapURL {
                 Image(uri: mapURL, sizePreset: .fill, cornerRadius: .medium)
             } else {
@@ -104,7 +158,15 @@ enum HermesDisplayScreens {
             }
             .padding(16)
             .background(.card)
-            Button(label: "Stop", style: .primary, onClick: onStop)
+
+            FlexBox(
+                direction: .row, spacing: 8,
+                alignment: .center, crossAlignment: .center, wrap: true
+            ) {
+                for button in buttons {
+                    button
+                }
+            }
         }
     }
 

@@ -24,6 +24,11 @@ enum MapboxStaticMap {
         user: MapCoordinate,
         destination: MapCoordinate?,
         route: [MapCoordinate],
+        /// Degrees clockwise from north to rotate the map to. Nil is
+        /// north-up. The glasses have no compass, so this comes from the
+        /// phone's - a lens map that turns with you is far easier to read
+        /// on the move than one that always points north.
+        bearing: Double? = nil,
         retina: Bool = true
     ) -> String {
         let dim = min(max(size, 1), 600)
@@ -43,12 +48,22 @@ enum MapboxStaticMap {
         overlays.append("pin-s+\(userColor)(\(num(user.lon)),\(num(user.lat)))")
 
         let overlayPart = overlays.joined(separator: ",")
-        let centerPart = "\(num(center.lon)),\(num(center.lat)),\(num(zoom))"
+        var centerPart = "\(num(center.lon)),\(num(center.lat)),\(num(zoom))"
+        if let bearing {
+            centerPart += ",\(num(normalizedBearing(bearing)))"
+        }
         let sizePart = "\(dim)x\(dim)\(retina ? "@2x" : "")"
 
         return "https://api.mapbox.com/styles/v1/\(style)/static/"
             + "\(overlayPart)/\(centerPart)/\(sizePart)"
             + "?access_token=\(token)"
+    }
+
+    /// Mapbox wants 0..<360 whole degrees; a compass hands us anything,
+    /// including negatives and sub-degree jitter.
+    private static func normalizedBearing(_ degrees: Double) -> Double {
+        let wrapped = degrees.truncatingRemainder(dividingBy: 360)
+        return (wrapped < 0 ? wrapped + 360 : wrapped).rounded()
     }
 
     /// Trim trailing-zero noise so coordinates read cleanly and tests are

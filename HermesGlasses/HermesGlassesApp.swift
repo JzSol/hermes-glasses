@@ -18,6 +18,11 @@ import MWDATMockDevice
 struct HermesGlassesApp: App {
     @State private var wearablesViewModel: WearablesViewModel
     @State private var hermesSessionViewModel: HermesSessionViewModel
+    @State private var permissions = PermissionsCoordinator()
+
+    /// First launch runs the three-step wizard (glasses → permissions →
+    /// ready) so nobody meets a bare system dialog with no explanation.
+    @AppStorage("onboarding_complete") private var onboardingComplete = false
 
     // Light/dark override, applied to the whole window (see AppearanceMode).
     @AppStorage(AppearanceMode.storageKey) private var appearanceRaw =
@@ -67,23 +72,37 @@ struct HermesGlassesApp: App {
                         _ = try? await Wearables.shared.handleUrl(url)
                     }
                 }
-                // Error alerts
-                .alert("Error", isPresented: $wearablesViewModel.showError) {
-                    Button("OK") { wearablesViewModel.dismissError() }
-                } message: {
-                    Text(wearablesViewModel.errorMessage)
-                }
                 .alert("Hermes Error", isPresented: $hermesSessionViewModel.showError) {
                     Button("OK") { hermesSessionViewModel.dismissError() }
                 } message: {
                     Text(hermesSessionViewModel.errorMessage)
                 }
-
-                // Registration overlay
-                RegistrationView(viewModel: wearablesViewModel)
+            }
+            // A cover, not a sibling: as a sibling it laid out UNDER the
+            // session screen, leaving half the app visible above it.
+            .fullScreenCover(isPresented: Binding(
+                get: { wearablesViewModel.registrationState == .registering },
+                set: { _ in }
+            )) {
+                RegistrationInProgressView(viewModel: wearablesViewModel)
             }
             // Force light/dark for the whole window (sheets included).
             .preferredColorScheme(appearance.colorScheme)
+            .fullScreenCover(isPresented: Binding(
+                get: { !onboardingComplete },
+                set: { onboardingComplete = !$0 }
+            )) {
+                OnboardingView(
+                    wearablesVM: wearablesViewModel,
+                    hermesVM: hermesSessionViewModel,
+                    permissions: permissions
+                ) { startSession in
+                    onboardingComplete = true
+                    if startSession {
+                        Task { await hermesSessionViewModel.startSession() }
+                    }
+                }
+            }
         }
     }
 }

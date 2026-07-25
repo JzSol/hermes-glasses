@@ -21,6 +21,9 @@ enum HermesCameraError: LocalizedError {
     case timeout
     case captureInProgress
     case streamInUse
+    /// The SDK declined a stream and told us nothing; carries what we could
+    /// observe at the moment it happened.
+    case streamRejected(String)
 
     var errorDescription: String? {
         switch self {
@@ -36,6 +39,8 @@ enum HermesCameraError: LocalizedError {
             return "A photo capture is already in progress."
         case .streamInUse:
             return "The glasses camera is already streaming."
+        case .streamRejected(let detail):
+            return "Could not open the glasses camera - \(detail)."
         }
     }
 }
@@ -73,6 +78,10 @@ final class HermesCameraManager: @unchecked Sendable {
         stateLock.withLockUnchecked { state in
             state.deviceSession = nil
         }
+    }
+
+    var isStreaming: Bool {
+        stateLock.withLockUnchecked { $0.liveStream != nil }
     }
 
     /// Capture a single JPEG from the glasses camera.
@@ -170,8 +179,11 @@ final class HermesCameraManager: @unchecked Sendable {
     /// an SDK thread for every frame; hop to the main actor before touching
     /// UI state. Throws if a photo capture is mid-flight or a live stream
     /// is already running.
+    /// DAT-typed entry point. The `VisionSource` conformance wraps this and
+    /// is what the app calls; this stays SDK-shaped so the decode to
+    /// `VisionFrame` happens in exactly one place.
     func startLiveStream(
-        onFrame: @escaping @Sendable (VideoFrame) -> Void,
+        onVideoFrame: @escaping @Sendable (VideoFrame) -> Void,
         onError: @escaping @Sendable (String) -> Void
     ) async throws {
         enum Entry {
@@ -192,22 +204,46 @@ final class HermesCameraManager: @unchecked Sendable {
         case .proceed(let s): session = s
         }
 
-        // Highest resolution the SDK offers - snaps are cropped from these
-        // frames. Drop to .medium if streaming proves choppy on device.
-        let config = StreamConfiguration(
-            videoCodec: .raw,
-            resolution: .high,
-            frameRate: 24
-        )
-        guard let stream = try session.addStream(config: config) else {
-            debug("lens: addStream returned nil")
-            throw HermesCameraError.streamUnavailable
+        // Resolution is negotiated, not assumed. This asked for .high while
+        // every path that actually works on device - one-shot capture, and
+        // Meta's own CameraAccess sample - uses .low, and addStream returns
+        // a bare nil when it won't serve what you asked for. Highest first,
+        // then down; snaps are cropped from these frames so more pixels are
+        // nice, not necessary.
+        var stream: MWDATCamera.Stream?
+        var used: StreamingResolution = .low
+        var attempts: [String] = []
+
+        outer: for pass in 0..<2 {
+            for resolution in [StreamingResolution.high, .medium, .low] {
+                let config = StreamConfiguration(
+                    videoCodec: .raw, resolution: resolution, frameRate: 24
+                )
+                stream = try session.addStream(config: config)
+                if stream != nil {
+                    used = resolution
+                    break outer
+                }
+                attempts.append("\(resolution)")
+            }
+            // A whole failed pass can mean the previous stream hasn't been
+            // released yet; one short wait, then try the ladder again.
+            if pass == 0 { try await Task.sleep(nanoseconds: 500_000_000) }
         }
+
+        guard let stream else {
+            let detail = "addStream nil for every resolution "
+                + "(\(attempts.joined(separator: ", "))), session=\(session.state)"
+            debug("lens: \(detail)")
+            NSLog("[Hermes] lens: \(detail)")
+            throw HermesCameraError.streamRejected(detail)
+        }
+        NSLog("[Hermes] lens: stream opened at \(used)")
         debug("lens: live stream created, state=\(stream.state)")
 
         let frameToken = stream.videoFramePublisher.listen { [weak self] frame in
             self?.stateLock.withLockUnchecked { $0.latestLiveFrame = frame }
-            onFrame(frame)
+            onVideoFrame(frame)
         }
         let errorToken = stream.errorPublisher.listen { [weak self] streamError in
             self?.debug("lens: ERROR → \(streamError)")

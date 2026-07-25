@@ -30,13 +30,28 @@ final class HermesDisplayManager {
         }
     }
 
+    /// What the lens is showing, independent of whether any glasses are
+    /// attached. Phone mode renders this in SwiftUI (SimulatedLensView),
+    /// so it is assigned on EVERY screen call - including when `status` is
+    /// `.off` and nothing goes out over BLE.
+    private(set) var content: LensContent = .blank {
+        didSet {
+            if content != oldValue { onContentChanged?(content) }
+        }
+    }
+
     var onStatusChanged: ((DisplayHUDStatus) -> Void)?
+    var onContentChanged: ((LensContent) -> Void)?
     var onDebug: ((String) -> Void)?
     /// On-lens button callbacks (invoked on the main actor)
     var onStop: (() -> Void)?
     var onRepeat: (() -> Void)?
     var onNewChat: (() -> Void)?
     var onStopNavigation: (() -> Void)?
+    /// Lens asked for a different transport mode.
+    var onSetTransportMode: ((TransportMode) -> Void)?
+    /// The wearer tapped one of the reply's options.
+    var onChooseReplyOption: ((ReplyChoice) -> Void)?
     /// What to do when a reply/definition dwell ends. Default (nil) blanks the
     /// lens; the session sets this to restore the navigation map when active.
     var idleHandler: (() -> Void)?
@@ -133,17 +148,22 @@ final class HermesDisplayManager {
     // MARK: - Screens
 
     func showListening(partial: String) {
+        // Before the throttle: the simulated lens is local, so it can show
+        // every partial even when BLE sends are being rate-limited.
+        content = .listening(partial: partial)
         guard throttle.shouldSend() else { return }
         cancelDwell()
         send(HermesDisplayScreens.listening(partial: partial))
     }
 
     func showThinking(query: String) {
+        content = .thinking(query: query)
         cancelDwell()
         send(HermesDisplayScreens.thinking(query: query))
     }
 
     func showPhotoCaptured() {
+        content = .photoCaptured
         cancelDwell()
         send(HermesDisplayScreens.photoCaptured())
     }
@@ -151,12 +171,15 @@ final class HermesDisplayManager {
     /// speaking=true keeps the card up (Stop button shown, no dwell);
     /// dwellSeconds non-nil blanks the lens after that many seconds.
     func showReply(text: String, speaking: Bool, dwellSeconds: Double?) {
+        let choices = ChoiceDetector.choices(in: text)
+        content = .reply(text: text, speaking: speaking, choices: choices)
         cancelDwell()
         lastReplyText = text
         lastDefinitionImageURL = nil
         send(HermesDisplayScreens.reply(
             text: text,
             speaking: speaking,
+            choices: choices,
             onStop: { [weak self] in
                 Task { @MainActor in self?.onStop?() }
             },
@@ -165,9 +188,14 @@ final class HermesDisplayManager {
             },
             onNewChat: { [weak self] in
                 Task { @MainActor in self?.onNewChat?() }
+            },
+            onChoose: { [weak self] choice in
+                Task { @MainActor in self?.onChooseReplyOption?(choice) }
             }
         ))
-        if let dwellSeconds {
+        // A reply with options must not blank itself out from under the
+        // wearer while they are deciding.
+        if let dwellSeconds, choices.isEmpty {
             scheduleDwell(seconds: dwellSeconds)
         }
     }
@@ -189,7 +217,13 @@ final class HermesDisplayManager {
     }
 
     /// Active navigation frame. Owns the lens until stopped; no dwell.
-    func showNavigation(mapURL: String?, title: String, step: String, eta: String) {
+    func showNavigation(
+        mapURL: String?, title: String, step: String, eta: String,
+        mode: TransportMode
+    ) {
+        content = .navigation(
+            title: title, step: step, eta: eta, mapURL: mapURL, mode: mode
+        )
         cancelDwell()
         lastReplyText = ""
         lastDefinitionImageURL = nil
@@ -198,8 +232,15 @@ final class HermesDisplayManager {
             title: title,
             step: step,
             eta: eta,
+            mode: mode,
             onStop: { [weak self] in
                 Task { @MainActor in self?.onStopNavigation?() }
+            },
+            onWalk: { [weak self] in
+                Task { @MainActor in self?.onSetTransportMode?(.walking) }
+            },
+            onDrive: { [weak self] in
+                Task { @MainActor in self?.onSetTransportMode?(.driving) }
             }
         ))
     }
@@ -207,6 +248,7 @@ final class HermesDisplayManager {
     /// Definition reply: picture + text. While speaking, no dwell (persists
     /// like the reply card); after speech, dwell like a spoken reply.
     func showDefinition(text: String, imageURL: String?, speaking: Bool) {
+        content = .definition(text: text, imageURL: imageURL)
         cancelDwell()
         lastReplyText = text
         lastDefinitionImageURL = imageURL
@@ -219,6 +261,7 @@ final class HermesDisplayManager {
     /// Waiting for the spoken note after an encounter photo. No dwell - the
     /// prompt stays until the note is saved or the capture is abandoned.
     func showEncounterPrompt() {
+        content = .encounterPrompt
         cancelDwell()
         lastReplyText = ""
         lastDefinitionImageURL = nil
@@ -228,6 +271,7 @@ final class HermesDisplayManager {
     /// Conversation capture started. No dwell - the live-transcript
     /// partials paint over it as soon as someone speaks.
     func showRecordingStarted() {
+        content = .recording
         cancelDwell()
         lastReplyText = ""
         lastDefinitionImageURL = nil
@@ -235,6 +279,7 @@ final class HermesDisplayManager {
     }
 
     func showEncounterSaved(note: String) {
+        content = .encounterSaved(note: note)
         cancelDwell()
         lastReplyText = ""
         lastDefinitionImageURL = nil
@@ -243,6 +288,7 @@ final class HermesDisplayManager {
     }
 
     func showNewConversationFlash() {
+        content = .newConversation
         cancelDwell()
         lastReplyText = ""
         lastDefinitionImageURL = nil
@@ -251,6 +297,7 @@ final class HermesDisplayManager {
     }
 
     func clear() {
+        content = .blank
         cancelDwell()
         lastReplyText = ""
         lastDefinitionImageURL = nil

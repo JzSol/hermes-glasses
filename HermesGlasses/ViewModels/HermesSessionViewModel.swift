@@ -7,6 +7,7 @@
 //
 
 import CoreMedia
+import MapKit
 import MWDATCamera
 import MWDATCore
 import Observation
@@ -172,6 +173,9 @@ final class HermesSessionViewModel {
     var lensSessionRevision: Int = 0
     /// Whether a Mapbox token is stored (drives Settings UI + notices).
     var hasMapboxToken: Bool = MapCredentials.hasToken
+    /// The running route, mirrored for the in-app map screen (design 4f).
+    /// Nil whenever nothing is being navigated to.
+    var activeRoute: NavigationController.RouteSnapshot?
     /// Attach time/location/status context to every query
     var contextEnabled: Bool =
         (UserDefaults.standard.object(forKey: DeviceContextProvider.enabledKey) as? Bool) ?? true {
@@ -258,6 +262,7 @@ final class HermesSessionViewModel {
     @ObservationIgnored private var apiClient: HermesAPIClient?
     @ObservationIgnored private var sessionObserverTask: Task<Void, Never>?
     @ObservationIgnored private let cameraManager = HermesCameraManager()
+    @ObservationIgnored private let phoneCameraManager = PhoneCameraManager()
     @ObservationIgnored private let speechRecognizer = HermesSpeechRecognizer()
     @ObservationIgnored private let speechSynthesizer = HermesSpeechSynthesizer()
     @ObservationIgnored private let directClient = DirectClient()
@@ -293,17 +298,231 @@ final class HermesSessionViewModel {
     /// Exposed for UI to show audio route
     var audio: HermesAudioManager { audioManager }
 
-    /// Exposed for the Lens view, which drives the live stream directly
+    /// The glasses camera specifically - only for code that needs the DAT
+    /// lifecycle (session configure/reset). Everything that just wants to
+    /// SEE should use `vision`.
     var camera: HermesCameraManager { cameraManager }
+
+    /// The iPhone camera, for the phone-mode screen's status tiles.
+    var phoneCamera: PhoneCameraManager { phoneCameraManager }
+
+    /// Whichever eye is active. Every camera feature goes through this, so
+    /// phone mode reaches all of them without per-call-site branching.
+    var vision: VisionSource {
+        visionRoute == .phone ? phoneCameraManager : cameraManager
+    }
+
+    /// Pinned once a session (or the Lens view) commits to an eye, so a
+    /// momentary SDK flap cannot redirect a capture to a camera that isn't
+    /// running - the bug behind "remember this person" saving a note with no
+    /// photo.
+    @ObservationIgnored private var pinnedVisionRoute: VisionRoute?
+
+    /// Which eye is in use, or would be if a session started now.
+    var visionRoute: VisionRoute {
+        pinnedVisionRoute ?? VisionRouting.route(
+            glassesEligible: glassesAvailable, preference: phoneModePreference
+        )
+    }
+
+    /// False only when the fallback is off and no glasses are reachable.
+    var canStartSession: Bool {
+        VisionRouting.canStartSession(
+            glassesEligible: glassesAvailable, preference: phoneModePreference
+        )
+    }
+
+    /// Is there an eye at all right now? The iPhone camera is always
+    /// present; the glasses need a live session.
+    var hasVisionSource: Bool {
+        visionRoute == .phone || isGlassesConnected
+    }
+
+    /// Permission for whichever eye is active. These are two different
+    /// grants from two different places - the glasses camera is authorised
+    /// through the Meta AI companion app, the iPhone camera through iOS - so
+    /// asking the glasses authority about a phone-mode capture always said
+    /// no. That is why "remember this person" saved a note with no photo.
+    func ensureVisionPermission(interactive: Bool) async -> Bool {
+        switch visionRoute {
+        case .glasses:
+            return await ensureCameraPermission(interactive: interactive)
+        case .phone:
+            return interactive
+                ? await PhoneCameraManager.ensurePermission()
+                : PhoneCameraManager.isAuthorized
+        }
+    }
+
+    /// A still from the active eye, falling back to the other one rather
+    /// than returning nothing. "remember this person" saved a note with no
+    /// photo because a transient route flip sent the capture to a camera
+    /// that wasn't running; a photo from the wrong-but-working camera beats
+    /// no photo at all.
+    func captureVisionPhoto() async throws -> Data {
+        do {
+            return try await vision.capturePhoto()
+        } catch {
+            NSLog("[Hermes] \(visionRoute) capture failed: \(error.localizedDescription)")
+            guard VisionRouting.mayFallBackToPhone(preference: phoneModePreference)
+            else { throw error }
+            switch visionRoute {
+            case .glasses:
+                NSLog("[Hermes] falling back to the iPhone camera for this photo")
+                do {
+                    return try await phoneCameraManager.capturePhoto()
+                } catch {
+                    NSLog("[Hermes] iPhone fallback photo ALSO failed - \(error.localizedDescription)")
+                    throw error
+                }
+            case .phone:
+                // The phone was the route and it failed; the glasses can only
+                // help if a session is actually up.
+                guard deviceSession != nil || lensSession != nil else { throw error }
+                return try await cameraManager.capturePhoto()
+            }
+        }
+    }
+
+    /// Commit to an eye and hold it until `unpinVisionRoute()`.
+    func pinVisionRoute(_ route: VisionRoute) { pinnedVisionRoute = route }
+
+    func unpinVisionRoute() { pinnedVisionRoute = nil }
+
+    /// Mirrors `AutoDeviceSelector.activeDevice`, which lives on an SDK
+    /// object and is therefore invisible to SwiftUI's observation. Reading
+    /// it directly meant the launch screen rendered once while the SDK was
+    /// still discovering, saw nil, and never re-read - so the glasses looked
+    /// unreachable until some *other* state change forced a redraw (toggling
+    /// the eye to Phone and back, which is exactly how this was spotted).
+    private(set) var activeGlassesDevice: DeviceIdentifier?
+
+    @ObservationIgnored private var activeDeviceTask: Task<Void, Never>?
+
+    /// Can a glasses session actually be created right now?
+    ///
+    /// This asks the SDK's OWN selector - the same object `createSession`
+    /// resolves a device through - rather than inferring from pairing state.
+    /// `registrationState == .registered && !devices.isEmpty` was the first
+    /// attempt and it is wrong: glasses that are paired but out of range
+    /// satisfy it while `createSession` throws `noEligibleDevice`, which is
+    /// why Auto never fell back.
+    var glassesAvailable: Bool {
+        activeGlassesDevice != nil
+    }
+
+    /// Everything the SDK will tell us about eligibility, in one line, so a
+    /// device log shows WHY a route was chosen. Diagnostic only.
+    var visionDiagnostics: String {
+        let links = wearables.devices.map { id -> String in
+            guard let device = wearables.deviceForIdentifier(id) else { return "?" }
+            return "\(device.nameOrId())=\(device.linkState)"
+        }.joined(separator: ",")
+        return """
+        VISIONDIAG registration=\(wearables.registrationState) \
+        devices=\(wearables.devices.count) [\(links)] \
+        activeDevice=\(activeGlassesDevice ?? "nil") \
+        glassesAvailable=\(glassesAvailable) route=\(visionRoute) \
+        pref=\(phoneModePreference.rawValue) phoneModeActive=\(phoneModeActive) \
+        voiceSession=\(deviceSession != nil) lensSession=\(lensSession != nil) \
+        connection=\(connectionState) mic=\(micSource.rawValue) \
+        display=\(displayStatus) hudEnabled=\(displayHUDEnabled) \
+        glassesStreaming=\(cameraManager.isStreaming) \
+        captureStream=\(captureStreamRunning) recording=\(conversationCaptureActive)
+        """
+    }
+
+    func logVisionDiagnostics(_ context: String) {
+        NSLog("[Hermes] \(context) \(visionDiagnostics)")
+    }
+
+    /// True while a phone-mode session is running - drives the 5b screen.
+    var phoneModeActive: Bool = false
+
+    /// Set when the phone camera could not start (permission, hardware).
+    /// The session still runs; only visual queries are affected.
+    var phoneCameraError: String?
+
+    /// Latest phone-camera frame, for the 5b feed.
+    var phoneFeedImage: UIImage?
+
+    /// Extra consumers of the running phone-mode stream, keyed so the Lens
+    /// screen and conversation capture can both watch without clobbering
+    /// each other. iOS gives one AVCaptureSession per camera, so a second
+    /// consumer must share rather than start its own.
+    @ObservationIgnored private var visionFrameObservers:
+        [String: (VisionFrame) -> Void] = [:]
+
+    func addVisionFrameObserver(
+        _ key: String, _ handler: @escaping (VisionFrame) -> Void
+    ) {
+        visionFrameObservers[key] = handler
+    }
+
+    func removeVisionFrameObserver(_ key: String) {
+        visionFrameObservers.removeValue(forKey: key)
+    }
+
+    /// True when a shared stream is already running, so a would-be consumer
+    /// should observe it instead of calling `startLiveStream`.
+    var visionStreamIsShared: Bool {
+        visionRoute == .phone && phoneModeActive
+    }
+
+    /// Mirrors `displayManager.content` so SwiftUI can render the simulated
+    /// lens. Updated even with no glasses attached.
+    var lensContent: LensContent = .blank
+
+    /// Auto / Always / Off (design 5a). Auto is the fallback the session
+    /// screen relies on.
+    var phoneModePreference: PhoneModePreference = PhoneModePreference(
+        rawValue: UserDefaults.standard.string(forKey: PhoneModePreference.storageKey) ?? ""
+    ) ?? .auto {
+        didSet {
+            UserDefaults.standard.set(
+                phoneModePreference.rawValue, forKey: PhoneModePreference.storageKey
+            )
+        }
+    }
 
     init(wearables: WearablesInterface) {
         self.wearables = wearables
         self.deviceSelector = AutoDeviceSelector(wearables: wearables)
+        self.activeGlassesDevice = self.deviceSelector.activeDevice
         reloadDirectProviderState()
+        observeActiveDevice()
+        // Wired at init, NOT at session start: the map screen can start a
+        // route with no session running, and with these nil the route
+        // computed fine but nothing received it - the banner just sat on
+        // "No route running" and failures were silent.
+        wireDisplayAndNavigation()
     }
 
     deinit {
         sessionObserverTask?.cancel()
+        activeDeviceTask?.cancel()
+    }
+
+    /// Keep `activeGlassesDevice` live. Eligibility changes whenever the
+    /// glasses wake, sleep, or wander out of Bluetooth range, and every one
+    /// of those must reach the UI without the user poking something.
+    private func observeActiveDevice() {
+        let stream = deviceSelector.activeDeviceStream()
+        activeDeviceTask = Task { [weak self] in
+            for await device in stream {
+                guard let self, !Task.isCancelled else { return }
+                if self.activeGlassesDevice != device {
+                    self.activeGlassesDevice = device
+                    NSLog("[Hermes] activeDevice → \(device ?? "nil")")
+                    // Glasses just became usable - re-check the camera grant
+                    // so the warning under the toggle is true rather than
+                    // whatever was cached at launch.
+                    if device != nil {
+                        await self.refreshGlassesCameraStatus()
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Public API
@@ -316,184 +535,34 @@ final class HermesSessionViewModel {
 
         connectionState = .connecting
 
-        // 1. Create and start a device session with the glasses
-        let session: DeviceSession
-        do {
-            session = try wearables.createSession(deviceSelector: deviceSelector)
-        } catch {
-            show("Failed to create session: \(error.localizedDescription)")
-            connectionState = .disconnected
-            return
-        }
-        deviceSession = session
+        logVisionDiagnostics("startSession")
+        var route = visionRoute
 
-        // Single state observer - use a continuation to signal readiness
-        do {
-            // Boxed flag so both the Task and outer scope can access it
-            let done = OSAllocatedUnfairLock(initialState: false)
-
-            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-                let stateStream = session.stateStream()
-                let errorStream = session.errorStream()
-
-                sessionObserverTask = Task { [weak self] in
-                    await withTaskGroup(of: Void.self) { group in
-                        group.addTask {
-                            for await state in stateStream {
-                                if Task.isCancelled { return }
-                                switch state {
-                                case .started:
-                                    done.withLock { finished in
-                                        if !finished {
-                                            finished = true
-                                            cont.resume()
-                                        }
-                                    }
-                                    await self?.handleSessionState(state)
-                                case .stopped, .stopping:
-                                    done.withLock { finished in
-                                        if !finished {
-                                            finished = true
-                                            cont.resume(
-                                                throwing: DeviceSessionError.unexpectedError(
-                                                    description: "Session stopped unexpectedly"
-                                                )
-                                            )
-                                            return
-                                        }
-                                    }
-                                    await self?.handleSessionState(state)
-                                    return
-                                case .paused:
-                                    await self?.handleSessionState(state)
-                                case .starting, .idle:
-                                    break
-                                @unknown default:
-                                    break
-                                }
-                            }
-                        }
-                        group.addTask {
-                            for await error in errorStream {
-                                if Task.isCancelled { return }
-                                done.withLock { finished in
-                                    if !finished {
-                                        finished = true
-                                        cont.resume(throwing: error)
-                                        return
-                                    }
-                                }
-                                await self?.handleSessionError(error)
-                                return
-                            }
-                        }
-                    }
-                }
-
-                // Now start the session
-                do {
-                    try session.start()
-                } catch {
-                    done.withLock { finished in
-                        if !finished {
-                            finished = true
-                            cont.resume(throwing: error)
-                        }
-                    }
-                    return
-                }
-
-                // Check if already started (race: started before streams iterate)
-                done.withLock { finished in
-                    if !finished && session.state == .started {
-                        finished = true
-                        cont.resume()
-                    }
-                }
+        if route == .glasses, await connectGlassesSession() == false {
+            // Eligibility can lapse between the check and the start, and the
+            // SDK is the only one who knows. Rather than leaving the user at
+            // "No eligible device available" with no way forward, drop to the
+            // phone - unless they explicitly turned that off.
+            guard VisionRouting.mayFallBackToPhone(preference: phoneModePreference) else {
+                connectionState = .disconnected
+                return
             }
-        } catch DeviceSessionError.datAppOnTheGlassesUpdateRequired {
-            show("Glasses app needs update. Please update in Meta AI app.")
-            connectionState = .disconnected
-            return
-        } catch {
-            show("Failed to connect glasses: \(error.localizedDescription)")
-            connectionState = .disconnected
-            return
+            show("Glasses unreachable - using this iPhone as the eye.")
+            route = .phone
         }
 
-        // Session is started - set up Hermes and audio
-        isGlassesConnected = true
-        cameraManager.configure(session: session)
-        cameraManager.onDebug = { [weak self] message in
-            Task { @MainActor [weak self] in
-                self?.apiClient?.sendDebug(message)
-            }
+        pinVisionRoute(route)
+        phoneModeActive = route == .phone
+
+        if route == .phone {
+            // No DeviceSession, no display attach - the phone is the eye and
+            // the lens is simulated on screen (design 5b).
+            await startPhoneVision()
         }
-        // Surface camera permission state early (non-interactive)
-        Task { await ensureCameraPermission(interactive: false) }
 
         // Personal context (time/location/motion/battery/weather) -
         // requests location permission on first use
         contextProvider.start()
-
-        // Display HUD (Ray-Ban Display glasses) - best-effort, shares the
-        // same device session as the camera
-        displayManager.onDebug = { [weak self] message in
-            Task { @MainActor [weak self] in
-                self?.apiClient?.sendDebug(message)
-            }
-        }
-        displayManager.onStatusChanged = { [weak self] newStatus in
-            self?.displayStatus = newStatus
-        }
-        displayManager.onStop = { [weak self] in
-            self?.interruptSpeech()
-        }
-        displayManager.onRepeat = { [weak self] in
-            self?.repeatLastReply()
-        }
-        displayManager.onNewChat = { [weak self] in
-            guard let self else { return }
-            self.startNewConversation()
-            self.displayManager.showNewConversationFlash()
-        }
-        // Navigation: drive the lens + TTS through the existing managers.
-        navigation.onShow = { [weak self] mapURL, title, step, eta in
-            self?.displayManager.showNavigation(
-                mapURL: mapURL, title: title, step: step, eta: eta)
-        }
-        navigation.onSpeak = { [weak self] text in
-            self?.speechSynthesizer.speak(text)
-        }
-        navigation.onNotice = { [weak self] text in
-            self?.show(text)
-        }
-        navigation.onEnd = { [weak self] in
-            guard let self else { return }
-            self.displayManager.clear()
-            self.connectionState = .listening
-            self.speechRecognizer.isSuspended = false
-        }
-        navigation.onDebug = { [weak self] message in
-            Task { @MainActor [weak self] in self?.apiClient?.sendDebug(message) }
-        }
-        displayManager.onStopNavigation = { [weak self] in
-            self?.navigation.stop()
-        }
-        // When a reply/definition dwell ends: restore the navigation map if
-        // still navigating, otherwise blank the lens as usual.
-        displayManager.idleHandler = { [weak self] in
-            guard let self else { return }
-            if self.navigation.isActive {
-                self.navigation.displaySuppressed = false
-                self.navigation.refreshDisplay()
-            } else {
-                self.displayManager.clear()
-            }
-        }
-        // NOTE: the display attaches AFTER audio setup (step 3 below) -
-        // whether the lens is free depends on the actual mic route: the
-        // HFP glasses mic brings up the glasses' call screen over the HUD.
 
         // 2. Connect the brain. Direct mode needs no server at all -
         // skip the bridge entirely.
@@ -583,18 +652,20 @@ final class HermesSessionViewModel {
         client.onCapturePhotoRequested = { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                // Fail fast if the Meta AI camera permission is missing -
-                // the interactive grant needs an app switch, which can't
-                // happen inside the bridge's photo wait.
-                guard await self.ensureCameraPermission(interactive: false) else {
+                // Fail fast if the camera permission is missing - the
+                // interactive grant needs an app switch, which can't happen
+                // inside the bridge's photo wait.
+                guard await self.ensureVisionPermission(interactive: false) else {
                     self.apiClient?.sendPhotoError(
-                        "Camera permission not granted. Tap the Photo test button to grant access via Meta AI."
+                        self.visionRoute == .phone
+                            ? "Camera access is off for Hermes. Turn it on in iOS Settings."
+                            : "Camera permission not granted. Tap the Photo test button to grant access via Meta AI."
                     )
                     return
                 }
                 do {
                     self.displayManager.showPhotoCaptured()
-                    let photo = try await self.cameraManager.capturePhoto()
+                    let photo = try await self.captureVisionPhoto()
                     self.pendingPhoto = photo
                     self.apiClient?.sendPhoto(photo)
                 } catch {
@@ -707,8 +778,11 @@ final class HermesSessionViewModel {
 
         // Attach the lens HUD only when the mic route leaves the lens
         // free - the GLASSES' hands-free link brings up their call screen
-        // (a headset's hands-free link does not)
-        if displayHUDEnabled && !lensBlockedByCallScreen {
+        // (a headset's hands-free link does not). In phone mode there is no
+        // DeviceSession to attach to; the simulated lens reads
+        // `displayManager.content` instead, which updates either way.
+        if let session = deviceSession,
+           displayHUDEnabled, !lensBlockedByCallScreen {
             // stop() first: a standalone Display test may still hold an
             // attachment to its temporary session
             displayManager.stop()
@@ -814,10 +888,10 @@ final class HermesSessionViewModel {
     private func askDirect(_ text: String, context: String? = nil) async {
         var photo: Data?
         if VisualQueryDetector.shouldCapturePhoto(text, lastPhotoAt: lastDirectPhotoAt),
-           isGlassesConnected,
-           await ensureCameraPermission(interactive: false) {
+           hasVisionSource,
+           await ensureVisionPermission(interactive: false) {
             displayManager.showPhotoCaptured()
-            photo = try? await cameraManager.capturePhoto()
+            photo = try? await captureVisionPhoto()
             if photo != nil {
                 lastDirectPhotoAt = Date()
                 pendingPhoto = photo
@@ -847,6 +921,51 @@ final class HermesSessionViewModel {
     func sendNow() {
         speechRecognizer.finalizeNow()
     }
+
+    /// Stop the running route. Same effect as saying "stop navigation" -
+    /// the in-app map screen's End route button calls it.
+    func endNavigation() {
+        navigation.stop()
+    }
+
+    /// Start a route to a place picked from search. Unlike the voice path
+    /// this needs no resolution step - the user already chose which "Blue
+    /// Bottle" they meant.
+    func startNavigation(to place: MKMapItem, mode: TransportMode = .walking) {
+        guard navigationEnabled else {
+            show("Navigation is switched off in Settings.")
+            return
+        }
+        NSLog("[Hermes] startNavigation to \(place.name ?? "?") mode=\(mode)")
+        routeIsBuilding = true
+        // announce: false - the route was started by tapping a map, so a
+        // spoken "navigating to..." is noise. The lens still shows it.
+        navigation.start(place: place, mode: mode, announce: false)
+    }
+
+    /// Answer a multiple-choice reply by picking one of its options. Sent
+    /// as the option's words, so the transcript reads like a conversation
+    /// rather than a row of letters.
+    func chooseReplyOption(_ choice: ReplyChoice) {
+        interruptSpeech()
+        submitQuery(choice.reply)
+    }
+
+    /// The options offered by the most recent reply, if any - drives the
+    /// chips under the last bubble.
+    var replyChoices: [ReplyChoice] {
+        guard case .reply(_, _, let choices) = lensContent else { return [] }
+        return choices
+    }
+
+    /// Switch the running route between walking and driving.
+    func setTransportMode(_ mode: TransportMode) {
+        navigation.setMode(mode)
+    }
+
+    /// True between "route requested" and the first frame (or failure).
+    /// Without it a slow geocode is indistinguishable from a dead tap.
+    var routeIsBuilding: Bool = false
 
     /// Forget the conversation: bridge clears its same-day Hermes session,
     /// the app clears its history on the session_reset confirmation.
@@ -938,6 +1057,249 @@ final class HermesSessionViewModel {
         }
     }
 
+    /// Step 1 for the glasses route: create the DeviceSession, hand the
+    /// camera its session, and surface camera permission. Returns false
+    /// (having already shown the reason) if the glasses can't be reached.
+    private func connectGlassesSession() async -> Bool {
+        // 1. Create and start a device session with the glasses
+        let session: DeviceSession
+        do {
+            session = try wearables.createSession(deviceSelector: deviceSelector)
+        } catch {
+            NSLog("[Hermes] createSession failed: \(error.localizedDescription)")
+            return false
+        }
+        deviceSession = session
+
+        // Single state observer - use a continuation to signal readiness
+        do {
+            // Boxed flag so both the Task and outer scope can access it
+            let done = OSAllocatedUnfairLock(initialState: false)
+
+            try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                let stateStream = session.stateStream()
+                let errorStream = session.errorStream()
+
+                sessionObserverTask = Task { [weak self] in
+                    await withTaskGroup(of: Void.self) { group in
+                        group.addTask {
+                            for await state in stateStream {
+                                if Task.isCancelled { return }
+                                switch state {
+                                case .started:
+                                    done.withLock { finished in
+                                        if !finished {
+                                            finished = true
+                                            cont.resume()
+                                        }
+                                    }
+                                    await self?.handleSessionState(state)
+                                case .stopped, .stopping:
+                                    done.withLock { finished in
+                                        if !finished {
+                                            finished = true
+                                            cont.resume(
+                                                throwing: DeviceSessionError.unexpectedError(
+                                                    description: "Session stopped unexpectedly"
+                                                )
+                                            )
+                                            return
+                                        }
+                                    }
+                                    await self?.handleSessionState(state)
+                                    return
+                                case .paused:
+                                    await self?.handleSessionState(state)
+                                case .starting, .idle:
+                                    break
+                                @unknown default:
+                                    break
+                                }
+                            }
+                        }
+                        group.addTask {
+                            for await error in errorStream {
+                                if Task.isCancelled { return }
+                                done.withLock { finished in
+                                    if !finished {
+                                        finished = true
+                                        cont.resume(throwing: error)
+                                        return
+                                    }
+                                }
+                                await self?.handleSessionError(error)
+                                return
+                            }
+                        }
+                    }
+                }
+
+                // Now start the session
+                do {
+                    try session.start()
+                } catch {
+                    done.withLock { finished in
+                        if !finished {
+                            finished = true
+                            cont.resume(throwing: error)
+                        }
+                    }
+                    return
+                }
+
+                // Check if already started (race: started before streams iterate)
+                done.withLock { finished in
+                    if !finished && session.state == .started {
+                        finished = true
+                        cont.resume()
+                    }
+                }
+            }
+        } catch DeviceSessionError.datAppOnTheGlassesUpdateRequired {
+            show("Glasses app needs update. Please update in Meta AI app.")
+            connectionState = .disconnected
+            return false
+        } catch {
+            // Caller decides whether this is fatal or a cue to use the phone,
+            // so no alert here - just the breadcrumb.
+            NSLog("[Hermes] glasses session failed: \(error.localizedDescription)")
+            deviceSession = nil
+            return false
+        }
+
+        // Session is started - set up Hermes and audio
+        isGlassesConnected = true
+        cameraManager.configure(session: session)
+        cameraManager.onDebug = { [weak self] message in
+            Task { @MainActor [weak self] in
+                self?.apiClient?.sendDebug(message)
+            }
+        }
+        // Surface camera permission state early (non-interactive)
+        Task { await ensureCameraPermission(interactive: false) }
+
+        return true
+    }
+
+    /// Step 1 for the phone route: start the iPhone camera stream that both
+    /// the 5b feed and every visual query read from. A failure here is not
+    /// fatal - the voice loop is the valuable half.
+    private func startPhoneVision() async {
+        phoneCameraError = nil
+        // One AVCaptureSession, possibly two consumers: the 5b feed always,
+        // plus the Lens screen while it is open (see onVisionFrame). Starting
+        // a second capture session for Lens would fail - the camera is taken.
+        phoneCameraManager.onDebug = { [weak self] message in
+            Task { @MainActor [weak self] in self?.apiClient?.sendDebug(message) }
+        }
+        do {
+            try await phoneCameraManager.startLiveStream(
+                onFrame: { [weak self] frame in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.phoneModeActive else { return }
+                        if let image = frame.image { self.phoneFeedImage = image }
+                        for observe in self.visionFrameObservers.values {
+                            observe(frame)
+                        }
+                    }
+                },
+                onError: { [weak self] message in
+                    Task { @MainActor [weak self] in
+                        self?.phoneCameraError = message
+                    }
+                }
+            )
+        } catch {
+            phoneCameraError = error.localizedDescription
+        }
+    }
+
+    /// Display-HUD and navigation callbacks. Wired for BOTH routes: in phone
+    /// mode nothing goes out over BLE, but `displayManager.content` still
+    /// updates, which is what the simulated lens renders.
+    private func wireDisplayAndNavigation() {
+        displayManager.onContentChanged = { [weak self] content in
+            self?.lensContent = content
+        }
+        lensContent = displayManager.content
+        // Display HUD (Ray-Ban Display glasses) - best-effort, shares the
+        // same device session as the camera
+        displayManager.onDebug = { [weak self] message in
+            Task { @MainActor [weak self] in
+                self?.apiClient?.sendDebug(message)
+            }
+        }
+        displayManager.onStatusChanged = { [weak self] newStatus in
+            self?.displayStatus = newStatus
+        }
+        displayManager.onStop = { [weak self] in
+            self?.interruptSpeech()
+        }
+        displayManager.onRepeat = { [weak self] in
+            self?.repeatLastReply()
+        }
+        displayManager.onNewChat = { [weak self] in
+            guard let self else { return }
+            self.startNewConversation()
+            self.displayManager.showNewConversationFlash()
+        }
+        // Navigation: drive the lens + TTS through the existing managers.
+        navigation.onShow = { [weak self] mapURL, title, step, eta, mode in
+            self?.displayManager.showNavigation(
+                mapURL: mapURL, title: title, step: step, eta: eta, mode: mode)
+        }
+        // Walk/Drive on the lens re-routes to the same place.
+        displayManager.onSetTransportMode = { [weak self] mode in
+            self?.navigation.setMode(mode)
+        }
+        // Tapping an option answers as if it had been spoken.
+        displayManager.onChooseReplyOption = { [weak self] choice in
+            self?.chooseReplyOption(choice)
+        }
+        navigation.onRoute = { [weak self] snapshot in
+            self?.routeIsBuilding = false
+            self?.activeRoute = snapshot
+        }
+        navigation.onSpeak = { [weak self] text in
+            self?.speechSynthesizer.speak(text)
+        }
+        navigation.onNotice = { [weak self] text in
+            self?.show(text)
+        }
+        navigation.onEnd = { [weak self] in
+            guard let self else { return }
+            self.activeRoute = nil
+            self.routeIsBuilding = false
+            self.displayManager.clear()
+            // Only hand the mic back if there was a session to hand it back
+            // to - a map-screen route can run with nothing else going on.
+            guard self.connectionState != .disconnected else { return }
+            self.connectionState = .listening
+            self.speechRecognizer.isSuspended = false
+        }
+        navigation.onDebug = { [weak self] message in
+            Task { @MainActor [weak self] in self?.apiClient?.sendDebug(message) }
+        }
+        displayManager.onStopNavigation = { [weak self] in
+            self?.navigation.stop()
+        }
+        // When a reply/definition dwell ends: restore the navigation map if
+        // still navigating, otherwise blank the lens as usual.
+        displayManager.idleHandler = { [weak self] in
+            guard let self else { return }
+            if self.navigation.isActive {
+                self.navigation.displaySuppressed = false
+                self.navigation.refreshDisplay()
+            } else {
+                self.displayManager.clear()
+            }
+        }
+        // NOTE: the display attaches AFTER audio setup (step 3 below) -
+        // whether the lens is free depends on the actual mic route: the
+        // HFP glasses mic brings up the glasses' call screen over the HUD.
+
+    }
+
     // MARK: - Social encounters
 
     /// "remember this person": start the photo capture and immediately begin
@@ -955,12 +1317,25 @@ final class HermesSessionViewModel {
         displayManager.showEncounterPrompt()
 
         encounterPhotoTask = Task { @MainActor [weak self] in
-            guard let self, self.isGlassesConnected,
-                  await self.ensureCameraPermission(interactive: false)
-            else { return nil }
+            guard let self else { return nil }
+            self.logVisionDiagnostics("encounter-photo")
+            guard self.hasVisionSource else {
+                NSLog("[Hermes] encounter: no vision source - photo skipped")
+                return nil
+            }
+            guard await self.ensureVisionPermission(interactive: false) else {
+                NSLog("[Hermes] encounter: \(self.visionRoute) camera permission denied - photo skipped")
+                if self.visionRoute == .glasses {
+                    self.show(
+                        "Saved the note, but the glasses camera isn't allowed yet. "
+                        + "Grant it in Settings → Devices → Glasses camera."
+                    )
+                }
+                return nil
+            }
             // Note-only is a fine outcome: never lose the encounter over a
             // camera failure.
-            return try? await self.cameraManager.capturePhoto()
+            return try? await self.captureVisionPhoto()
         }
 
         // Audible "your turn" cue, unless the lens is doing the talking.
@@ -1087,8 +1462,8 @@ final class HermesSessionViewModel {
     /// stream (the same machinery as the Lens view, sharing
     /// HermesCameraManager's single-live-stream slot).
     private func startCaptureVision() async {
-        guard isGlassesConnected,
-              await ensureCameraPermission(interactive: false) else { return }
+        guard hasVisionSource,
+              await ensureVisionPermission(interactive: false) else { return }
 
         let detector = ObjectDetector()
         do {
@@ -1107,16 +1482,34 @@ final class HermesSessionViewModel {
             }
         }
 
+        // Phone mode already streams for the 5b feed, and the camera cannot
+        // be opened twice - observe those frames instead of competing.
+        if visionStreamIsShared {
+            addVisionFrameObserver(Self.captureObserverKey) { [weak self] frame in
+                MainActor.assumeIsolated {
+                    guard let self, self.conversationCaptureActive else { return }
+                    if let image = frame.image { self.captureLatestFrame = image }
+                    if let buffer = frame.pixelBuffer {
+                        self.captureDetector?.process(buffer)
+                    }
+                }
+            }
+            if !conversationCaptureActive {
+                removeVisionFrameObserver(Self.captureObserverKey)
+            }
+            return
+        }
+
         do {
-            try await cameraManager.startLiveStream(
+            try await vision.startLiveStream(
                 onFrame: { [weak self] frame in
-                    // SDK thread - decode then hop to main.
-                    let image = frame.makeUIImage()
-                    let pixelBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer)
+                    // Capture thread - hop to main before touching state.
                     Task { @MainActor [weak self] in
                         guard let self, self.conversationCaptureActive else { return }
-                        if let image { self.captureLatestFrame = image }
-                        if let pixelBuffer { self.captureDetector?.process(pixelBuffer) }
+                        if let image = frame.image { self.captureLatestFrame = image }
+                        if let buffer = frame.pixelBuffer {
+                            self.captureDetector?.process(buffer)
+                        }
                     }
                 },
                 onError: { _ in }  // stream death degrades to transcript-only
@@ -1126,7 +1519,7 @@ final class HermesSessionViewModel {
             // up - stopCaptureVision saw captureStreamRunning == false then,
             // so the just-started stream is ours to tear down.
             if !conversationCaptureActive {
-                cameraManager.stopLiveStream()
+                vision.stopLiveStream()
                 captureStreamRunning = false
             }
         } catch {
@@ -1206,11 +1599,17 @@ final class HermesSessionViewModel {
         captureDetector = nil
         captureDwell = nil
         captureLatestFrame = nil
+        // Only tear down a stream this capture started. In phone mode it is
+        // the session's stream feeding the 5b view - stopping it would blank
+        // the screen the user is looking at.
+        removeVisionFrameObserver(Self.captureObserverKey)
         if captureStreamRunning {
-            cameraManager.stopLiveStream()
+            vision.stopLiveStream()
             captureStreamRunning = false
         }
     }
+
+    private static let captureObserverKey = "conversation-capture"
 
     /// People screen: read-through to the store (the view holds no state of
     /// its own; `encounterRevision` tells it when to re-read).
@@ -1284,20 +1683,36 @@ final class HermesSessionViewModel {
     }
 
     /// Banner chip: cycle iPhone → Glasses → Headset → iPhone.
+    /// Tap-to-switch walks to the next route that ACTUALLY takes, silently
+    /// skipping past any that don't.
+    ///
+    /// It cannot pre-filter by asking which devices exist: HFP ports only
+    /// appear in `availableInputs` once the audio category allows Bluetooth,
+    /// and the iPhone-mic path deliberately does not allow it (otherwise iOS
+    /// re-routes input to the glasses and kills the tap). Asking anyway is
+    /// what made connected glasses report "not available". So it tries, and
+    /// keeps walking until something sticks - no popup either way.
     func toggleMicSource() async {
         let all = MicSource.allCases
-        let index = all.firstIndex(of: micSource) ?? 0
-        await setMicSource(all[(index + 1) % all.count])
+        let start = all.firstIndex(of: micSource) ?? 0
+        for step in 1...all.count {
+            let candidate = all[(start + step) % all.count]
+            if await setMicSource(candidate, announceFallback: false) { return }
+        }
     }
 
     /// Select a mic source. Persists the preference and, when a session is
     /// live, reconfigures capture and restarts the recognizer (new route =
     /// new buffer format).
-    func setMicSource(_ target: MicSource) async {
+    /// - Returns: true when the requested route is the one now in use.
+    ///   False means it didn't materialise and the iPhone mic is live.
+    @discardableResult
+    func setMicSource(_ target: MicSource, announceFallback: Bool = true) async -> Bool {
         micSource = target
         UserDefaults.standard.set(target.rawValue, forKey: "mic_source")
 
-        guard connectionState != .disconnected else { return }
+        // Nothing to route yet - the choice is remembered for next session.
+        guard connectionState != .disconnected else { return true }
 
         audioManager.stopCapture()
         do {
@@ -1305,12 +1720,20 @@ final class HermesSessionViewModel {
                 route: target.captureRoute
             )
             speechRecognizer.restartCycle()
-            if target == .glasses && !bluetoothActive {
+            if announceFallback, target == .glasses, !bluetoothActive {
                 show("Glasses mic not available - using iPhone mic")
             }
-            if target == .headset && !bluetoothActive {
+            if announceFallback, target == .headset, !bluetoothActive {
                 show("No headset mic found - using iPhone mic. Connect AirPods or another Bluetooth headset first.")
             }
+            // The route can differ from what was asked for; keep the label
+            // honest rather than claiming a device that didn't answer.
+            if !bluetoothActive, target != .phone {
+                micSource = .phone
+                UserDefaults.standard.set(MicSource.phone.rawValue, forKey: "mic_source")
+                return false
+            }
+            return true
             // HUD ⇄ GLASSES hands-free mic are mutually exclusive: the
             // glasses show their call screen while their hands-free link
             // is active. Headset mode leaves the lens free.
@@ -1325,6 +1748,7 @@ final class HermesSessionViewModel {
         } catch {
             show("Mic switch failed: \(error.localizedDescription)")
             endSession()
+            return false
         }
     }
 
@@ -1357,6 +1781,15 @@ final class HermesSessionViewModel {
         apiClient?.disconnect()
         apiClient = nil
         cameraManager.reset()
+        // Phone mode: the camera runs for the whole session, so it stops
+        // with it. Leaving it live would keep the torch-hot preview going
+        // behind a screen that is no longer showing it.
+        phoneCameraManager.stopLiveStream()
+        unpinVisionRoute()
+        phoneModeActive = false
+        phoneFeedImage = nil
+        phoneCameraError = nil
+        lensContent = .blank
         // A half-finished encounter dies with the session; the photo alone
         // isn't worth a note-less entry the user never asked for.
         encounterTimeoutTask?.cancel()
@@ -1403,7 +1836,9 @@ final class HermesSessionViewModel {
 
         lensSession = session
         cameraManager.configure(session: session)
-        _ = await ensureCameraPermission(interactive: false)
+        if await ensureCameraPermission(interactive: false) == false {
+            NSLog("[Hermes] glasses camera grant MISSING - streams will fail")
+        }
     }
 
     /// Tear down the Lens-owned camera session. No-op when the camera is
@@ -1484,27 +1919,78 @@ final class HermesSessionViewModel {
         }
     }
 
-    /// Glasses camera alone - no Hermes involved. Runs the interactive
-    /// permission flow (opens Meta AI) if camera access was never granted.
+    /// Run `body` with a camera session available, creating a temporary
+    /// camera-only one if nothing is running and tearing it down after.
+    /// The test panel is for diagnosing a broken setup - insisting on a
+    /// working session first is exactly backwards.
+    private func withCameraSession<T>(
+        _ body: () async throws -> T
+    ) async throws -> T {
+        let borrowed = deviceSession == nil && lensSession == nil
+        try await ensureCameraSession()
+        defer { if borrowed { releaseCameraSession() } }
+        return try await body()
+    }
+
+    /// Camera alone - no Hermes involved. Runs the interactive permission
+    /// flow (opens Meta AI) if camera access was never granted, and brings
+    /// its own session so it works from a cold start.
     func testPhoto() async {
         await runTest("Photo") { [self] in
-            guard isGlassesConnected else {
-                throw TestFailure("Start a session first (needs glasses)")
+            if visionRoute == .glasses {
+                guard await ensureCameraPermission(interactive: true) else {
+                    throw TestFailure("Camera permission denied in Meta AI app")
+                }
             }
-            guard await ensureCameraPermission(interactive: true) else {
-                throw TestFailure("Camera permission denied in Meta AI app")
+            let photo = try await withCameraSession {
+                try await captureVisionPhoto()
             }
-            let photo = try await cameraManager.capturePhoto()
             pendingPhoto = photo
             addTurn(
                 userText: "[Test Photo]",
-                agentText: "Captured \(photo.count / 1024) KB from glasses camera"
+                agentText: "Captured \(photo.count / 1024) KB from the \(vision.sourceLabel)"
             )
         }
     }
 
     /// Check (and optionally request via Meta AI) the glasses camera
     /// permission. The interactive request switches to the Meta AI app.
+    /// The Meta AI glasses-camera grant, requested interactively (it
+    /// app-switches to Meta AI). Nothing in the normal flow ever asked for
+    /// this - only the Photo test button did - so a user who never pressed
+    /// that button had every glasses camera feature fail: Lens with "camera
+    /// unavailable", "remember this person" with a note and no photo.
+    @discardableResult
+    func requestGlassesCameraAccess() async -> Bool {
+        await ensureCameraPermission(interactive: true)
+    }
+
+    /// Asked once, the moment glasses finish pairing. This grant is what
+    /// makes the glasses camera work at all, and leaving it to be discovered
+    /// via a failure was the single worst bug in this app: Lens said "camera
+    /// unavailable" and "remember this person" saved notes with no photo,
+    /// with nothing anywhere explaining why.
+    func ensureGlassesCameraAfterPairing() async {
+        guard !askedForCameraGrant else { return }
+        askedForCameraGrant = true
+        if await glassesCameraGranted() == false {
+            await requestGlassesCameraAccess()
+        }
+    }
+
+    @ObservationIgnored private var askedForCameraGrant = false
+
+    /// Non-interactive refresh, so the UI can warn before anything fails.
+    func refreshGlassesCameraStatus() async {
+        guard wearables.registrationState == .registered else { return }
+        _ = await glassesCameraGranted()
+    }
+
+    /// Cheap check for "will the glasses camera work at all".
+    func glassesCameraGranted() async -> Bool {
+        await ensureCameraPermission(interactive: false)
+    }
+
     func ensureCameraPermission(interactive: Bool) async -> Bool {
         do {
             let status = try await wearables.checkPermissionStatus(.camera)
@@ -1529,7 +2015,7 @@ final class HermesSessionViewModel {
     func testQuery() async {
         await runTest("Query") { [self] in
             guard backend == .direct || apiClient?.isConnected == true else {
-                throw TestFailure("Start a session first (needs bridge)")
+                throw TestFailure("Bridge mode needs a running session - or switch to Direct")
             }
             submitQuery("Respond with exactly: OK")
         }
@@ -1554,11 +2040,12 @@ final class HermesSessionViewModel {
     func testVisualQuery() async {
         await runTest("Visual") { [self] in
             guard backend == .direct || apiClient?.isConnected == true else {
-                throw TestFailure("Start a session first (needs bridge)")
+                throw TestFailure("Bridge mode needs a running session - or switch to Direct")
             }
-            guard isGlassesConnected else {
-                throw TestFailure("Glasses not connected")
-            }
+            // Warm a camera session so the capture inside submitQuery has one
+            // to use; the query itself outlives this call, so the session is
+            // kept until the answer lands rather than released here.
+            try await ensureCameraSession()
             submitQuery("What am I looking at? Answer in one short sentence.")
         }
     }

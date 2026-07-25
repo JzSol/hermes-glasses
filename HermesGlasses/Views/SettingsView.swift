@@ -2,10 +2,15 @@
 // SettingsView.swift
 //
 // Settings as a hub of sub-pages rather than one long scroll (see
-// docs/superpowers/specs/2026-07-20-settings-redesign-design.md). The hub
-// shows a glasses status card and one row per area, each carrying the
-// value a tester most wants to see at a glance; the detail lives one tap
-// deeper.
+// docs/superpowers/specs/2026-07-20-settings-redesign-design.md), styled
+// to screen 4b of the UI design: a warm-black device card on top, then
+// grouped terracotta-tiled rows - ONE accent, never a rainbow of system
+// colours.
+//
+// Turn 5 of the design adds two pages here: Devices (5a), which lists
+// what's paired plus what's coming with capability chips, and Developer
+// (5d), which now owns the subsystem test panel that used to float over
+// the session screen.
 //
 // Text the user types (bridge endpoint, API key) is owned HERE and passed
 // down by binding, so the existing "swipe-dismiss must not discard typed
@@ -14,13 +19,22 @@
 
 import SwiftUI
 
+/// Sub-pages that can be opened directly from elsewhere in the app.
+enum SettingsRoute: Hashable {
+    case devices
+}
+
 struct SettingsView: View {
     let hermesVM: HermesSessionViewModel
     let wearablesVM: WearablesViewModel
+    /// Push this page as soon as Settings appears.
+    var initialRoute: SettingsRoute? = nil
+
+    @State private var path: [SettingsRoute] = []
 
     @State private var endpoint: String = ""
     @State private var providerKey: String = ""
-    @AppStorage("show_test_panel") private var showTestPanel: Bool = true
+    @State private var showObjectLog: Bool = false
     @AppStorage(AppearanceMode.storageKey) private var appearanceRaw =
         AppearanceMode.system.rawValue
     @Environment(\.dismiss) private var dismiss
@@ -30,132 +44,170 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    NavigationLink {
-                        GlassesStatusPage(hermesVM: hermesVM, wearablesVM: wearablesVM)
-                    } label: {
-                        GlassesStatusCard(hermesVM: hermesVM, wearablesVM: wearablesVM)
+        NavigationStack(path: $path) {
+            HermesScrollPage {
+                NavigationLink(value: SettingsRoute.devices) {
+                    HermesDeviceCard(
+                        title: deviceTitle,
+                        status: deviceStatus,
+                        dot: hermesVM.isGlassesConnected
+                            ? HermesTheme.online : .gray
+                    ) {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(HermesTheme.cream.opacity(0.35))
                     }
                 }
+                .buttonStyle(.plain)
 
-                Section {
-                    NavigationLink {
+                HermesSection {
+                    navRow("Assistant", icon: "brain", value: assistantValue) {
                         AssistantPage(
                             hermesVM: hermesVM,
                             endpoint: $endpoint,
                             providerKey: $providerKey
                         )
-                    } label: {
-                        row("Assistant", "brain", value: assistantValue)
                     }
-                    NavigationLink {
+                    HermesDivider()
+                    navRow("Voice & Microphone", icon: "mic",
+                           value: hermesVM.micSource.shortLabel) {
                         VoicePage(hermesVM: hermesVM)
-                    } label: {
-                        row("Voice & Microphone", "mic", value: hermesVM.micSource.shortLabel)
                     }
-                    NavigationLink {
+                    HermesDivider()
+                    navRow("Glasses Display", icon: "eyeglasses",
+                           value: hermesVM.displayHUDEnabled ? "On" : "Off") {
                         DisplayPage(hermesVM: hermesVM)
-                    } label: {
-                        row("Glasses Display", "eyeglasses",
-                            value: hermesVM.displayHUDEnabled ? "On" : "Off")
                     }
-                    NavigationLink {
+                    HermesDivider()
+                    navRow("Appearance", icon: "circle.lefthalf.filled",
+                           value: appearance.label) {
                         AppearancePage()
-                    } label: {
-                        row("Appearance", "circle.lefthalf.filled",
-                            value: appearance.label)
                     }
                 }
 
-                Section {
-                    NavigationLink {
+                HermesSection {
+                    navRow("People", icon: "person.crop.circle",
+                           value: hermesVM.socialNotesEnabled ? "On" : "Off") {
                         PeoplePage(hermesVM: hermesVM)
-                    } label: {
-                        row("People", "person.crop.rectangle.stack",
-                            value: hermesVM.socialNotesEnabled ? "On" : "Off")
                     }
-                    NavigationLink {
+                    HermesDivider()
+                    // Object Log owns its own NavigationStack + Done button,
+                    // so it's presented, not pushed.
+                    Button {
+                        showObjectLog = true
+                    } label: {
+                        HermesRow(
+                            "Object Log",
+                            icon: "camera.viewfinder",
+                            value: "\(hermesVM.allLensSessions().count)"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    HermesDivider()
+                    navRow("Navigation & Maps", icon: "mappin.and.ellipse",
+                           value: hermesVM.navigationEnabled ? "On" : "Off") {
                         NavigationPage(hermesVM: hermesVM)
-                    } label: {
-                        row("Navigation & Maps", "map",
-                            value: hermesVM.navigationEnabled ? "On" : "Off")
                     }
-                    NavigationLink {
+                    HermesDivider()
+                    navRow("Context & Privacy", icon: "lock",
+                           value: hermesVM.contextEnabled ? "Sharing" : "Off") {
                         ContextPage(hermesVM: hermesVM)
-                    } label: {
-                        row("Context & Privacy", "location",
-                            value: hermesVM.contextEnabled ? "Sharing" : "Off")
                     }
                 }
 
                 // Testers land here first: everything you can say, in one
                 // place, generated from the detectors themselves.
-                Section {
-                    NavigationLink {
+                HermesSection {
+                    navRow("What can I say?", icon: "text.bubble", value: nil) {
                         VoiceCommandsPage()
-                    } label: {
-                        row("What can I say?", "text.bubble", value: nil)
+                    }
+                    HermesDivider()
+                    navRow("Developer", icon: "wrench.and.screwdriver",
+                           mutedIcon: true, value: "Test panel") {
+                        DeveloperPage(hermesVM: hermesVM)
                     }
                 }
 
-                Section {
-                    NavigationLink {
-                        DeveloperPage(showTestPanel: $showTestPanel)
-                    } label: {
-                        row("Developer", "hammer",
-                            value: showTestPanel ? "Test panel on" : nil)
-                    }
+                VStack(spacing: 4) {
+                    HermesLockup(height: 13, showsSuffix: true)
+                    Text("Version \(Self.appVersion) · talk to your AI from your Meta Ray-Ban glasses.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
                 }
-
-                Section {
-                    VStack(spacing: 4) {
-                        Text("Hermes Glasses 1.0")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text("Talk to your AI from your Meta Ray-Ban glasses.")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .listRowBackground(Color.clear)
-                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 8)
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(HermesTheme.groupedCanvas, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") {
                         commitTypedValues()
                         dismiss()
                     }
+                    .fontWeight(.semibold)
                 }
             }
-            .onAppear { endpoint = hermesVM.hermesEndpoint }
+            .navigationDestination(for: SettingsRoute.self) { route in
+                switch route {
+                case .devices:
+                    DevicesPage(hermesVM: hermesVM, wearablesVM: wearablesVM)
+                }
+            }
+            .onAppear {
+                endpoint = hermesVM.hermesEndpoint
+                if let initialRoute, path.isEmpty { path = [initialRoute] }
+            }
             .onDisappear(perform: commitTypedValues)
+            .sheet(isPresented: $showObjectLog) {
+                ObjectLogView(hermesVM: hermesVM)
+            }
         }
         .tint(HermesTheme.accent)
     }
 
-    private var assistantValue: String {
-        hermesVM.backend == .direct ? hermesVM.directProvider.displayName : "Bridge"
+    // MARK: - Hub rows
+
+    private func navRow<Destination: View>(
+        _ title: String,
+        icon: String,
+        mutedIcon: Bool = false,
+        value: String?,
+        @ViewBuilder destination: @escaping () -> Destination
+    ) -> some View {
+        NavigationLink {
+            destination()
+        } label: {
+            HermesRow(title, icon: icon, mutedIcon: mutedIcon, value: value)
+        }
+        .buttonStyle(.plain)
     }
 
-    private func row(_ title: String, _ icon: String, value: String?) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 15))
-                .foregroundStyle(HermesTheme.accent)
-                .frame(width: 24)
-            Text(title)
-            Spacer(minLength: 8)
-            if let value {
-                Text(value)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
+    /// Read from the bundle rather than hard-coded, so the footer can't
+    /// drift from what was actually shipped.
+    static var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+
+    private var deviceTitle: String {
+        wearablesVM.glasses.first?.name ?? "Ray-Ban Display"
+    }
+
+    private var deviceStatus: String {
+        let connection = hermesVM.isGlassesConnected ? "Connected" : "Not connected"
+        let count = wearablesVM.devices.count
+        return "\(connection) · \(count) device\(count == 1 ? "" : "s")"
+    }
+
+    private var assistantValue: String {
+        guard hermesVM.backend == .direct else { return "Bridge" }
+        let model = hermesVM.directProvider.curatedModels
+            .first { $0.id == hermesVM.directModel }?.label
+        guard let model else { return hermesVM.directProvider.displayName }
+        // "Direct · Opus" - provider is implied by the model name.
+        return "Direct · \(model)"
     }
 
     /// Swipe-dismiss must not silently discard typed values.
@@ -168,56 +220,198 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Status card
+// MARK: - Devices (5a)
 
-private struct GlassesStatusCard: View {
+/// Hardware is a list, not a fact: what's paired, what the phone can
+/// stand in for, and what's coming. Capability chips - not model names -
+/// are what the rest of the app switches on.
+private struct DevicesPage: View {
     let hermesVM: HermesSessionViewModel
     let wearablesVM: WearablesViewModel
 
+    /// Models the DAT SDK doesn't reach yet. Listed so the shape of the
+    /// screen doesn't change when one of them lands.
+    private static let upcoming: [(name: String, detail: String)] = [
+        ("Even Realities G1", "Green HUD · no camera"),
+        ("Even Realities G2", "Display · camera · audio"),
+        ("Brilliant Labs Halo", "Display · camera · open SDK"),
+        ("XREAL One", "Large display · tethered"),
+    ]
+
     var body: some View {
-        HStack(spacing: 13) {
-            ZStack {
-                Circle()
-                    .fill(HermesTheme.accent.opacity(0.14))
-                    .frame(width: 42, height: 42)
-                Image(systemName: "eyeglasses")
-                    .font(.system(size: 19))
-                    .foregroundStyle(HermesTheme.accent)
+        HermesScrollPage {
+            if let active = wearablesVM.glasses.first {
+                HermesDeviceCard(
+                    title: active.name,
+                    status: hermesVM.isGlassesConnected
+                        ? "In use" : "Paired · not connected",
+                    dot: hermesVM.isGlassesConnected
+                        ? HermesTheme.online : .gray,
+                    chips: active.capabilities
+                ) {
+                    NavigationLink {
+                        GlassesStatusPage(
+                            hermesVM: hermesVM, wearablesVM: wearablesVM
+                        )
+                    } label: {
+                        Text("Manage")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(HermesTheme.cream)
+                            .padding(.horizontal, 12)
+                            .frame(height: 28)
+                            .background(HermesTheme.cream.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                HermesSection(
+                    header: "No glasses paired",
+                    footer: "Pairing finishes in the Meta AI app."
+                ) {
+                    Button {
+                        wearablesVM.connectGlasses()
+                    } label: {
+                        HermesRow(
+                            "Connect glasses",
+                            icon: "eyeglasses",
+                            value: registrationText
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Ray-Ban Display")
-                    .font(.system(size: 16, weight: .semibold))
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(hermesVM.isGlassesConnected ? .green : .secondary)
-                        .frame(width: 7, height: 7)
-                    Text(statusLine)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+
+            HermesSection(
+                header: "Glasses camera",
+                footer: "Meta AI grants the glasses camera separately from iOS. Without it, Lens and \"remember this person\" get no picture - the most common reason a photo goes missing."
+            ) {
+                Button {
+                    Task { await hermesVM.requestGlassesCameraAccess() }
+                } label: {
+                    HermesRow(
+                        title: "Camera access",
+                        showsChevron: false
+                    ) {
+                        switch hermesVM.cameraPermissionGranted {
+                        case .some(true):
+                            HermesBadge(text: "Allowed", prominent: true)
+                        case .some(false), .none:
+                            Text("Allow")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(HermesTheme.accentOnCard)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+
+            HermesSection(
+                header: "No glasses on you?",
+                footer: hermesVM.phoneModePreference.explanation
+            ) {
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 8) {
+                            Text("Use this iPhone")
+                                .font(.system(size: 16, weight: .semibold))
+                            if hermesVM.visionRoute == .phone {
+                                HermesBadge(text: "Active", prominent: true)
+                            }
+                        }
+                        Text("Phone camera as the eye, simulated lens on screen")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Picker("Phone mode", selection: Binding(
+                        get: { hermesVM.phoneModePreference },
+                        set: { hermesVM.phoneModePreference = $0 }
+                    )) {
+                        ForEach(PhoneModePreference.allCases) { preference in
+                            Text(preference.label).tag(preference)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+
+                HermesDivider()
+
+                HStack(spacing: 8) {
+                    HermesChip(text: "Camera")
+                    HermesChip(text: "Audio")
+                    HermesChip(text: "Simulated display", available: false)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+            }
+
+            if !wearablesVM.glasses.isEmpty {
+                HermesSection(header: "Paired") {
+                    ForEach(Array(wearablesVM.glasses.enumerated()), id: \.element.id) { index, device in
+                        if index > 0 { HermesDivider() }
+                        pairedRow(device)
+                    }
+                }
+            }
+
+            HermesSection(
+                header: "Add glasses",
+                footer: "Hermes adapts to whatever the device can do - features switch off, screens don't disappear."
+            ) {
+                ForEach(Array(Self.upcoming.enumerated()), id: \.element.name) { index, model in
+                    if index > 0 { HermesDivider() }
+                    HermesRow(
+                        title: model.name,
+                        subtitle: model.detail,
+                        showsChevron: false
+                    ) {
+                        HermesBadge(text: "Soon")
+                    }
+                    .opacity(0.6)
                 }
             }
         }
-        .padding(.vertical, 4)
+        .navigationTitle("Devices")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
-    private var statusLine: String {
-        let connection = hermesVM.isGlassesConnected ? "Connected" : "Not connected"
-        let count = wearablesVM.devices.count
-        return "\(connection) · \(registrationText) · \(count) device\(count == 1 ? "" : "s")"
+    private func pairedRow(_ device: GlassesDevice) -> some View {
+        HStack(spacing: 12) {
+            HermesIconTile(systemName: "eyeglasses", size: 32)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(device.name)
+                    .font(.system(size: 16))
+                    .kerning(-0.4)
+                HStack(spacing: 5) {
+                    ForEach(device.capabilitySummary, id: \.label) { chip in
+                        HermesChip(text: chip.label, available: chip.available, size: 10)
+                    }
+                }
+            }
+            Spacer(minLength: 8)
+            Text(device.isConnected ? "On" : "Off")
+                .font(.system(size: 15))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
     }
 
     private var registrationText: String {
         switch wearablesVM.registrationState {
-        case .notRegistered: return "Not registered"
-        case .registering: return "Registering…"
-        case .registered: return "Registered"
+        case .notRegistered: return "Not paired"
+        case .registering: return "Pairing…"
+        case .registered: return "Paired"
         case .unavailable: return "Unavailable"
         }
     }
 }
 
-// MARK: - Glasses
+// MARK: - Glasses status
 
 private struct GlassesStatusPage: View {
     let hermesVM: HermesSessionViewModel
@@ -242,6 +436,7 @@ private struct GlassesStatusPage: View {
                 }
             }
         }
+        .hermesFormStyle()
         .navigationTitle("Glasses")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -277,8 +472,10 @@ private struct GlassesStatusPage: View {
     }
 }
 
-// MARK: - Assistant
+// MARK: - Assistant (5c)
 
+/// Direct API is the default brain; the Mac bridge drops to an advanced
+/// route that needs a machine awake on the same network.
 private struct AssistantPage: View {
     let hermesVM: HermesSessionViewModel
     @Binding var endpoint: String
@@ -289,105 +486,29 @@ private struct AssistantPage: View {
     @State private var presetsVersion: Int = 0  // bump to refresh list
 
     var body: some View {
-        Form {
-            Section {
-                Picker("Backend", selection: Binding(
-                    get: { hermesVM.backend }, set: { hermesVM.backend = $0 })) {
-                    ForEach(AssistantBackend.allCases, id: \.self) { Text($0.label).tag($0) }
-                }
-                if hermesVM.backend == .direct {
-                    Picker("Provider", selection: Binding(
-                        get: { hermesVM.directProviderID },
-                        set: { hermesVM.directProviderID = $0 })) {
-                        ForEach(AIProviderRegistry.all, id: \.id) { p in
-                            Text(p.displayName).tag(p.id)
-                        }
-                    }
-                    if hermesVM.directProvider.allowsCustomBaseURL {
-                        TextField("Base URL", text: Binding(
-                            get: { hermesVM.directBaseURL },
-                            set: { hermesVM.directBaseURL = $0 }))
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .keyboardType(.URL)
-                    }
-                    Picker("Model", selection: Binding(
-                        get: { hermesVM.directModel },
-                        set: { hermesVM.directModel = $0 })) {
-                        ForEach(hermesVM.directProvider.curatedModels, id: \.id) { m in
-                            Text(m.label).tag(m.id)
-                        }
-                        // Allow a stored custom model to remain selectable
-                        if !hermesVM.directProvider.curatedModels.contains(where: { $0.id == hermesVM.directModel }) {
-                            Text(hermesVM.directModel).tag(hermesVM.directModel)
-                        }
-                    }
-                    if hermesVM.directProvider.requiresKey {
-                        SecureField("\(hermesVM.directProvider.displayName) API key",
-                                    text: $providerKey)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .onSubmit {
-                                hermesVM.setProviderKey(providerKey)
-                                providerKey = ""
-                            }
-                        LabeledContent("Key status",
-                            value: hermesVM.hasDirectKey ? "Saved in Keychain" : "Not set")
-                    }
-                }
-            } footer: {
-                if hermesVM.backend == .direct {
-                    Text("Direct mode needs no server - the phone calls \(hermesVM.directProvider.displayName) with your key. Applies from the next session.")
-                }
+        HermesScrollPage {
+            HermesSection(header: "Brain") {
+                brainRow(
+                    .direct,
+                    title: "Direct API",
+                    badge: "Default",
+                    prominent: true,
+                    detail: "Straight to \(hermesVM.directProvider.displayName) · works anywhere"
+                )
+                HermesDivider()
+                brainRow(
+                    .bridge,
+                    title: "Mac bridge",
+                    badge: "Advanced",
+                    prominent: false,
+                    detail: "Tools + local files · needs your Mac awake"
+                )
             }
 
-            // Only relevant when the bridge is actually in play.
-            if hermesVM.backend == .bridge {
-                Section {
-                    ForEach(hermesVM.endpointPresets, id: \.name) { preset in
-                        Button {
-                            endpoint = preset.url
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(preset.name)
-                                        .foregroundStyle(.primary)
-                                    Text(preset.url)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                Spacer()
-                                if endpoint == preset.url {
-                                    Image(systemName: "checkmark")
-                                        .foregroundStyle(HermesTheme.accent)
-                                }
-                            }
-                        }
-                        .swipeActions {
-                            Button("Delete", role: .destructive) {
-                                hermesVM.deletePreset(name: preset.name)
-                                presetsVersion += 1
-                            }
-                        }
-                    }
-                    .id(presetsVersion)
-
-                    TextField("WebSocket URL", text: $endpoint)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .font(.system(size: 15, design: .monospaced))
-
-                    Button("Save current URL as preset…") {
-                        presetName = ""
-                        showSavePreset = true
-                    }
-                    .disabled(endpoint.trimmingCharacters(in: .whitespaces).isEmpty)
-                } header: {
-                    Text("Bridge connection")
-                } footer: {
-                    Text("Bridge endpoint used in Bridge mode. Tap a preset to select it.")
-                }
+            if hermesVM.backend == .direct {
+                directSection
+            } else {
+                bridgeSection
             }
         }
         .navigationTitle("Assistant")
@@ -402,6 +523,211 @@ private struct AssistantPage: View {
         } message: {
             Text("Saves the current URL so you can switch with one tap.")
         }
+    }
+
+    // MARK: Brain selector
+
+    private func brainRow(
+        _ backend: AssistantBackend,
+        title: String,
+        badge: String,
+        prominent: Bool,
+        detail: String
+    ) -> some View {
+        let selected = hermesVM.backend == backend
+        return Button {
+            hermesVM.backend = backend
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text(title)
+                            .font(.system(size: 16, weight: selected ? .semibold : .regular))
+                            .foregroundStyle(.primary)
+                        HermesBadge(text: badge, prominent: prominent)
+                    }
+                    Text(detail)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 19))
+                        .foregroundStyle(HermesTheme.accent)
+                } else {
+                    Circle()
+                        .strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1.5)
+                        .frame(width: 19, height: 19)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .frame(minHeight: 62)
+            .background(
+                selected ? HermesTheme.accent.opacity(0.06) : .clear
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: Direct
+
+    @ViewBuilder
+    private var directSection: some View {
+        HermesSection(
+            footer: "Direct mode needs no server - the phone calls \(hermesVM.directProvider.displayName) with your key. Applies from the next session."
+        ) {
+            Menu {
+                Picker("Provider", selection: Binding(
+                    get: { hermesVM.directProviderID },
+                    set: { hermesVM.directProviderID = $0 })) {
+                    ForEach(AIProviderRegistry.all, id: \.id) { provider in
+                        Text(provider.displayName).tag(provider.id)
+                    }
+                }
+            } label: {
+                HermesRow("Provider", value: hermesVM.directProvider.displayName)
+            }
+
+            HermesDivider()
+
+            Menu {
+                Picker("Model", selection: Binding(
+                    get: { hermesVM.directModel },
+                    set: { hermesVM.directModel = $0 })) {
+                    ForEach(hermesVM.directProvider.curatedModels, id: \.id) { model in
+                        Text(model.label).tag(model.id)
+                    }
+                    // Allow a stored custom model to remain selectable
+                    if !hermesVM.directProvider.curatedModels
+                        .contains(where: { $0.id == hermesVM.directModel }) {
+                        Text(hermesVM.directModel).tag(hermesVM.directModel)
+                    }
+                }
+            } label: {
+                HermesRow("Model", value: modelLabel)
+            }
+
+            if hermesVM.directProvider.allowsCustomBaseURL {
+                HermesDivider()
+                fieldRow(title: "Base URL") {
+                    TextField("https://…", text: Binding(
+                        get: { hermesVM.directBaseURL },
+                        set: { hermesVM.directBaseURL = $0 }))
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .font(.system(size: 15, design: .monospaced))
+                }
+            }
+
+            if hermesVM.directProvider.requiresKey {
+                HermesDivider()
+                fieldRow(title: "\(hermesVM.directProvider.displayName) API key") {
+                    SecureField("sk-…", text: $providerKey)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .font(.system(size: 15, design: .monospaced))
+                        .onSubmit {
+                            hermesVM.setProviderKey(providerKey)
+                            providerKey = ""
+                        }
+                }
+                HermesDivider()
+                HermesRow(
+                    "Key status",
+                    value: hermesVM.hasDirectKey ? "Saved in Keychain" : "Not set",
+                    showsChevron: false
+                )
+            }
+        }
+    }
+
+    private var modelLabel: String {
+        hermesVM.directProvider.curatedModels
+            .first { $0.id == hermesVM.directModel }?.label ?? hermesVM.directModel
+    }
+
+    // MARK: Bridge
+
+    @ViewBuilder
+    private var bridgeSection: some View {
+        HermesSection(
+            header: "Bridge connection",
+            footer: "Bridge endpoint used in Bridge mode. Tap a preset to select it."
+        ) {
+            ForEach(hermesVM.endpointPresets, id: \.name) { preset in
+                Button {
+                    endpoint = preset.url
+                } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(preset.name)
+                                .font(.system(size: 16))
+                                .foregroundStyle(.primary)
+                            Text(preset.url)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        if endpoint == preset.url {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(HermesTheme.accent)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                HermesDivider()
+            }
+            .id(presetsVersion)
+
+            fieldRow(title: "WebSocket URL") {
+                TextField("ws://…", text: $endpoint)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .font(.system(size: 15, design: .monospaced))
+            }
+
+            HermesDivider()
+
+            Button {
+                presetName = ""
+                showSavePreset = true
+            } label: {
+                Text("Save current URL as preset…")
+                    .font(.system(size: 17))
+                    .foregroundStyle(HermesTheme.accentOnCard)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 52)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(endpoint.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+    }
+
+    /// Label over an editable field, inside a card row.
+    private func fieldRow<Field: View>(
+        title: String,
+        @ViewBuilder field: () -> Field
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+            field()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 }
 
@@ -443,6 +769,7 @@ private struct VoicePage: View {
                 Text("On = faster but more robotic, generated on the phone. Off = natural voice generated on the bridge (adds 1–3 s per reply). Applies from the next question.")
             }
         }
+        .hermesFormStyle()
         .navigationTitle("Voice & Microphone")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -469,6 +796,7 @@ private struct DisplayPage: View {
                 Text("Ray-Ban Display glasses only: live transcript, replies, and controls on the lens. Silent mode shows the reply as text instead of speaking it - handy in meetings. Note: the glasses microphone's call screen covers the HUD; the iPhone or a headset mic keeps it visible.")
             }
         }
+        .hermesFormStyle()
         .navigationTitle("Glasses Display")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -493,6 +821,7 @@ private struct AppearancePage: View {
                 Text("Force light or dark, or follow the phone's setting. Applies to the whole app.")
             }
         }
+        .hermesFormStyle()
         .navigationTitle("Appearance")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -517,7 +846,7 @@ private struct PeoplePage: View {
             Section {
                 LabeledContent("Saved", value: "\(hermesVM.allEncounters().count)")
             } footer: {
-                Text("Review, edit, and delete them on the People screen - the person icon in the main header.")
+                Text("Review, edit, and delete them on the People screen - the People quick action under the conversation.")
             }
 
             Section {
@@ -532,6 +861,7 @@ private struct PeoplePage: View {
                 Text("What to say")
             }
         }
+        .hermesFormStyle()
         .navigationTitle("People")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -572,10 +902,11 @@ private struct NavigationPage: View {
                 Text("Mapbox")
             } footer: {
                 if !hermesVM.hasMapboxToken {
-                    Text("Navigation shows text directions until a Mapbox token is added. Get a free token at mapbox.com.")
+                    Text("The lens shows text directions until a Mapbox token is added; the in-app map works either way. Get a free token at mapbox.com.")
                 }
             }
         }
+        .hermesFormStyle()
         .navigationTitle("Navigation & Maps")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -614,6 +945,7 @@ private struct ContextPage: View {
                 }
             }
         }
+        .hermesFormStyle()
         .navigationTitle("Context & Privacy")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -673,25 +1005,157 @@ struct VoiceCommandsPage: View {
                 }
             }
         }
+        .hermesFormStyle()
         .navigationTitle("What can I say?")
         .navigationBarTitleDisplayMode(.inline)
     }
 }
 
-// MARK: - Developer
+// MARK: - Developer (5d)
 
+/// The subsystem test panel used to float over the session screen. It
+/// lives here now, so nothing covers the conversation.
 private struct DeveloperPage: View {
-    @Binding var showTestPanel: Bool
+    let hermesVM: HermesSessionViewModel
+
+    private static let tests = ["Bridge", "Sound", "Photo", "Query", "Visual", "Display"]
 
     var body: some View {
-        Form {
-            Section {
-                Toggle("Test panel", isOn: $showTestPanel)
-            } footer: {
-                Text("Shows the subsystem test buttons and mic meter on the main screen.")
+        HermesScrollPage {
+            HermesNotice(
+                text: "Test tools moved out of the session view. Everything that used to float over the chat is here.",
+                systemImage: "info.circle"
+            )
+
+            HermesSection(header: "Test panel") {
+                VStack(spacing: 10) {
+                    LazyVGrid(
+                        columns: Array(
+                            repeating: GridItem(.flexible(), spacing: 8), count: 3
+                        ),
+                        spacing: 8
+                    ) {
+                        ForEach(Self.tests, id: \.self) { name in
+                            testButton(name)
+                        }
+                    }
+
+                    // Most recent failure message, if any
+                    if let failure = hermesVM.testResults.values
+                        .compactMap({ $0 }).first(where: { !$0.isEmpty }) {
+                        Text(failure)
+                            .font(.caption2)
+                            .foregroundStyle(HermesTheme.destructive)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .lineLimit(3)
+                    }
+                }
+                .padding(16)
+            }
+
+            HermesSection(header: "Diagnostics") {
+                HermesRow(title: "Mic level", showsChevron: false) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "mic.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        ProgressView(value: min(1.0, Double(hermesVM.micLevel) * 8))
+                            .frame(width: 90)
+                    }
+                }
+                HermesDivider()
+                HermesRow("Bridge", value: bridgeText, showsChevron: false)
+                HermesDivider()
+                HermesRow("Glasses display", value: displayText, showsChevron: false)
+                HermesDivider()
+                HermesRow(
+                    "Camera permission",
+                    value: cameraText,
+                    showsChevron: false
+                )
             }
         }
         .navigationTitle("Developer")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func testButton(_ name: String) -> some View {
+        Button {
+            Task { await run(name) }
+        } label: {
+            HStack(spacing: 4) {
+                if hermesVM.testRunning.contains(name) {
+                    ProgressView().scaleEffect(0.6)
+                } else if let result = hermesVM.testResults[name] ?? nil {
+                    Image(systemName: result.isEmpty
+                        ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundStyle(result.isEmpty
+                            ? HermesTheme.online : HermesTheme.destructive)
+                }
+                Text(name)
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(HermesTheme.accentOnCard)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(
+                HermesTheme.accent.opacity(0.1),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(hermesVM.testRunning.contains(name))
+    }
+
+    private func run(_ name: String) async {
+        switch name {
+        case "Bridge": await hermesVM.testBridge()
+        case "Sound": await hermesVM.testSound()
+        case "Photo": await hermesVM.testPhoto()
+        case "Query": await hermesVM.testQuery()
+        case "Visual": await hermesVM.testVisualQuery()
+        case "Display": await hermesVM.testDisplay()
+        default: break
+        }
+    }
+
+    private var bridgeText: String {
+        switch hermesVM.bridgeStatus {
+        case .reachable: return "Reachable"
+        case .unreachable: return "Unreachable"
+        case .checking: return "Checking…"
+        case .unknown: return "Unknown"
+        }
+    }
+
+    private var displayText: String {
+        switch hermesVM.displayStatus {
+        case .off: return "Off"
+        case .connecting: return "Connecting…"
+        case .connected: return "Connected"
+        case .unavailable: return "Unavailable"
+        }
+    }
+
+    private var cameraText: String {
+        switch hermesVM.cameraPermissionGranted {
+        case .some(true): return "Granted"
+        case .some(false): return "Denied"
+        case .none: return "Unknown"
+        }
+    }
+}
+
+// MARK: - Form styling
+
+private extension View {
+    /// Stock `Form`/`List` pages keep their controls but pick up the warm
+    /// canvas, so a sub-page never flashes iOS grey against the hub.
+    func hermesFormStyle() -> some View {
+        self
+            .scrollContentBackground(.hidden)
+            .background(HermesTheme.groupedCanvas)
+            .tint(HermesTheme.accent)
     }
 }

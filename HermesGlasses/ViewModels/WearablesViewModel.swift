@@ -17,10 +17,43 @@ enum AppRegistrationState {
     case unavailable
 }
 
+/// A paired pair of glasses, flattened out of the DAT SDK so the Devices
+/// screen can render capability chips without importing MWDATCore.
+///
+/// Capabilities are what drives the UI, not the model name (design 5a):
+/// a new model is a row, not a redesign.
+struct GlassesDevice: Identifiable, Equatable {
+    let id: DeviceIdentifier
+    let name: String
+    let supportsDisplay: Bool
+    let isConnected: Bool
+
+    /// (label, available) pairs for the capability chip row.
+    var capabilities: [(label: String, available: Bool)] {
+        [
+            ("Display", supportsDisplay),
+            ("Camera", true),
+            ("Audio", true),
+            ("Touch", true),
+        ]
+    }
+
+    /// Chip labels only, for the compact paired-list row.
+    var capabilitySummary: [(label: String, available: Bool)] {
+        [
+            ("Camera", true),
+            ("Audio", true),
+            (supportsDisplay ? "Display" : "No display", supportsDisplay),
+        ]
+    }
+}
+
 @Observable
 @MainActor
 final class WearablesViewModel {
     var devices: [DeviceIdentifier] = []
+    /// The same devices, resolved to names + capabilities for the UI.
+    var glasses: [GlassesDevice] = []
     var registrationState: AppRegistrationState = .notRegistered
     var showError: Bool = false
     var errorMessage: String = ""
@@ -36,6 +69,7 @@ final class WearablesViewModel {
         self.wearables = wearables
         self.devices = wearables.devices
         self.registrationState = mapState(wearables.registrationState)
+        self.glasses = Self.summarize(devices: wearables.devices, wearables: wearables)
 
         // Observe registration state changes
         registrationTask = Task { [weak self] in
@@ -50,6 +84,9 @@ final class WearablesViewModel {
             for await devices in wearables.devicesStream() {
                 guard let self, !Task.isCancelled else { return }
                 self.devices = devices
+                self.glasses = Self.summarize(
+                    devices: devices, wearables: wearables
+                )
                 self.monitorCompatibility(devices: devices)
             }
         }
@@ -119,6 +156,23 @@ final class WearablesViewModel {
     }
 
     // MARK: - Private
+
+    private static func summarize(
+        devices: [DeviceIdentifier],
+        wearables: WearablesInterface
+    ) -> [GlassesDevice] {
+        devices.compactMap { identifier in
+            guard let device = wearables.deviceForIdentifier(identifier) else {
+                return nil
+            }
+            return GlassesDevice(
+                id: identifier,
+                name: device.nameOrId(),
+                supportsDisplay: device.supportsDisplay(),
+                isConnected: device.linkState == .connected
+            )
+        }
+    }
 
     private func mapState(_ state: RegistrationState) -> AppRegistrationState {
         switch state {

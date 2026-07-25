@@ -13,7 +13,30 @@ import MapKit
 
 @MainActor
 final class NavigationController: NSObject {
-    var onShow: ((_ mapURL: String?, _ title: String, _ step: String, _ eta: String) -> Void)?
+    /// Everything the in-app map screen (design 4f) needs. `onShow` carries
+    /// only what fits on the lens; this carries the geometry too, so the
+    /// phone can draw the same route with MapKit.
+    struct RouteSnapshot: Equatable {
+        let destination: String
+        let step: String
+        let eta: String
+        let remaining: String
+        let user: MapCoordinate
+        let destinationCoord: MapCoordinate?
+        let polyline: [MapCoordinate]
+        /// Degrees clockwise from true north the phone is facing, or nil
+        /// before the first compass reading. The glasses have no compass,
+        /// so this is the only heading the app ever gets.
+        let mode: TransportMode
+        let heading: Double?
+        /// Where the destination lies relative to that facing, in
+        /// (-180, 180]. Nil until both heading and destination are known.
+        let relativeBearing: Double?
+    }
+
+    var onShow: ((_ mapURL: String?, _ title: String, _ step: String, _ eta: String, _ mode: TransportMode) -> Void)?
+    /// Emitted with every rendered frame, alongside `onShow`.
+    var onRoute: ((RouteSnapshot) -> Void)?
     var onSpeak: ((String) -> Void)?
     var onNotice: ((String) -> Void)?
     var onEnd: (() -> Void)?
@@ -25,6 +48,12 @@ final class NavigationController: NSObject {
     private var route: MKRoute?
     private var destinationName = ""
     private var destinationCoord: MapCoordinate?
+    /// Kept so the mode can be switched without re-resolving the place.
+    private var destinationPlacemark: MKPlacemark?
+    private(set) var mode: TransportMode = .walking
+    /// Routes started by voice confirm out loud; routes started by tapping
+    /// the map do not - you were already looking at the screen.
+    private var speaksAloud = true
     private var routeCoords: [MapCoordinate] = []
     private var currentStepIndex = 0
 
@@ -35,6 +64,8 @@ final class NavigationController: NSObject {
     private static let minInterval: TimeInterval = 4
     private static let arrivalMeters: CLLocationDistance = 25
     private static let mapZoom: Double = 16
+    /// Repaint on turn only past this many degrees (hand-shake is smaller).
+    private static let minTurnDegrees: Double = 20
 
     // One-time "no Mapbox token" notice latch.
     private var noticedNoToken = false
@@ -42,6 +73,8 @@ final class NavigationController: NSObject {
     // Session generation, guards a stale start() continuation from
     // resurrecting a session that stop()/a newer start() has superseded.
     private var generation = 0
+    /// Latest compass reading, degrees clockwise from true north.
+    private var currentHeading: Double?
     /// Latest fix, so the map can be repainted on demand (refreshDisplay).
     private var lastLocation: CLLocation?
     /// When true, keep tracking/advancing but don't push frames to the lens
@@ -54,27 +87,84 @@ final class NavigationController: NSObject {
         manager.desiredAccuracy = kCLLocationAccuracyBest
     }
 
+    /// Start from a name, resolving it with MapKit. This is the voice path
+    /// ("take me to Blue Bottle").
     func start(destination: String, mode: TransportMode) {
+        begin(destinationName: destination, placemark: nil, mode: mode, announce: true)
+    }
+
+    /// Start from a place the user already picked out of search results.
+    /// Skips resolution entirely, so "Blue Bottle" goes to the one they
+    /// tapped rather than whichever the geocoder likes best.
+    func start(place: MKMapItem, mode: TransportMode, announce: Bool = false) {
+        begin(
+            destinationName: place.name ?? "your destination",
+            placemark: place.placemark,
+            mode: mode,
+            announce: announce
+        )
+    }
+
+    /// Swap walking for driving (or back) on the running route. Re-routes to
+    /// the same place rather than making the user say it again.
+    func setMode(_ newMode: TransportMode) {
+        guard isActive, newMode != mode, let placemark = destinationPlacemark else {
+            return
+        }
+        begin(
+            destinationName: destinationName, placemark: placemark,
+            mode: newMode, announce: speaksAloud
+        )
+    }
+
+    private func begin(
+        destinationName: String, placemark: MKPlacemark?, mode: TransportMode,
+        announce: Bool
+    ) {
         stop()  // clear any prior session
         generation += 1
         let gen = generation
-        destinationName = destination
+        self.destinationName = destinationName
+        self.mode = mode
+        self.speaksAloud = announce
         isActive = true
         manager.requestWhenInUseAuthorization()
+        // BEFORE routing, not after: MKMapItem.forCurrentLocation() needs a
+        // fix to already exist, and nothing else turns location on when the
+        // map screen is used without a voice session.
+        manager.startUpdatingLocation()
+        if CLLocationManager.headingAvailable() {
+            manager.startUpdatingHeading()
+        }
 
         Task { @MainActor in
             do {
-                let placemark = try await resolve(destination)
-                let route = try await route(to: placemark, mode: mode)
+                // `??` takes an autoclosure, which can't be async - so the
+                // "already resolved" case is spelled out.
+                let resolved: MKPlacemark
+                if let placemark {
+                    resolved = placemark
+                } else {
+                    resolved = try await resolve(destinationName)
+                }
+                let route = try await route(to: resolved, mode: mode)
                 guard isActive, gen == generation else { return }
                 self.route = route
                 self.routeCoords = Self.coords(of: route.polyline)
-                self.destinationCoord = placemark.location.map {
+                self.destinationCoord = resolved.location.map {
                     MapCoordinate(lat: $0.coordinate.latitude, lon: $0.coordinate.longitude)
                 }
+                self.destinationPlacemark = resolved
                 self.currentStepIndex = 0
-                onSpeak?("Navigating to \(destinationName), \(NavigationFormat.eta(seconds: route.expectedTravelTime)).")
-                manager.startUpdatingLocation()
+                if announce {
+                    onSpeak?("Navigating to \(destinationName), \(NavigationFormat.eta(seconds: route.expectedTravelTime)).")
+                }
+                // Paint immediately from the fix we already have, rather than
+                // waiting for the next location update to arrive.
+                if let here = lastLocation ?? manager.location {
+                    lastLocation = here
+                    renderFrame(for: here)
+                }
             } catch {
                 guard isActive, gen == generation else { return }
                 onDebug?("Navigation failed: \(error.localizedDescription)")
@@ -91,10 +181,13 @@ final class NavigationController: NSObject {
 
     private func end() {
         manager.stopUpdatingLocation()
+        manager.stopUpdatingHeading()
+        currentHeading = nil
         isActive = false
         route = nil
         routeCoords = []
         destinationCoord = nil
+        destinationPlacemark = nil
         lastSentAt = nil
         lastSentCoord = nil
         lastLocation = nil
@@ -142,15 +235,18 @@ final class NavigationController: NSObject {
     // MARK: - Per-update rendering
 
     private func handle(location: CLLocation) {
-        guard isActive, let route else { return }
+        // Recorded before the route guard: fixes arrive while the route is
+        // still being computed, and the first frame (and every heading
+        // repaint) needs one to exist.
         lastLocation = location
+        guard isActive, route != nil else { return }
 
         // Arrival check (runs even while an answer overlays the map).
         if let dest = destinationCoord {
             let destLoc = CLLocation(latitude: dest.lat, longitude: dest.lon)
             if location.distance(from: destLoc) <= Self.arrivalMeters {
-                onSpeak?("You've arrived at \(destinationName).")
-                onShow?(nil, destinationName, "Arrived", "0 min")
+                if speaksAloud { onSpeak?("You've arrived at \(destinationName).") }
+                onShow?(nil, destinationName, "Arrived", "0 min", mode)
                 end()
                 return
             }
@@ -179,6 +275,20 @@ final class NavigationController: NSObject {
 
     /// Re-emit the current navigation frame immediately (bypassing the
     /// throttle) - used to restore the map after an answer overlay ends.
+    /// A new compass reading. Heading changes far faster than position, so
+    /// it only repaints when the user has actually turned meaningfully -
+    /// the lens send throttle would otherwise be saturated by hand-shake.
+    private func handle(heading: Double) {
+        let previous = currentHeading
+        currentHeading = heading
+        guard isActive, !displaySuppressed, let location = lastLocation else { return }
+        let turned = previous.map {
+            abs(Bearing.relative(bearing: heading, heading: $0)) >= Self.minTurnDegrees
+        } ?? true
+        guard turned else { return }
+        renderFrame(for: location)
+    }
+
     func refreshDisplay() {
         guard isActive, let location = lastLocation else { return }
         lastSentAt = Date()
@@ -194,7 +304,7 @@ final class NavigationController: NSObject {
         let instruction = step?.instructions.isEmpty == false
             ? step!.instructions : "Continue"
         let stepDistance = step.map { NavigationFormat.distance(meters: $0.distance) } ?? ""
-        let stepText = stepDistance.isEmpty ? instruction : "\(instruction) - \(stepDistance)"
+        var stepText = stepDistance.isEmpty ? instruction : "\(instruction) - \(stepDistance)"
 
         let user = MapCoordinate(lat: location.coordinate.latitude,
                                  lon: location.coordinate.longitude)
@@ -206,15 +316,43 @@ final class NavigationController: NSObject {
                 size: 600,
                 user: user,
                 destination: destinationCoord,
-                route: routeCoords
+                route: routeCoords,
+                // Turn the lens map with the wearer. A north-up map on a
+                // heads-up display is a puzzle; a heading-up one is a glance.
+                bearing: currentHeading
             )
         }
         if mapURL == nil, !noticedNoToken {
             noticedNoToken = true
             onNotice?("Add a Mapbox token in Settings to see the map.")
         }
-        onShow?(mapURL, destinationName, stepText,
-                NavigationFormat.eta(seconds: route.expectedTravelTime))
+        let eta = NavigationFormat.eta(seconds: route.expectedTravelTime)
+        onShow?(mapURL, destinationName, stepText, eta, mode)
+        let relativeBearing = currentHeading.flatMap { heading -> Double? in
+            guard let destinationCoord else { return nil }
+            return Bearing.relative(
+                bearing: Bearing.initial(from: user, to: destinationCoord),
+                heading: heading
+            )
+        }
+        // The compass has to be legible on a text-only lens too - the map
+        // image needs a Mapbox token, and rotating it is invisible without
+        // one. This line changes as you turn, token or not.
+        if let relativeBearing {
+            stepText += " · \(destinationName) is \(Bearing.direction(relative: relativeBearing).label)"
+        }
+        onRoute?(RouteSnapshot(
+            destination: destinationName,
+            step: stepText,
+            eta: eta,
+            remaining: NavigationFormat.distance(meters: route.distance),
+            user: user,
+            destinationCoord: destinationCoord,
+            polyline: routeCoords,
+            mode: mode,
+            heading: currentHeading,
+            relativeBearing: relativeBearing
+        ))
     }
 
     /// Advance to the nearest not-yet-passed step by distance to its end point.
@@ -251,6 +389,17 @@ extension NavigationController: CLLocationManagerDelegate {
     ) {
         guard let latest = locations.last else { return }
         Task { @MainActor in self.handle(location: latest) }
+    }
+
+    nonisolated func locationManager(
+        _ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading
+    ) {
+        // Negative trueHeading means the reading is invalid (uncalibrated
+        // compass); magneticHeading is the usable fallback.
+        let degrees = newHeading.trueHeading >= 0
+            ? newHeading.trueHeading : newHeading.magneticHeading
+        guard degrees >= 0 else { return }
+        Task { @MainActor in self.handle(heading: degrees) }
     }
 
     nonisolated func locationManager(

@@ -7,7 +7,7 @@
 
 import Foundation
 
-enum TransportMode: Equatable {
+enum TransportMode: Equatable, Hashable {
     case walking
     case driving
 }

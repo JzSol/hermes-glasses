@@ -1,70 +1,64 @@
 //
 // RegistrationView.swift
 //
-// Overlay view shown during Meta AI companion app registration flow.
-// Appears as a sheet when the user is registering their glasses.
+// Shown full-screen while the Meta AI companion app completes pairing.
+//
+// It used to be a plain sibling view in the app root's Group, which laid it
+// out UNDER the session screen - half the app visible above it, the status
+// bar colliding with the header. It is a cover now, and wears the Hermes
+// palette rather than stock system blue.
 //
 
-import MWDATCore
 import SwiftUI
-
-struct RegistrationView: View {
-    let viewModel: WearablesViewModel
-
-    var body: some View {
-        Group {
-            switch viewModel.registrationState {
-            case .notRegistered, .unavailable:
-                EmptyView()
-
-            case .registering:
-                RegistrationInProgressView(viewModel: viewModel)
-
-            case .registered:
-                EmptyView()
-            }
-        }
-    }
-}
-
-// MARK: - Registration In Progress
 
 struct RegistrationInProgressView: View {
     let viewModel: WearablesViewModel
 
     var body: some View {
-        ZStack {
-            Color(.systemBackground)
-                .ignoresSafeArea()
+        VStack(spacing: 24) {
+            Spacer()
 
-            VStack(spacing: 24) {
-                Image(systemName: "eyeglasses")
-                    .font(.system(size: 60))
-                    .foregroundStyle(.blue)
+            HermesLockup(height: 26, showsSuffix: true)
 
-                Text("Connect Your Glasses")
-                    .font(.title2)
-                    .fontWeight(.bold)
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(HermesTheme.accent.opacity(0.12))
+                .frame(width: 96, height: 96)
+                .overlay {
+                    Image(systemName: "eyeglasses")
+                        .font(.system(size: 44))
+                        .foregroundStyle(HermesTheme.accent)
+                }
 
-                Text("Follow the prompts in the Meta AI app\nto register your Ray-Ban glasses.")
-                    .font(.body)
+            VStack(spacing: 8) {
+                Text("Connect your glasses")
+                    .font(.system(size: 28, weight: .bold))
+                    .kerning(-0.5)
+                    .multilineTextAlignment(.center)
+                Text("Follow the prompts in the Meta AI app to register your Ray-Ban glasses.")
+                    .font(.system(size: 16))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-
-                ProgressView()
-                    .scaleEffect(1.2)
-
-                Text("Waiting for Meta AI...")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-
-                Button("Cancel") {
-                    viewModel.disconnectGlasses()
-                }
-                .buttonStyle(.bordered)
-                .padding(.top)
+                    .frame(maxWidth: 320)
             }
-            .padding()
+
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Waiting for Meta AI…")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer()
+
+            Button("Cancel") {
+                viewModel.disconnectGlasses()
+            }
+            .font(.system(size: 16, weight: .semibold))
+            .padding(.bottom, 24)
         }
+        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(HermesTheme.canvas.ignoresSafeArea())
+        .tint(HermesTheme.accent)
     }
 }

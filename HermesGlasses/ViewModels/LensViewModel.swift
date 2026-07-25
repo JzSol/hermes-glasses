@@ -49,6 +49,9 @@ final class LensViewModel {
     var isStreaming = false
     var fps = 0
     var captureStage: CaptureStage?
+    /// The glasses camera grant is missing, so the stream cannot work until
+    /// the user allows it in the Meta AI app.
+    var needsGlassesCameraGrant = false
 
     /// Distinct labels logged so far - drives the Export button's enabled
     /// state (observed; the aggregator itself is ObservationIgnored).
@@ -72,7 +75,13 @@ final class LensViewModel {
     static let dwellKey = "lens_dwell_seconds"
 
     @ObservationIgnored private let hermesVM: HermesSessionViewModel
-    @ObservationIgnored private let camera: HermesCameraManager
+    /// Decided in `start()`, not at init: eligibility can change between the
+    /// tap and the stream, and reading it early is what made Lens insist on
+    /// glasses that weren't there.
+    @ObservationIgnored private var vision: VisionSource?
+    /// True when the running voice session already owns the phone camera, so
+    /// this view attaches to its frames instead of starting a capture.
+    @ObservationIgnored private var sharesSessionStream = false
     @ObservationIgnored private let detector = ObjectDetector()
     @ObservationIgnored private let dwell = DwellTracker()
     @ObservationIgnored private var frameCount = 0
@@ -84,7 +93,7 @@ final class LensViewModel {
 
     init(hermesVM: HermesSessionViewModel) {
         self.hermesVM = hermesVM
-        self.camera = hermesVM.camera
+
 
         // Restore the saved dwell time (default 2 s) and sync the tracker.
         let stored = UserDefaults.standard.object(forKey: Self.dwellKey) as? Double
@@ -96,16 +105,44 @@ final class LensViewModel {
         errorBanner = nil
         sessionStart = Date()
 
-        // Connect the glasses camera WITHOUT the voice loop - opening
-        // Lens must never leave the mic listening in the background.
-        statusText = "Connecting to glasses…"
-        do {
-            try await hermesVM.ensureCameraSession()
-        } catch {
-            errorBanner = error.localizedDescription
-            statusText = "Glasses unavailable"
-            return
+        hermesVM.logVisionDiagnostics("lens-start")
+        var route = hermesVM.visionRoute
+
+        // Connect the glasses camera WITHOUT the voice loop - opening Lens
+        // must never leave the mic listening in the background. The phone
+        // camera needs no DeviceSession at all.
+        if route == .glasses {
+            statusText = "Connecting to glasses…"
+            // Check the Meta AI grant BEFORE fighting with the stream: it is
+            // the documented reason a stream is refused, and the fix is one
+            // tap rather than a mystery.
+            if await hermesVM.glassesCameraGranted() == false {
+                needsGlassesCameraGrant = true
+                errorBanner = "The glasses camera isn't allowed yet."
+                statusText = "Tap Allow camera to grant it in the Meta AI app"
+                return
+            }
+            do {
+                try await hermesVM.ensureCameraSession()
+            } catch {
+                // The glasses said no. Use the phone rather than showing a
+                // dead screen - unless the user turned that off.
+                guard VisionRouting.mayFallBackToPhone(
+                    preference: hermesVM.phoneModePreference
+                ) else {
+                    errorBanner = error.localizedDescription
+                    statusText = "Glasses unavailable"
+                    return
+                }
+                NSLog("[Hermes] lens: glasses unavailable (\(error.localizedDescription)) - using iPhone")
+                errorBanner = "Glasses unreachable - using the iPhone camera."
+                route = .phone
+            }
         }
+
+        hermesVM.pinVisionRoute(route)
+        vision = hermesVM.vision
+        sharesSessionStream = hermesVM.visionStreamIsShared
 
         statusText = "Loading model…"
         do {
@@ -129,15 +166,34 @@ final class LensViewModel {
     /// and detector are already set up by `start()`; used both on first open
     /// and when resuming after the History sheet paused it.
     private func beginStream() async {
-        statusText = "Starting glasses camera…"
+        // Phone mode with a live session: the camera is already streaming for
+        // the 5b feed, and iOS gives one AVCaptureSession per camera. Attach
+        // to those frames rather than fighting for the device.
+        if sharesSessionStream {
+            hermesVM.addVisionFrameObserver(Self.observerKey) { [weak self] frame in
+                MainActor.assumeIsolated {
+                    self?.handle(image: frame.image, pixelBuffer: frame.pixelBuffer)
+                }
+            }
+            isStreaming = true
+            statusText = "Point the center at an object"
+            return
+        }
+
+        guard let vision else {
+            statusText = "No camera available"
+            return
+        }
+        statusText = hermesVM.visionRoute == .phone
+            ? "Starting iPhone camera…" : "Starting glasses camera…"
         do {
-            try await camera.startLiveStream(
+            try await vision.startLiveStream(
                 onFrame: { [weak self] frame in
-                    // SDK thread - decode then hop to main.
-                    let image = frame.makeUIImage()
-                    let pixelBuffer = CMSampleBufferGetImageBuffer(frame.sampleBuffer)
+                    // Capture thread - hop to main before touching state.
                     Task { @MainActor [weak self] in
-                        self?.handle(image: image, pixelBuffer: pixelBuffer)
+                        self?.handle(
+                            image: frame.image, pixelBuffer: frame.pixelBuffer
+                        )
                     }
                 },
                 onError: { [weak self] message in
@@ -150,6 +206,70 @@ final class LensViewModel {
             isStreaming = true
             statusText = "Point the center at an object"
         } catch {
+            NSLog("[Hermes] lens: \(hermesVM.visionRoute) stream failed - \(error.localizedDescription)")
+            hermesVM.logVisionDiagnostics("lens-stream-failed")
+
+            // A refused glasses stream is not the end of the road: the phone
+            // has a camera. Falling back only on session failure left this
+            // case sitting on a dead "Camera unavailable" screen.
+            guard hermesVM.visionRoute == .glasses,
+                  VisionRouting.mayFallBackToPhone(
+                      preference: hermesVM.phoneModePreference
+                  )
+            else {
+                errorBanner = error.localizedDescription
+                statusText = "Camera unavailable"
+                return
+            }
+
+            errorBanner = "Glasses camera unavailable - using the iPhone camera."
+            hermesVM.pinVisionRoute(.phone)
+            // `self.` is load-bearing: the guard above shadows `vision` with
+            // the unwrapped glasses source.
+            self.vision = hermesVM.vision
+            sharesSessionStream = hermesVM.visionStreamIsShared
+            await beginPhoneStream()
+        }
+    }
+
+    /// Second attempt, on the phone. Separate from `beginStream()` so a
+    /// failure here reports honestly instead of recursing.
+    private func beginPhoneStream() async {
+        if sharesSessionStream {
+            hermesVM.addVisionFrameObserver(Self.observerKey) { [weak self] frame in
+                MainActor.assumeIsolated {
+                    self?.handle(image: frame.image, pixelBuffer: frame.pixelBuffer)
+                }
+            }
+            isStreaming = true
+            statusText = "Point the center at an object"
+            return
+        }
+        guard let vision else {
+            statusText = "No camera available"
+            return
+        }
+        statusText = "Starting iPhone camera…"
+        do {
+            try await vision.startLiveStream(
+                onFrame: { [weak self] frame in
+                    Task { @MainActor [weak self] in
+                        self?.handle(
+                            image: frame.image, pixelBuffer: frame.pixelBuffer
+                        )
+                    }
+                },
+                onError: { [weak self] message in
+                    Task { @MainActor [weak self] in
+                        self?.errorBanner = "Camera stream error: \(message)"
+                        self?.isStreaming = false
+                    }
+                }
+            )
+            isStreaming = true
+            statusText = "Point the center at an object"
+        } catch {
+            NSLog("[Hermes] lens: iPhone fallback also failed - \(error.localizedDescription)")
             errorBanner = error.localizedDescription
             statusText = "Camera unavailable"
         }
@@ -160,13 +280,37 @@ final class LensViewModel {
     /// in-progress look so its time is recorded and the dwell resets clean.
     func pauseStreaming() {
         guard isStreaming else { return }
-        camera.stopLiveStream()
+        endStream()
         isStreaming = false
         statusText = "Paused"
         if let ended = dwell.flush(at: CACurrentMediaTime()) {
             aggregator.recordLook(
                 label: ended.label, duration: ended.duration, at: Date()
             )
+        }
+    }
+
+    /// Ask Meta AI for the glasses camera, then carry on where we left off.
+    func grantGlassesCamera() async {
+        guard await hermesVM.requestGlassesCameraAccess() else {
+            errorBanner = "Still not allowed. Open the Meta AI app and enable camera access for Hermes."
+            return
+        }
+        needsGlassesCameraGrant = false
+        errorBanner = nil
+        didStop = false
+        await start()
+    }
+
+    private static let observerKey = "lens"
+
+    /// Stop whichever kind of stream this view is using: detach from the
+    /// session's fan-out, or tear down the capture it started itself.
+    private func endStream() {
+        if sharesSessionStream {
+            hermesVM.removeVisionFrameObserver(Self.observerKey)
+        } else {
+            vision?.stopLiveStream()
         }
     }
 
@@ -198,9 +342,14 @@ final class LensViewModel {
                 }
             )
         }
-        camera.stopLiveStream()
+        endStream()
         detector.onDetections = nil
         isStreaming = false
+        // Only Lens's own pin is released - a running voice session pinned
+        // its route first and owns it until the session ends.
+        if !hermesVM.phoneModeActive, hermesVM.connectionState == .disconnected {
+            hermesVM.unpinVisionRoute()
+        }
         hermesVM.releaseCameraSession()
     }
 

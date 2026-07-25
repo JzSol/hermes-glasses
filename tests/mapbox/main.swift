@@ -37,5 +37,39 @@ expect(big.contains("/600x600@2x?"), "size clamped to 600")
 expect(!big.contains("path-"), "no path when route empty")
 expect(!big.contains("ef4444"), "no destination pin when nil")
 
+// MARK: - Bearing (lens map oriented to the way the user faces)
+
+// North-up stays the three-part center, so existing callers are unchanged.
+expect(u.contains("/-122.42,37.77,16/"), "no bearing keeps lon,lat,zoom")
+
+let turned = MapboxStaticMap.url(
+    token: "t", center: MapCoordinate(lat: 37.77, lon: -122.42), zoom: 16, size: 600,
+    user: MapCoordinate(lat: 37.77, lon: -122.42), destination: nil, route: [],
+    bearing: 90
+)
+expect(turned.contains("/-122.42,37.77,16,90/"), "bearing appended to center")
+
+// Mapbox wants 0..<360; a compass can hand us anything.
+let wrapped = MapboxStaticMap.url(
+    token: "t", center: MapCoordinate(lat: 0, lon: 0), zoom: 14, size: 600,
+    user: MapCoordinate(lat: 0, lon: 0), destination: nil, route: [],
+    bearing: 370
+)
+expect(wrapped.contains("/0,0,14,10/"), "bearing wrapped into range")
+
+let negative = MapboxStaticMap.url(
+    token: "t", center: MapCoordinate(lat: 0, lon: 0), zoom: 14, size: 600,
+    user: MapCoordinate(lat: 0, lon: 0), destination: nil, route: [],
+    bearing: -90
+)
+expect(negative.contains("/0,0,14,270/"), "negative bearing normalised")
+
+let rounded = MapboxStaticMap.url(
+    token: "t", center: MapCoordinate(lat: 0, lon: 0), zoom: 14, size: 600,
+    user: MapCoordinate(lat: 0, lon: 0), destination: nil, route: [],
+    bearing: 44.6
+)
+expect(rounded.contains("/0,0,14,45/"), "bearing rounded to whole degrees")
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)
