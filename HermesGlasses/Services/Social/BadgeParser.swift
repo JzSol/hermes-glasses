@@ -108,3 +108,52 @@ enum BadgeParser {
             .joined(separator: " ")
     }
 }
+
+/// The opt-in AI fallback for badges Vision could not read.
+///
+/// Runs only AFTER the encounter is on disk, and is bounded because it is
+/// the one part of this feature that costs money: sequential, capped, timed
+/// out, and abandoned wholesale the moment the provider says the key is bad
+/// rather than repeating that answer five more times.
+enum BadgeAssist {
+    static let maxReads = 6
+    static let timeout: TimeInterval = 20
+
+    static let systemPrompt = """
+        You read name badges from photographs. Reply with only the lines of \
+        text printed on the badge, one per line. Add no commentary.
+        """
+
+    static let userText = """
+        Read the name badge or name tag worn by the person in this photo. \
+        Reply with the lines of text printed on the badge, one per line, and \
+        nothing else. If there is no badge, reply NONE.
+        """
+
+    /// Turn a provider reply into a badge. Goes through the SAME
+    /// `BadgeParser` as the on-device path, so there is one parsing story
+    /// and prose like "I can't see a badge" falls out as nil on its own.
+    static func parse(_ reply: String) -> Badge? {
+        let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.uppercased() != "NONE" else { return nil }
+        let lines = trimmed
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return BadgeParser.parse(lines, source: .assisted)
+    }
+
+    /// True when the failure means "stop the whole pass", not "this one
+    /// photo failed". Repeating a rejected key six times helps nobody.
+    static func isFatal(_ error: Error) -> Bool {
+        guard let providerError = error as? AIProviderError else { return false }
+        switch providerError {
+        case .missingKey, .invalidURL:
+            return true
+        case .http(let status, _):
+            return status == 401 || status == 403
+        case .badResponse:
+            return false
+        }
+    }
+}

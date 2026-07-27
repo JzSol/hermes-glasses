@@ -61,3 +61,15 @@ enum BadgeReader {
         BadgeParser.parse(await readLines(from: image), source: .onDevice)
     }
 }
+
+extension BadgeAssist {
+    /// One assisted read. Throws so the caller can ask `isFatal` whether to
+    /// keep going.
+    static func read(photoJPEG: Data, client: DirectClient) async throws -> Badge? {
+        let reply = try await client.askOneShot(
+            systemPrompt: systemPrompt, userText: userText,
+            photoJPEG: photoJPEG, timeout: timeout
+        )
+        return parse(reply)
+    }
+}

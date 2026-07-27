@@ -2,6 +2,10 @@
 // Standalone tests for BadgeParser. No XCTest target, so build via swiftc:
 //   xcrun swiftc \
 //     HermesGlasses/Services/Social/EncounterEvent.swift \
+//     HermesGlasses/Services/Providers/AIProvider.swift \
+//     HermesGlasses/Services/Providers/AnthropicProvider.swift \
+//     HermesGlasses/Services/Providers/OpenAICompatibleProvider.swift \
+//     HermesGlasses/Services/Providers/GeminiProvider.swift \
 //     HermesGlasses/Services/Social/BadgeParser.swift \
 //     tests/badge/main.swift -o /tmp/badge-tests && /tmp/badge-tests
 //
@@ -96,6 +100,40 @@ expectEqual(BadgeParser.parse(["Sarah Chen"], source: .assisted)?.source,
 
 expectEqual(BadgeParser.parse(["   Sarah Chen   "], source: .onDevice)?.name,
             "Sarah Chen", "surrounding whitespace trimmed")
+
+// MARK: - BadgeAssist reply parsing
+
+expectEqual(BadgeAssist.parse("NONE"), nil, "NONE means no badge")
+expectEqual(BadgeAssist.parse("  none  "), nil, "NONE is matched case- and space-insensitively")
+expectEqual(BadgeAssist.parse(""), nil, "an empty reply is no badge")
+expectEqual(BadgeAssist.parse("   \n  \n "), nil, "a whitespace reply is no badge")
+
+let assisted = BadgeAssist.parse("Dr. Sarah Chen\nRADIOLOGY\nAuckland City Hospital")
+expectEqual(assisted?.name, "Sarah Chen", "assisted reply parses a name")
+expectEqual(assisted?.org, "Auckland City Hospital", "assisted reply parses an org")
+expectEqual(assisted?.source, .assisted, "assisted replies are marked assisted")
+
+expectEqual(BadgeAssist.parse("Sarah Chen\n\n   \nRadiology")?.title, "Radiology",
+            "blank lines in the reply are dropped")
+expectEqual(BadgeAssist.parse("I could not see a badge."), nil,
+            "prose that is not a name yields no badge")
+
+// MARK: - Which failures end the whole pass
+
+expectTrue(BadgeAssist.isFatal(AIProviderError.missingKey), "a missing key is fatal")
+expectTrue(BadgeAssist.isFatal(AIProviderError.invalidURL("nope")), "a bad URL is fatal")
+expectTrue(BadgeAssist.isFatal(AIProviderError.http(status: 401, message: "x")),
+           "401 is fatal")
+expectTrue(BadgeAssist.isFatal(AIProviderError.http(status: 403, message: "x")),
+           "403 is fatal")
+expectTrue(!BadgeAssist.isFatal(AIProviderError.http(status: 500, message: "x")),
+           "a server error is not fatal - the next photo may work")
+expectTrue(!BadgeAssist.isFatal(AIProviderError.badResponse("garbled")),
+           "one garbled response is not fatal")
+expectTrue(!BadgeAssist.isFatal(URLError(.timedOut)), "a timeout is not fatal")
+
+expectEqual(BadgeAssist.maxReads, 6, "assist is capped at six reads")
+expectEqual(BadgeAssist.timeout, 20, "assist reads time out at twenty seconds")
 
 print(failures == 0 ? "\nAll badge tests passed" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

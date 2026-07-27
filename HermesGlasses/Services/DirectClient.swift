@@ -149,6 +149,39 @@ final class DirectClient: @unchecked Sendable {
         Self.storeHistory(newHistory)
         return reply
     }
+
+    /// One question that must NOT touch conversation memory. `ask` splices
+    /// its query and reply into the stored same-day history; a badge photo
+    /// has no business in the user's chat. Reads nothing, writes nothing.
+    func askOneShot(
+        systemPrompt: String, userText: String, photoJPEG: Data,
+        timeout: TimeInterval = 20
+    ) async throws -> String {
+        let provider = Self.provider
+        guard provider.supportsVision else {
+            throw AIProviderError.badResponse(
+                "\(provider.displayName) cannot read images."
+            )
+        }
+        let key = Self.loadKey(for: provider.id)
+        if provider.requiresKey, (key ?? "").isEmpty { throw AIProviderError.missingKey }
+
+        let request = AIRequest(
+            systemPrompt: systemPrompt,
+            contextLine: nil,
+            history: [],
+            userText: userText,
+            imageJPEG: photoJPEG,
+            model: Self.model(for: provider),
+            baseURL: Self.baseURL(for: provider),
+            apiKey: key)
+
+        var urlRequest = try provider.buildRequest(request)
+        urlRequest.timeoutInterval = timeout
+        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        return try provider.parseReply(data, status: status)
+    }
 }
 
 // MARK: - Visual query detection (ported from the bridge)
