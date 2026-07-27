@@ -41,7 +41,10 @@ struct PeopleView: View {
                     emptyState
                 } else {
                     HermesScrollPage {
-                        HermesNotice(text: "Stored on this iPhone only")
+                        HermesNotice(text: hermesVM.badgeAssistEnabled
+                            ? "Stored on this iPhone · badge photos sent to your AI provider"
+                            : "Stored on this iPhone only",
+                            systemImage: hermesVM.badgeAssistEnabled ? "cloud" : "lock")
 
                         ForEach(Array(days.enumerated()), id: \.element.label) { index, day in
                             HermesSection(

@@ -844,6 +844,25 @@ private struct PeoplePage: View {
             }
 
             Section {
+                Toggle("Read name tags", isOn: Binding(
+                    get: { hermesVM.badgeOCREnabled },
+                    set: { hermesVM.badgeOCREnabled = $0 }
+                ))
+            } footer: {
+                Text("While recording a conversation, Hermes reads any name badge it can see and labels that person on the timeline. Done entirely on this iPhone.")
+            }
+
+            Section {
+                Toggle("Ask AI to read hard badges", isOn: Binding(
+                    get: { hermesVM.badgeAssistEnabled },
+                    set: { hermesVM.badgeAssistEnabled = $0 }
+                ))
+                .disabled(!hermesVM.badgeOCREnabled)
+            } footer: {
+                Text(assistFooter)
+            }
+
+            Section {
                 LabeledContent("Saved", value: "\(hermesVM.allEncounters().count)")
             } footer: {
                 Text("Review, edit, and delete them on the People screen - the People quick action under the conversation.")
@@ -864,6 +883,17 @@ private struct PeoplePage: View {
         .hermesFormStyle()
         .navigationTitle("People")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// Says plainly what turning this on changes about where the photos go.
+    private var assistFooter: String {
+        guard hermesVM.badgeOCREnabled else {
+            return "Turn on \"Read name tags\" first."
+        }
+        guard hermesVM.hasDirectKey else {
+            return "Add an API key under Brain to use this. After a recording ends, photos of people whose badge couldn't be read on-device would be sent to your AI provider - up to 6 per recording. Nothing is sent while you're recording."
+        }
+        return "After a recording ends, photos of people whose badge couldn't be read on-device are sent to your AI provider - up to 6 per recording. This is the only part of People that leaves your phone. Nothing is sent while you're recording."
     }
 }
 
