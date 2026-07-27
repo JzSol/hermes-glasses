@@ -18,6 +18,10 @@ struct Encounter: Codable, Identifiable, Equatable {
     /// Filenames inside the store's photos directory, in capture order.
     /// Empty when every capture failed (note-only encounter).
     var photoFilenames: [String]
+    /// The timeline. Empty for entries written before it existed, and for
+    /// single-shot "remember this person" captures - `EncounterTimeline`
+    /// synthesises rows from `note`/`photoFilenames` in that case.
+    var events: [EncounterEvent]
 
     /// The cover photo - what rows and single-photo call sites show.
     var photoFilename: String? { photoFilenames.first }
@@ -26,18 +30,20 @@ struct Encounter: Codable, Identifiable, Equatable {
         id: UUID = UUID(),
         note: String,
         timestamp: Date,
-        photoFilenames: [String] = []
+        photoFilenames: [String] = [],
+        events: [EncounterEvent] = []
     ) {
         self.id = id
         self.note = note
         self.timestamp = timestamp
         self.photoFilenames = photoFilenames
+        self.events = events
     }
 
     // MARK: - Codable (with pre-multi-photo migration)
 
     private enum CodingKeys: String, CodingKey {
-        case id, note, timestamp, photoFilenames, photoFilename
+        case id, note, timestamp, photoFilenames, photoFilename, events
     }
 
     init(from decoder: Decoder) throws {
@@ -53,6 +59,8 @@ struct Encounter: Codable, Identifiable, Equatable {
         } else {
             photoFilenames = []
         }
+        // Absent on every index written before the timeline existed.
+        events = try c.decodeIfPresent([EncounterEvent].self, forKey: .events) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -61,5 +69,6 @@ struct Encounter: Codable, Identifiable, Equatable {
         try c.encode(note, forKey: .note)
         try c.encode(timestamp, forKey: .timestamp)
         try c.encode(photoFilenames, forKey: .photoFilenames)
+        try c.encode(events, forKey: .events)
     }
 }

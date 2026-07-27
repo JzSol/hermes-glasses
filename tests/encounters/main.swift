@@ -2,6 +2,7 @@
 // Standalone tests for EncounterStore. No XCTest target, so build via swiftc:
 //   xcrun swiftc \
 //     HermesGlasses/Services/Social/Encounter.swift \
+//     HermesGlasses/Services/Social/EncounterEvent.swift \
 //     HermesGlasses/Services/Social/EncounterStore.swift \
 //     tests/encounters/main.swift -o /tmp/encounter-tests && /tmp/encounter-tests
 //
@@ -114,6 +115,60 @@ expectEqual(legacyStore.all().last?.photoFilenames, ["legacy.jpg"],
             "legacy photoFilename migrates into the array")
 expectEqual(legacyStore.all().first?.photoFilenames, [],
             "legacy note-only entry has no photos")
+
+// MARK: - Badge
+
+let badge = Badge(name: "Sarah Chen", title: "Radiology",
+                  org: "Auckland City Hospital",
+                  rawLines: ["Dr. Sarah Chen", "RADIOLOGY"], source: .onDevice)
+expectEqual(badge.subtitle, "Radiology · Auckland City Hospital", "badge subtitle joins")
+expectEqual(Badge(name: "Sarah Chen", rawLines: [], source: .onDevice).subtitle,
+            nil, "badge with no title or org has no subtitle")
+expectEqual(badge.groupKey, "sarah chen", "group key normalizes")
+expectEqual(Badge(name: "  Dr.  SARAH   Chen! ", rawLines: [], source: .onDevice).groupKey,
+            "dr sarah chen", "group key strips punctuation and collapses spaces")
+expectEqual(Badge(rawLines: [], source: .assisted).groupKey, nil, "no name means no group key")
+expectTrue(Badge.Source.manual.rank > Badge.Source.onDevice.rank, "manual outranks on-device")
+expectTrue(Badge.Source.onDevice.rank > Badge.Source.assisted.rank, "on-device outranks assisted")
+
+// MARK: - EncounterEvent derived fields
+
+let t0 = Date(timeIntervalSince1970: 1_000_000)
+let derivedEvents = [
+    EncounterEvent.sighting(photoFilenames: ["a.jpg"], badge: badge, at: t0),
+    EncounterEvent.speech("Nice to meet you", at: t0.addingTimeInterval(1)),
+    EncounterEvent.speech("Third floor now", at: t0.addingTimeInterval(2)),
+    EncounterEvent.sighting(photoFilenames: ["b.jpg", "c.jpg"], at: t0.addingTimeInterval(3)),
+]
+expectEqual(EncounterEvent.derivedNote(derivedEvents),
+            "Nice to meet you\nThird floor now", "derived note joins speech only")
+expectEqual(EncounterEvent.derivedPhotoFilenames(derivedEvents),
+            ["a.jpg", "b.jpg", "c.jpg"], "derived filenames follow sighting order")
+
+// MARK: - Encounter codable round-trip with events
+
+let encoder = JSONEncoder()
+encoder.dateEncodingStrategy = .iso8601
+let decoder = JSONDecoder()
+decoder.dateDecodingStrategy = .iso8601
+
+let withEvents = Encounter(note: "n", timestamp: t0,
+                           photoFilenames: ["a.jpg"], events: derivedEvents)
+let roundTripped = try! decoder.decode(
+    Encounter.self, from: try! encoder.encode(withEvents))
+expectEqual(roundTripped, withEvents, "encounter with events round-trips")
+expectEqual(roundTripped.events.first?.badge?.name, "Sarah Chen", "badge survives round-trip")
+
+// Index written before the timeline existed: no `events` key at all.
+// NOTE: named `timelineLegacyJSON` because this file already declares a
+// top-level `legacyJSON` at line ~103 for the photoFilename migration.
+let timelineLegacyJSON = """
+[{"id":"\(UUID().uuidString)","note":"old","timestamp":"1970-01-12T13:46:40Z",\
+"photoFilename":"old.jpg"}]
+""".data(using: .utf8)!
+let legacyDecoded = try! decoder.decode([Encounter].self, from: timelineLegacyJSON)
+expectEqual(legacyDecoded.first?.events.count, 0, "legacy entry decodes with no events")
+expectEqual(legacyDecoded.first?.photoFilenames, ["old.jpg"], "legacy photo still migrates")
 
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)
