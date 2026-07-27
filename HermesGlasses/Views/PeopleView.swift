@@ -187,16 +187,27 @@ private struct EncounterDetailView: View {
     @State private var note: String = ""
     @Environment(\.dismiss) private var dismiss
 
-    /// All photos on the entry - one for a classic capture, several for a
-    /// recorded conversation.
-    private var photos: [UIImage] {
-        hermesVM.encounterPhotos(encounter).compactMap(UIImage.init(data:))
-    }
+    private var timeline: EncounterTimeline { EncounterTimeline.build(encounter) }
 
     var body: some View {
+        Group {
+            switch timeline.kind {
+            case .singleNote: singleNote
+            case .conversation: conversation
+            }
+        }
+        .navigationTitle(timeline.kind == .conversation ? "Conversation" : "Person")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(HermesTheme.groupedCanvas, for: .navigationBar)
+    }
+
+    // MARK: - Single note (a "remember this person" capture, unchanged)
+
+    private var singleNote: some View {
         Form {
-            let photos = self.photos
-            if photos.count == 1, let image = photos.first {
+            if let filename = encounter.photoFilenames.first,
+               let data = hermesVM.encounterPhotoData(filename: filename),
+               let image = UIImage(data: data) {
                 Section {
                     Image(uiImage: image)
                         .resizable()
@@ -205,11 +216,221 @@ private struct EncounterDetailView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
                 .listRowInsets(EdgeInsets())
-            } else if photos.count > 1 {
+            }
+
+            Section("Note") {
+                TextField("Name, where you met, follow-up…", text: $note, axis: .vertical)
+                    .lineLimit(3...10)
+            }
+
+            Section {
+                LabeledContent("Met", value: encounter.timestamp.formatted(
+                    date: .abbreviated, time: .shortened))
+            }
+
+            Section {
+                Button("Delete", role: .destructive) {
+                    hermesVM.deleteEncounter(id: encounter.id)
+                    dismiss()
+                }
+            }
+        }
+        // `hermesFormStyle()` is a PRIVATE extension inside SettingsView.swift
+        // and is not visible here - these are the same three modifiers, which
+        // is what this file already used before the timeline.
+        .scrollContentBackground(.hidden)
+        .background(HermesTheme.groupedCanvas.ignoresSafeArea())
+        .tint(HermesTheme.accent)
+        .onAppear { note = encounter.note }
+        .onDisappear {
+            // Swipe-back must not discard an edit (same contract as Settings).
+            if note != encounter.note {
+                hermesVM.updateEncounterNote(id: encounter.id, note: note)
+            }
+        }
+    }
+
+    // MARK: - Conversation timeline
+
+    private var conversation: some View {
+        HermesScrollPage {
+            HermesSection(header: header) {
+                let rows = timeline.rows
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    if index > 0 { HermesDivider() }
+                    TimelineRowView(
+                        hermesVM: hermesVM,
+                        encounterID: encounter.id,
+                        row: row,
+                        showsTime: showsTime(rows, index)
+                    )
+                }
+            }
+
+            Button("Delete", role: .destructive) {
+                hermesVM.deleteEncounter(id: encounter.id)
+                dismiss()
+            }
+            .font(.system(size: 15, weight: .semibold))
+            .padding(.top, 4)
+        }
+    }
+
+    private var header: String {
+        let start = encounter.timestamp.formatted(date: .omitted, time: .shortened)
+        let people = timeline.rows.filter {
+            if case .sighting = $0.content { return true }
+            return false
+        }.count
+        return people == 0
+            ? start
+            : "\(start) · \(people) \(people == 1 ? "person" : "people")"
+    }
+
+    /// A timestamp is printed only when the minute changes, so a fast
+    /// exchange is not a column of identical clocks.
+    private func showsTime(_ rows: [EncounterTimeline.Row], _ index: Int) -> Bool {
+        guard index > 0 else { return true }
+        let calendar = Calendar.current
+        return !calendar.isDate(
+            rows[index].timestamp, equalTo: rows[index - 1].timestamp,
+            toGranularity: .minute
+        )
+    }
+}
+
+/// One row: someone seen, or something said.
+private struct TimelineRowView: View {
+    let hermesVM: HermesSessionViewModel
+    let encounterID: UUID
+    let row: EncounterTimeline.Row
+    let showsTime: Bool
+
+    var body: some View {
+        switch row.content {
+        case .sighting(let filenames, let badge):
+            NavigationLink {
+                SightingDetailView(
+                    hermesVM: hermesVM, encounterID: encounterID,
+                    eventID: eventUUID, filenames: filenames, badge: badge
+                )
+            } label: {
+                sighting(filenames: filenames, badge: badge)
+            }
+            .buttonStyle(.plain)
+            .disabled(eventUUID == nil)
+
+        case .speech(let text):
+            speech(text)
+        }
+    }
+
+    /// Legacy rows carry a synthesised id ("<uuid>-photos"), which is not an
+    /// event and therefore cannot be edited.
+    private var eventUUID: UUID? { UUID(uuidString: row.id) }
+
+    private func sighting(filenames: [String], badge: Badge?) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            thumbnail(filenames.first)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(badge?.name ?? "Unnamed")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(badge?.name == nil
+                        ? AnyShapeStyle(Color.secondary)
+                        : AnyShapeStyle(Color.primary))
+                if let subtitle = badge?.subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 6) {
+                    Text(timeLabel)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    if filenames.count > 1 {
+                        Text("\(filenames.count) frames")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    if badge?.source == .assisted {
+                        Text("read by AI")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(HermesTheme.accent)
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .contentShape(Rectangle())
+    }
+
+    private func speech(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(showsTime ? timeLabel : "")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, alignment: .leading)
+            Text(text)
+                .font(.system(size: 15))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private var timeLabel: String {
+        row.timestamp.formatted(date: .omitted, time: .shortened)
+    }
+
+    @ViewBuilder
+    private func thumbnail(_ filename: String?) -> some View {
+        if let filename,
+           let data = hermesVM.encounterPhotoData(filename: filename),
+           let image = UIImage(data: data) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 52, height: 52)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        } else {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(HermesTheme.mediaPlaceholder)
+                .frame(width: 52, height: 52)
+                .overlay {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.secondary)
+                }
+        }
+    }
+}
+
+/// Every frame of one person, what OCR actually saw, and a correctable name.
+private struct SightingDetailView: View {
+    let hermesVM: HermesSessionViewModel
+    let encounterID: UUID
+    let eventID: UUID?
+    let filenames: [String]
+    let badge: Badge?
+
+    @State private var name: String = ""
+
+    private var images: [UIImage] {
+        filenames.compactMap { hermesVM.encounterPhotoData(filename: $0) }
+            .compactMap(UIImage.init(data:))
+    }
+
+    var body: some View {
+        Form {
+            let images = self.images
+            if !images.isEmpty {
                 Section {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 10) {
-                            ForEach(Array(photos.enumerated()), id: \.offset) { _, image in
+                            ForEach(Array(images.enumerated()), id: \.offset) { _, image in
                                 Image(uiImage: image)
                                     .resizable()
                                     .scaledToFill()
@@ -224,38 +445,51 @@ private struct EncounterDetailView: View {
                 .listRowBackground(Color.clear)
             }
 
-            Section("Note") {
-                TextField("Name, where you met, follow-up…", text: $note, axis: .vertical)
-                    .lineLimit(3...10)
+            Section {
+                TextField("Name", text: $name)
+                    .disabled(eventID == nil)
+            } header: {
+                Text("Name")
+            } footer: {
+                Text(eventID == nil
+                     ? "This entry predates name tags, so its name can't be edited."
+                     : "Correct it if the badge was misread.")
             }
 
-            Section {
-                LabeledContent(
-                    "Met",
-                    value: encounter.timestamp.formatted(
-                        date: .abbreviated, time: .shortened
-                    )
-                )
-            }
-
-            Section {
-                Button("Delete", role: .destructive) {
-                    hermesVM.deleteEncounter(id: encounter.id)
-                    dismiss()
+            if let badge, !badge.rawLines.isEmpty {
+                Section {
+                    ForEach(Array(badge.rawLines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(size: 13, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("What was read")
+                } footer: {
+                    Text(badge.source == .assisted
+                         ? "Read by your AI provider."
+                         : "Read on this iPhone.")
                 }
             }
         }
         .scrollContentBackground(.hidden)
         .background(HermesTheme.groupedCanvas.ignoresSafeArea())
-        .navigationTitle("Person")
+        .tint(HermesTheme.accent)
+        .navigationTitle(badge?.name ?? "Unnamed")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarBackground(HermesTheme.groupedCanvas, for: .navigationBar)
-        .onAppear { note = encounter.note }
+        .onAppear { name = badge?.name ?? "" }
         .onDisappear {
             // Swipe-back must not discard an edit (same contract as Settings).
-            if note != encounter.note {
-                hermesVM.updateEncounterNote(id: encounter.id, note: note)
-            }
+            guard let eventID else { return }
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed != (badge?.name ?? "") else { return }
+            var updated = badge ?? Badge(rawLines: [], source: .manual)
+            updated.name = trimmed.isEmpty ? nil : trimmed
+            updated.source = .manual
+            hermesVM.updateEncounterBadge(
+                encounterID: encounterID, eventID: eventID,
+                badge: updated.name == nil && updated.rawLines.isEmpty ? nil : updated
+            )
         }
     }
 }
