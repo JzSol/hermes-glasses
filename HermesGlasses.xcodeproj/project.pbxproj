@@ -39,6 +39,7 @@
 		AAAA00000000000000000848 /* EncounterEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000847 /* EncounterEvent.swift */; };
 		AAAA00000000000000000850 /* BadgeParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000849 /* BadgeParser.swift */; };
 		AAAA00000000000000000852 /* EncounterTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000851 /* EncounterTimeline.swift */; };
+		AAAA00000000000000000854 /* BadgeReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000853 /* BadgeReader.swift */; };
 		AAAA00000000000000000030 /* EncounterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000133 /* EncounterStore.swift */; };
 		AAAA00000000000000000039 /* ConversationCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000142 /* ConversationCapture.swift */; };
 		AAAA00000000000000000031 /* PeopleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000134 /* PeopleView.swift */; };
@@ -113,6 +114,7 @@
 		AAAA00000000000000000847 /* EncounterEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/EncounterEvent.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000849 /* BadgeParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/BadgeParser.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000851 /* EncounterTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/EncounterTimeline.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000853 /* BadgeReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/BadgeReader.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000133 /* EncounterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/EncounterStore.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000142 /* ConversationCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/ConversationCapture.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000134 /* PeopleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeopleView.swift; sourceTree = "<group>"; };
@@ -243,6 +245,7 @@
 				AAAA00000000000000000847 /* EncounterEvent.swift */,
 				AAAA00000000000000000849 /* BadgeParser.swift */,
 				AAAA00000000000000000851 /* EncounterTimeline.swift */,
+				AAAA00000000000000000853 /* BadgeReader.swift */,
 				AAAA00000000000000000133 /* EncounterStore.swift */,
 				AAAA00000000000000000142 /* ConversationCapture.swift */,
 				AAAA00000000000000000135 /* VoiceCommandCatalog.swift */,
@@ -390,6 +393,7 @@
 				AAAA00000000000000000848 /* EncounterEvent.swift in Sources */,
 				AAAA00000000000000000850 /* BadgeParser.swift in Sources */,
 				AAAA00000000000000000852 /* EncounterTimeline.swift in Sources */,
+				AAAA00000000000000000854 /* BadgeReader.swift in Sources */,
 				AAAA00000000000000000030 /* EncounterStore.swift in Sources */,
 				AAAA00000000000000000039 /* ConversationCapture.swift in Sources */,
 				AAAA00000000000000000031 /* PeopleView.swift in Sources */,
