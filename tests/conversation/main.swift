@@ -3,6 +3,7 @@
 // via swiftc:
 //   xcrun swiftc \
 //     HermesGlasses/Services/Lens/DwellTracker.swift \
+//     HermesGlasses/Services/Social/EncounterEvent.swift \
 //     HermesGlasses/Services/Social/ConversationCapture.swift \
 //     tests/conversation/main.swift -o /tmp/conversation-tests && /tmp/conversation-tests
 //
@@ -57,6 +58,56 @@ let people = ConversationCaptureModel.people([
 ])
 expectEqual(people.count, 2, "only persons pass the filter")
 expectTrue(people.allSatisfy { $0.label == "person" }, "no other labels")
+
+// MARK: - Event recording
+
+let base = Date(timeIntervalSince1970: 3_000_000)
+func at3(_ offset: TimeInterval) -> Date { base.addingTimeInterval(offset) }
+
+var events = ConversationCaptureModel()
+events.addLine("Nice to meet you", at: at3(1))
+events.addLine("   ", at: at3(2))
+let firstSighting = events.addSighting(photoIndex: 0, at: at3(3))
+events.addLine("Third floor now", at: at3(4))
+let secondSighting = events.addSighting(photoIndex: nil, at: at3(5))
+
+expectEqual(events.events.count, 4, "blank lines record no event")
+expectEqual(events.events[0].kind, .speech, "first event is speech")
+expectEqual(events.events[0].text, "Nice to meet you", "speech text is trimmed")
+expectEqual(events.events[0].timestamp, at3(1), "speech carries its timestamp")
+expectEqual(events.events[1].kind, .sighting, "second event is a sighting")
+expectEqual(events.events[1].photoIndex, 0, "sighting carries its photo index")
+expectEqual(events.events[1].text, "", "sighting has no text")
+expectEqual(events.events[3].photoIndex, nil, "a failed crop records a nil index")
+expectEqual(events.note, "Nice to meet you\nThird floor now",
+            "note still joins the speech lines")
+
+// A badge that arrives after the sighting was recorded.
+let late = Badge(name: "Sarah Chen", rawLines: ["Sarah Chen"], source: .onDevice)
+events.updateBadge(eventID: firstSighting, badge: late)
+expectEqual(events.events[1].badge?.name, "Sarah Chen", "late badge lands on its event")
+expectEqual(events.events[3].badge, nil, "other sightings are untouched")
+
+// Unknown id is a no-op.
+events.updateBadge(eventID: UUID(), badge: nil)
+expectEqual(events.events[1].badge?.name, "Sarah Chen", "unknown id leaves badges alone")
+expectTrue(secondSighting != firstSighting, "each sighting gets its own id")
+
+// Sightings alone still count as content worth saving.
+var snapsOnly = ConversationCaptureModel()
+_ = snapsOnly.addSighting(photoIndex: 0, at: at3(0))
+expectTrue(snapsOnly.events.count == 1, "sighting recorded without a snap gate call")
+
+// recordSnap (the gate) and addSighting (the record) are deliberately
+// separate calls - the gate never appends an event by itself, and
+// addSighting never consults the gate.
+var gateAndEvents = ConversationCaptureModel(maxPhotos: 1, minSnapGap: 100)
+expectTrue(gateAndEvents.recordSnap(at: 0), "first snap allowed by the gate")
+expectEqual(gateAndEvents.events.count, 0, "recordSnap alone never appends an event")
+expectTrue(!gateAndEvents.recordSnap(at: 1), "second snap refused by the cap")
+_ = gateAndEvents.addSighting(photoIndex: nil, at: at3(0))
+expectEqual(gateAndEvents.events.count, 1,
+            "addSighting records regardless of the gate's refusal")
 
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

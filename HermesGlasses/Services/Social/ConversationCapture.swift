@@ -27,16 +27,25 @@ struct ConversationCaptureModel {
     private(set) var snapCount = 0
     private var lastSnapAt: TimeInterval?
 
+    /// The timeline as it accumulates. Speech and sightings interleaved in
+    /// the order they happened; photos are still indices, because filenames
+    /// don't exist until EncounterStore writes them.
+    private(set) var events: [CapturedEvent] = []
+
     init(maxPhotos: Int = 12, minSnapGap: TimeInterval = 10) {
         self.maxPhotos = maxPhotos
         self.minSnapGap = minSnapGap
     }
 
-    /// Append a finalized utterance. Blank utterances are dropped.
-    mutating func addLine(_ text: String) {
+    /// Append a finalized utterance. Blank utterances are dropped - they
+    /// record neither a line nor an event.
+    mutating func addLine(_ text: String, at timestamp: Date = Date()) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         lines.append(trimmed)
+        events.append(CapturedEvent(
+            kind: .speech, timestamp: timestamp, text: trimmed
+        ))
     }
 
     /// The whole conversation as one note, in spoken order.
@@ -53,6 +62,30 @@ struct ConversationCaptureModel {
         lastSnapAt = time
         snapCount += 1
         return true
+    }
+
+    /// Record a sighting the snap gate already approved. Returns the event's
+    /// id so a badge read that finishes later can find it again.
+    ///
+    /// `photoIndex` is nil when the crop failed: the sighting still happened
+    /// and is still worth a row.
+    @discardableResult
+    mutating func addSighting(
+        photoIndex: Int?, at timestamp: Date = Date()
+    ) -> UUID {
+        let event = CapturedEvent(
+            kind: .sighting, timestamp: timestamp, photoIndex: photoIndex
+        )
+        events.append(event)
+        return event.id
+    }
+
+    /// Attach a badge that arrived after its sighting was recorded - OCR
+    /// runs off the main actor and lands whenever it lands. Unknown ids are
+    /// a no-op.
+    mutating func updateBadge(eventID: UUID, badge: Badge?) {
+        guard let index = events.firstIndex(where: { $0.id == eventID }) else { return }
+        events[index].badge = badge
     }
 
     /// Person-only filter, applied at the detection boundary so the dwell
