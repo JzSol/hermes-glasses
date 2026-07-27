@@ -19,6 +19,9 @@ let root = URL(fileURLWithPath: NSTemporaryDirectory())
     .appendingPathComponent("encounter-tests-\(UUID().uuidString)")
 defer { try? FileManager.default.removeItem(at: root) }
 
+let eventBase = Date(timeIntervalSince1970: 2_000_000)
+func at2(_ offset: TimeInterval) -> Date { eventBase.addingTimeInterval(offset) }
+
 let photoBytes = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x01, 0x02, 0x03])
 let store = EncounterStore(directory: root)
 
@@ -169,6 +172,67 @@ let timelineLegacyJSON = """
 let legacyDecoded = try! decoder.decode([Encounter].self, from: timelineLegacyJSON)
 expectEqual(legacyDecoded.first?.events.count, 0, "legacy entry decodes with no events")
 expectEqual(legacyDecoded.first?.photoFilenames, ["old.jpg"], "legacy photo still migrates")
+
+// MARK: - Event-stream save
+
+let eventStore = EncounterStore(directory: root.appendingPathComponent("events"))
+let jpegA = Data([0xFF, 0xD8, 0x01])
+let jpegB = Data([0xFF, 0xD8, 0x02])
+
+let sightingID = UUID()
+let captured: [CapturedEvent] = [
+    CapturedEvent(id: sightingID, kind: .sighting, timestamp: at2(0), photoIndex: 0),
+    CapturedEvent(kind: .speech, timestamp: at2(5), text: "Nice to meet you"),
+    CapturedEvent(kind: .speech, timestamp: at2(9), text: "Third floor now"),
+    CapturedEvent(kind: .sighting, timestamp: at2(12), photoIndex: 1,
+                  badge: Badge(name: "Alan Turing", rawLines: ["Alan Turing"],
+                               source: .onDevice)),
+    // A sighting whose crop failed: no photo, but it still happened.
+    CapturedEvent(kind: .sighting, timestamp: at2(20), photoIndex: nil),
+]
+let savedEvents = eventStore.save(events: captured, photos: [jpegA, jpegB],
+                                  timestamp: at2(0))
+
+expectEqual(savedEvents.events.count, 5, "every captured event is stored")
+expectEqual(savedEvents.note, "Nice to meet you\nThird floor now",
+            "note is derived from speech")
+expectEqual(savedEvents.photoFilenames.count, 2, "photoFilenames is derived")
+expectEqual(savedEvents.events[0].photoFilenames.count, 1, "photo index 0 resolved")
+expectEqual(savedEvents.events[4].photoFilenames, [], "nil photo index gives no file")
+expectEqual(savedEvents.events[1].photoFilenames, [], "speech has no photos")
+expectEqual(eventStore.photoData(filename: savedEvents.events[0].photoFilenames[0]),
+            jpegA, "photo bytes land under the resolved filename")
+
+// Badge fill-in, as the deferred assist pass and a manual edit both do it.
+let newBadge = Badge(name: "Sarah Chen", title: "Radiology",
+                     rawLines: ["Sarah Chen"], source: .assisted)
+eventStore.update(encounterID: savedEvents.id, eventID: sightingID, badge: newBadge)
+let reread = EncounterStore(directory: root.appendingPathComponent("events"))
+let rereadEncounter = reread.all().first { $0.id == savedEvents.id }
+expectEqual(rereadEncounter?.events.first?.badge?.name, "Sarah Chen",
+            "badge update survives a reload")
+expectEqual(rereadEncounter?.events.first?.badge?.source, .assisted,
+            "badge source survives a reload")
+
+// Unknown ids are a no-op, not a crash.
+eventStore.update(encounterID: UUID(), eventID: sightingID, badge: nil)
+eventStore.update(encounterID: savedEvents.id, eventID: UUID(), badge: nil)
+expectEqual(eventStore.all().first { $0.id == savedEvents.id }?.events.first?.badge?.name,
+            "Sarah Chen", "unknown ids leave the badge alone")
+
+expectEqual(eventStore.photoData(filename: "missing.jpg"), nil,
+            "a missing photo file reads as nil")
+
+// Extra: out-of-range photo indices resolve to no photo, not a crash.
+let oobStore = EncounterStore(directory: root.appendingPathComponent("events-oob"))
+let oobEvents: [CapturedEvent] = [
+    CapturedEvent(kind: .sighting, timestamp: at2(0), photoIndex: 5),
+    CapturedEvent(kind: .sighting, timestamp: at2(1), photoIndex: -1),
+]
+let oobSaved = oobStore.save(events: oobEvents, photos: [jpegA], timestamp: at2(0))
+expectEqual(oobSaved.events[0].photoFilenames, [], "out-of-range positive index gives no file")
+expectEqual(oobSaved.events[1].photoFilenames, [], "negative index gives no file")
+expectEqual(oobSaved.photoFilenames, [], "derived photoFilenames stays empty for out-of-range indices")
 
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

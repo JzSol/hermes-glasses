@@ -68,6 +68,12 @@ final class EncounterStore: @unchecked Sendable {
         }
     }
 
+    /// One photo by filename - what the timeline rows and the assist pass
+    /// use, since both address photos per-event rather than per-encounter.
+    func photoData(filename: String) -> Data? {
+        try? Data(contentsOf: photosURL.appendingPathComponent(filename))
+    }
+
     // MARK: - Writes
 
     /// Save a new encounter. The photo is optional: a failed capture still
@@ -107,6 +113,68 @@ final class EncounterStore: @unchecked Sendable {
         lock.withLock { encounters.append(encounter) }
         writeIndex()
         return encounter
+    }
+
+    /// Save a capture as an ordered event stream. Events reference photos by
+    /// index; filenames are assigned here, because only the store knows
+    /// them. `note` and `photoFilenames` are written as derived values so
+    /// every reader that predates the timeline keeps working.
+    @discardableResult
+    func save(
+        events: [CapturedEvent], photos: [Data], timestamp: Date = Date()
+    ) -> Encounter {
+        let id = UUID()
+
+        // Write first, then resolve - a photo that fails to write leaves its
+        // event with no filename rather than losing the event.
+        var filenames: [String?] = Array(repeating: nil, count: photos.count)
+        for (index, photo) in photos.enumerated() {
+            let name = "\(id.uuidString)-\(index).jpg"
+            do {
+                try photo.write(
+                    to: photosURL.appendingPathComponent(name), options: .atomic
+                )
+                filenames[index] = name
+            } catch {
+                logger.error("Photo write failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        let resolved: [EncounterEvent] = events.map { event in
+            var files: [String] = []
+            if let index = event.photoIndex, index >= 0, index < filenames.count,
+               let name = filenames[index] {
+                files = [name]
+            }
+            return EncounterEvent(
+                id: event.id, kind: event.kind, timestamp: event.timestamp,
+                text: event.text, photoFilenames: files, badge: event.badge
+            )
+        }
+
+        let encounter = Encounter(
+            id: id,
+            note: EncounterEvent.derivedNote(resolved),
+            timestamp: timestamp,
+            photoFilenames: EncounterEvent.derivedPhotoFilenames(resolved),
+            events: resolved
+        )
+        lock.withLock { encounters.append(encounter) }
+        writeIndex()
+        return encounter
+    }
+
+    /// Fill in or correct one sighting's badge. Used by the deferred assist
+    /// pass and by a manual edit on the review screen - one write path, so
+    /// there is one way for a badge to change. Unknown ids are a no-op.
+    func update(encounterID: UUID, eventID: UUID, badge: Badge?) {
+        lock.withLock {
+            guard let entry = encounters.firstIndex(where: { $0.id == encounterID }),
+                  let event = encounters[entry].events.firstIndex(where: { $0.id == eventID })
+            else { return }
+            encounters[entry].events[event].badge = badge
+        }
+        writeIndex()
     }
 
     /// Edit a note after the fact (the People detail screen).
