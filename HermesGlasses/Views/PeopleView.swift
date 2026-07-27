@@ -312,22 +312,18 @@ private struct TimelineRowView: View {
             NavigationLink {
                 SightingDetailView(
                     hermesVM: hermesVM, encounterID: encounterID,
-                    eventID: eventUUID, filenames: filenames, badge: badge
+                    eventIDs: row.eventIDs, filenames: filenames, badge: badge
                 )
             } label: {
                 sighting(filenames: filenames, badge: badge)
             }
             .buttonStyle(.plain)
-            .disabled(eventUUID == nil)
+            .disabled(row.eventIDs.isEmpty)
 
         case .speech(let text):
             speech(text)
         }
     }
-
-    /// Legacy rows carry a synthesised id ("<uuid>-photos"), which is not an
-    /// event and therefore cannot be edited.
-    private var eventUUID: UUID? { UUID(uuidString: row.id) }
 
     private func sighting(filenames: [String], badge: Badge?) -> some View {
         HStack(alignment: .top, spacing: 12) {
@@ -412,20 +408,18 @@ private struct TimelineRowView: View {
 private struct SightingDetailView: View {
     let hermesVM: HermesSessionViewModel
     let encounterID: UUID
-    let eventID: UUID?
+    let eventIDs: [UUID]
     let filenames: [String]
     let badge: Badge?
 
     @State private var name: String = ""
-
-    private var images: [UIImage] {
-        filenames.compactMap { hermesVM.encounterPhotoData(filename: $0) }
-            .compactMap(UIImage.init(data:))
-    }
+    /// Loaded once in `.onAppear`, not read from `body` - `body` re-runs on
+    /// every keystroke in the name field, and re-reading every JPEG in the
+    /// row from disk per keystroke was a real, measured cost at 12 photos.
+    @State private var images: [UIImage] = []
 
     var body: some View {
         Form {
-            let images = self.images
             if !images.isEmpty {
                 Section {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -447,11 +441,11 @@ private struct SightingDetailView: View {
 
             Section {
                 TextField("Name", text: $name)
-                    .disabled(eventID == nil)
+                    .disabled(eventIDs.isEmpty)
             } header: {
                 Text("Name")
             } footer: {
-                Text(eventID == nil
+                Text(eventIDs.isEmpty
                      ? "This entry predates name tags, so its name can't be edited."
                      : "Correct it if the badge was misread.")
             }
@@ -477,18 +471,19 @@ private struct SightingDetailView: View {
         .tint(HermesTheme.accent)
         .navigationTitle(badge?.name ?? "Unnamed")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { name = badge?.name ?? "" }
+        .onAppear {
+            name = badge?.name ?? ""
+            images = filenames.compactMap { hermesVM.encounterPhotoData(filename: $0) }
+                .compactMap(UIImage.init(data:))
+        }
         .onDisappear {
             // Swipe-back must not discard an edit (same contract as Settings).
-            guard let eventID else { return }
+            guard !eventIDs.isEmpty else { return }
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmed != (badge?.name ?? "") else { return }
-            var updated = badge ?? Badge(rawLines: [], source: .manual)
-            updated.name = trimmed.isEmpty ? nil : trimmed
-            updated.source = .manual
-            hermesVM.updateEncounterBadge(
-                encounterID: encounterID, eventID: eventID,
-                badge: updated.name == nil && updated.rawLines.isEmpty ? nil : updated
+            hermesVM.renameEncounterSighting(
+                encounterID: encounterID, eventIDs: eventIDs,
+                name: trimmed.isEmpty ? nil : trimmed
             )
         }
     }

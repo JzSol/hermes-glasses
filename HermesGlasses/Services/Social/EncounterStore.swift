@@ -177,6 +177,26 @@ final class EncounterStore: @unchecked Sendable {
         writeIndex()
     }
 
+    /// Rename every event a timeline row was built from. Each event keeps
+    /// its OWN rawLines/title/org - only the name is unified, which is what
+    /// makes the row regroup as one person instead of splitting.
+    func updateBadgeName(encounterID: UUID, eventIDs: [UUID], name: String?) {
+        lock.withLock {
+            guard let entry = encounters.firstIndex(where: { $0.id == encounterID })
+            else { return }
+            for eventID in eventIDs {
+                guard let event = encounters[entry].events
+                    .firstIndex(where: { $0.id == eventID }) else { continue }
+                var badge = encounters[entry].events[event].badge
+                    ?? Badge(rawLines: [], source: .manual)
+                badge.name = name
+                badge.source = .manual
+                encounters[entry].events[event].badge = badge
+            }
+        }
+        writeIndex()
+    }
+
     /// Edit a note after the fact (the People detail screen).
     func update(id: UUID, note: String) {
         lock.withLock {

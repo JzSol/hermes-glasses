@@ -1713,6 +1713,16 @@ final class HermesSessionViewModel {
         encounterRevision &+= 1
     }
 
+    /// Rename a whole timeline row (every event it was merged from).
+    func renameEncounterSighting(
+        encounterID: UUID, eventIDs: [UUID], name: String?
+    ) {
+        encounterStore.updateBadgeName(
+            encounterID: encounterID, eventIDs: eventIDs, name: name
+        )
+        encounterRevision &+= 1
+    }
+
     func updateEncounterNote(id: UUID, note: String) {
         encounterStore.update(id: id, note: note)
         encounterRevision &+= 1

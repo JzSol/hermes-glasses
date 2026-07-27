@@ -223,6 +223,57 @@ expectEqual(eventStore.all().first { $0.id == savedEvents.id }?.events.first?.ba
 expectEqual(eventStore.photoData(filename: "missing.jpg"), nil,
             "a missing photo file reads as nil")
 
+// MARK: - updateBadgeName (fix round 1: renaming a merged row)
+
+// Two sightings both misread as "Jhon Smith" - the pre-fix bug renamed only
+// the row's first event, leaving the second event's stale name to split the
+// row back apart on the next render.
+let renameStore = EncounterStore(directory: root.appendingPathComponent("rename"))
+let misreadA = UUID()
+let misreadB = UUID()
+let renameCaptured: [CapturedEvent] = [
+    CapturedEvent(id: misreadA, kind: .sighting, timestamp: at2(0), photoIndex: 0,
+                  badge: Badge(name: "Jhon Smith", rawLines: ["Jhon Smith", "Engineer"],
+                               source: .onDevice)),
+    CapturedEvent(id: misreadB, kind: .sighting, timestamp: at2(10), photoIndex: 1,
+                  badge: Badge(name: "Jhon Smith", rawLines: ["JHON SMITH"],
+                               source: .onDevice)),
+]
+let renameSaved = renameStore.save(
+    events: renameCaptured, photos: [jpegA, jpegB], timestamp: at2(0))
+
+renameStore.updateBadgeName(
+    encounterID: renameSaved.id, eventIDs: [misreadA, misreadB], name: "John Smith")
+
+let renameReloaded = EncounterStore(directory: root.appendingPathComponent("rename"))
+let renameEncounter = renameReloaded.all().first { $0.id == renameSaved.id }!
+let renamedA = renameEncounter.events.first { $0.id == misreadA }!
+let renamedB = renameEncounter.events.first { $0.id == misreadB }!
+
+expectEqual(renamedA.badge?.name, "John Smith", "first event's name is corrected")
+expectEqual(renamedB.badge?.name, "John Smith", "second event's name is ALSO corrected")
+expectEqual(renamedA.badge?.source, .manual, "first event's source becomes manual")
+expectEqual(renamedB.badge?.source, .manual, "second event's source becomes manual")
+expectEqual(renamedA.badge?.rawLines, ["Jhon Smith", "Engineer"],
+            "first event keeps its own rawLines - only the name is unified")
+expectEqual(renamedB.badge?.rawLines, ["JHON SMITH"],
+            "second event keeps its own rawLines - only the name is unified")
+
+// The row-count regression assertion ("EncounterTimeline.build still yields
+// ONE row") lives in tests/timeline/main.swift instead of here: this file's
+// own build command (see header) does not compile in EncounterTimeline.swift,
+// so an EncounterTimeline.build(_:) call here would not build under the
+// documented `xcrun swiftc ... tests/encounters/main.swift` invocation.
+
+// Unknown eventIDs in the list are skipped, not a crash; known ones still land.
+renameStore.updateBadgeName(
+    encounterID: renameSaved.id, eventIDs: [misreadA, UUID()], name: "Jonathan Smith")
+let renameReloaded2 = EncounterStore(directory: root.appendingPathComponent("rename"))
+expectEqual(
+    renameReloaded2.all().first { $0.id == renameSaved.id }?.events
+        .first { $0.id == misreadA }?.badge?.name,
+    "Jonathan Smith", "a real eventID in a mixed list still updates")
+
 // Extra: out-of-range photo indices resolve to no photo, not a crash.
 let oobStore = EncounterStore(directory: root.appendingPathComponent("events-oob"))
 let oobEvents: [CapturedEvent] = [

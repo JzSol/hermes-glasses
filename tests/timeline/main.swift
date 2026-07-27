@@ -147,5 +147,76 @@ expectTrue(UUID(uuidString: singleTimeline.rows[0].id) == nil,
 expectTrue(UUID(uuidString: singleTimeline.rows[1].id) == nil,
            "legacy note row id is not a UUID")
 
+// MARK: - Row.eventIDs (fix round 1: renaming a merged row must not split it)
+
+// `repeated` above: two Sarah sightings (event 0 and event 3) merge into
+// rows[0]; a lone unbadged sighting (event 2) is rows[2].
+let sarahEvents = repeated.events.filter {
+    if case .sighting = $0.kind { return $0.badge?.name == "Sarah Chen" }
+    return false
+}
+expectEqual(grouped.rows[0].eventIDs, sarahEvents.map(\.id),
+            "merged row's eventIDs contains both contributing events, in order")
+
+let unbadgedEvent = repeated.events.first { $0.kind == .sighting && $0.badge == nil }!
+expectEqual(grouped.rows[2].eventIDs, [unbadgedEvent.id],
+            "a lone sighting has exactly one eventID")
+
+let speechEvent = repeated.events.first { event in
+    event.kind == .speech && event.text == "hello"
+}!
+expectEqual(grouped.rows[1].eventIDs, [speechEvent.id],
+            "a speech row has exactly one eventID")
+
+expectEqual(singleTimeline.rows[0].eventIDs, [], "legacy photo row has no eventIDs")
+expectEqual(singleTimeline.rows[1].eventIDs, [], "legacy note row has no eventIDs")
+
+// MARK: - Regression: renaming a merged row must not split it back apart
+//
+// This is the actual regression test for the bug in Finding 1. It lives here
+// (rather than in tests/encounters/main.swift, alongside the
+// EncounterStore.updateBadgeName test) because this suite's own documented
+// build command does not compile in EncounterStore.swift, and the bug is
+// fundamentally about EncounterTimeline.build's regrouping - EncounterStore
+// is only the mechanism that must keep both events' names in sync to avoid
+// it, which the encounters suite verifies separately.
+
+// Pre-fix shape: only the row's first event got renamed, so the two events
+// now carry DIFFERENT names and their groupKeys diverge - this is exactly
+// what used to happen, and it splits the row in two.
+let staleRename = Encounter(note: "", timestamp: t0, photoFilenames: [], events: [
+    EncounterEvent.sighting(
+        photoFilenames: ["1.jpg"],
+        badge: Badge(name: "John Smith", rawLines: ["Jhon Smith"], source: .manual),
+        at: at(10)),
+    EncounterEvent.sighting(
+        photoFilenames: ["2.jpg"],
+        badge: Badge(name: "Jhon Smith", rawLines: ["JHON SMITH"], source: .onDevice),
+        at: at(20)),
+])
+expectEqual(EncounterTimeline.build(staleRename).rows.count, 2,
+            "renaming only ONE of a merged row's events splits it back apart (the bug)")
+
+// Fixed shape: EncounterStore.updateBadgeName (tested in tests/encounters)
+// unifies the name across every eventID the row was built from, so both
+// events carry the SAME corrected name and the row stays merged.
+let unifiedRename = Encounter(note: "", timestamp: t0, photoFilenames: [], events: [
+    EncounterEvent.sighting(
+        photoFilenames: ["1.jpg"],
+        badge: Badge(name: "John Smith", rawLines: ["Jhon Smith"], source: .manual),
+        at: at(10)),
+    EncounterEvent.sighting(
+        photoFilenames: ["2.jpg"],
+        badge: Badge(name: "John Smith", rawLines: ["JHON SMITH"], source: .manual),
+        at: at(20)),
+])
+let unifiedTimeline = EncounterTimeline.build(unifiedRename)
+expectEqual(unifiedTimeline.rows.count, 1,
+            "renaming BOTH of a merged row's events keeps it as one row (the fix)")
+expectEqual(photos(unifiedTimeline.rows[0]), ["1.jpg", "2.jpg"],
+            "the reunified row still gathers both photos")
+expectEqual(unifiedTimeline.rows[0].eventIDs.count, 2,
+            "the reunified row's eventIDs still cover both events")
+
 print(failures == 0 ? "\nAll timeline tests passed" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

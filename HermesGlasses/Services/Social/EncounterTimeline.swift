@@ -29,6 +29,10 @@ struct EncounterTimeline: Equatable {
         let id: String
         let timestamp: Date
         let content: Content
+        /// Every stored event folded into this row, chronologically. Empty
+        /// for legacy rows, which are synthesised rather than stored — and
+        /// that emptiness is how the view knows they are not editable.
+        let eventIDs: [UUID]
 
         var frameCount: Int {
             if case .sighting(let files, _) = content { return files.count }
@@ -63,7 +67,7 @@ struct EncounterTimeline: Equatable {
             case .speech:
                 rows.append(Row(
                     id: event.id.uuidString, timestamp: event.timestamp,
-                    content: .speech(text: event.text)
+                    content: .speech(text: event.text), eventIDs: [event.id]
                 ))
 
             case .sighting:
@@ -77,7 +81,8 @@ struct EncounterTimeline: Equatable {
                     id: event.id.uuidString, timestamp: event.timestamp,
                     content: .sighting(
                         photoFilenames: event.photoFilenames, badge: event.badge
-                    )
+                    ),
+                    eventIDs: [event.id]
                 ))
             }
         }
@@ -96,7 +101,8 @@ struct EncounterTimeline: Equatable {
             id: row.id, timestamp: row.timestamp,
             content: .sighting(
                 photoFilenames: files + event.photoFilenames, badge: winner
-            )
+            ),
+            eventIDs: row.eventIDs + [event.id]
         )
     }
 
@@ -113,14 +119,16 @@ struct EncounterTimeline: Equatable {
                 timestamp: encounter.timestamp,
                 content: .sighting(
                     photoFilenames: encounter.photoFilenames, badge: nil
-                )
+                ),
+                eventIDs: []
             ))
         }
         if !encounter.note.isEmpty {
             rows.append(Row(
                 id: "\(encounter.id.uuidString)-note",
                 timestamp: encounter.timestamp,
-                content: .speech(text: encounter.note)
+                content: .speech(text: encounter.note),
+                eventIDs: []
             ))
         }
         let kind: Kind = encounter.photoFilenames.count > 1 ? .conversation : .singleNote
