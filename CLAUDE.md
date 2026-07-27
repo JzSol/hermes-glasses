@@ -296,6 +296,18 @@ xcodebuild -project HermesGlasses.xcodeproj -scheme HermesGlasses \
 python -m unittest test_hermes_bridge -v
 ```
 
+### Two traps in the standalone test suites
+
+- **`tests/*/main.swift` end in `print(...)` then `exit(...)`.** New assertions
+  must be INSERTED ABOVE those two lines. Appended to the bottom they sit
+  after `exit()`, never run, and the suite still reports all-green - so the
+  tests look like they pass when they were never executed.
+- **`AIProvider.swift` does not compile alone.** `AIProviderRegistry`
+  references `AnthropicProvider`, `OpenAICompatibleProvider` and
+  `GeminiProvider`, so any suite needing `AIProviderError` (or anything else
+  from that file) must list all four provider sources on the `swiftc` line.
+  `tests/providers/main.swift`'s header carries the canonical command.
+
 ## Next milestones
 
 - Route audio through the glasses microphone (`startCapture(useGlassesMic:
