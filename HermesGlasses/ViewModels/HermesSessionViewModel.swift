@@ -158,6 +158,19 @@ final class HermesSessionViewModel {
         (UserDefaults.standard.object(forKey: "social_notes_enabled") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(socialNotesEnabled, forKey: "social_notes_enabled") }
     }
+    /// Read name tags off the people snapped during a conversation capture.
+    /// On-device Vision only - nothing leaves the phone. Default on.
+    var badgeOCREnabled: Bool =
+        (UserDefaults.standard.object(forKey: "badge_ocr_enabled") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(badgeOCREnabled, forKey: "badge_ocr_enabled") }
+    }
+    /// After a recording ends, ask the configured AI provider to read the
+    /// badges Vision could not. This is the ONLY part of the People feature
+    /// that leaves the phone, so it is off until the user turns it on.
+    var badgeAssistEnabled: Bool =
+        (UserDefaults.standard.object(forKey: "badge_assist_enabled") as? Bool) ?? false {
+        didSet { UserDefaults.standard.set(badgeAssistEnabled, forKey: "badge_assist_enabled") }
+    }
     /// True between "remember this person" and the note being saved - drives
     /// the "listening for a note" affordance in the phone UI.
     var awaitingEncounterNote: Bool = false
@@ -287,6 +300,9 @@ final class HermesSessionViewModel {
     @ObservationIgnored private var captureLatestFrame: UIImage?
     @ObservationIgnored private var captureStreamRunning = false
     @ObservationIgnored private var captureSetupTask: Task<Void, Never>?
+    /// The deferred badge-assist pass. Outlives the capture on purpose - the
+    /// encounter is already saved and this only fills in names.
+    @ObservationIgnored private var badgeAssistTask: Task<Void, Never>?
     @ObservationIgnored private var pendingPhoto: Data?
     @ObservationIgnored private var lastDirectPhotoAt: Date?
     @ObservationIgnored private var pendingDefinitionSubject: String?
@@ -812,7 +828,7 @@ final class HermesSessionViewModel {
             if IntentDetector.isConversationStop(trimmed) {
                 finishConversationCapture()
             } else {
-                captureModel.addLine(trimmed)
+                captureModel.addLine(trimmed, at: Date())
                 liveTranscript = ""
             }
             return
@@ -1542,11 +1558,25 @@ final class HermesSessionViewModel {
               captureModel.recordSnap(at: now) else { return }
 
         let cropped = LensViewModel.crop(frame, to: snap.rect, padding: 0.25)
-        guard let jpeg = (cropped ?? frame).jpegData(compressionQuality: 0.85)
-        else { return }
+        let personImage = cropped ?? frame
+        guard let jpeg = personImage.jpegData(compressionQuality: 0.85) else { return }
         capturePhotos.append(jpeg)
         conversationCaptureSnapCount = capturePhotos.count
-        displayManager.showPhotoCaptured()
+
+        let eventID = captureModel.addSighting(photoIndex: capturePhotos.count - 1)
+        displayManager.showPersonSighted(name: nil, subtitle: nil)
+
+        guard badgeOCREnabled else { return }
+        // OCR runs off the main actor and lands whenever it lands - the
+        // sighting is already recorded, so a slow read costs nothing.
+        Task { @MainActor [weak self] in
+            let badge = await BadgeReader.readBadge(from: personImage)
+            guard let self, let badge, self.conversationCaptureActive else { return }
+            self.captureModel.updateBadge(eventID: eventID, badge: badge)
+            self.displayManager.showPersonSighted(
+                name: badge.name, subtitle: badge.subtitle
+            )
+        }
     }
 
     /// Stop command (or UI toggle): save the whole capture as ONE encounter -
@@ -1569,8 +1599,12 @@ final class HermesSessionViewModel {
             return
         }
 
-        encounterStore.save(note: captureModel.note, photos: photos)
+        let saved = encounterStore.save(events: captureModel.events, photos: photos)
         encounterRevision &+= 1
+
+        // Only now, with the encounter safely on disk, may anything touch
+        // the network.
+        if badgeAssistEnabled { startBadgeAssist(for: saved) }
 
         // Mirror into the on-phone chat, cover photo and all.
         pendingPhoto = photos.first
@@ -1609,6 +1643,50 @@ final class HermesSessionViewModel {
         }
     }
 
+    /// Deferred, opt-in: name the sightings on-device OCR left blank.
+    ///
+    /// Runs AFTER the encounter is saved, sequentially, capped, and gives up
+    /// on the whole pass the moment the provider says the key is bad. Every
+    /// result lands through the same store write a manual edit uses, so an
+    /// open People screen fills in names while the user watches.
+    private func startBadgeAssist(for encounter: Encounter) {
+        let unnamed = encounter.events.filter {
+            $0.kind == .sighting && $0.badge == nil && !$0.photoFilenames.isEmpty
+        }
+        guard !unnamed.isEmpty else { return }
+
+        let targets = Array(unnamed.prefix(BadgeAssist.maxReads))
+        if unnamed.count > targets.count {
+            NSLog("[Hermes] badge assist: reading \(targets.count) of \(unnamed.count) sightings (capped)")
+        }
+
+        badgeAssistTask?.cancel()
+        badgeAssistTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            for event in targets {
+                if Task.isCancelled { return }
+                guard let filename = event.photoFilenames.first,
+                      let photo = self.encounterStore.photoData(filename: filename)
+                else { continue }
+                do {
+                    guard let badge = try await BadgeAssist.read(
+                        photoJPEG: photo, client: self.directClient
+                    ) else { continue }
+                    self.encounterStore.update(
+                        encounterID: encounter.id, eventID: event.id, badge: badge
+                    )
+                    self.encounterRevision &+= 1
+                } catch {
+                    if BadgeAssist.isFatal(error) {
+                        NSLog("[Hermes] badge assist: abandoning pass - \(error.localizedDescription)")
+                        return
+                    }
+                    NSLog("[Hermes] badge assist: one read failed - \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
     private static let captureObserverKey = "conversation-capture"
 
     /// People screen: read-through to the store (the view holds no state of
@@ -1621,6 +1699,18 @@ final class HermesSessionViewModel {
 
     func encounterPhotos(_ encounter: Encounter) -> [Data] {
         encounterStore.photoDatas(for: encounter)
+    }
+
+    /// One photo by filename - the timeline addresses photos per event.
+    func encounterPhotoData(filename: String) -> Data? {
+        encounterStore.photoData(filename: filename)
+    }
+
+    /// Correct a badge from the review screen. Same write path the assist
+    /// pass uses, so there is one way a badge changes.
+    func updateEncounterBadge(encounterID: UUID, eventID: UUID, badge: Badge?) {
+        encounterStore.update(encounterID: encounterID, eventID: eventID, badge: badge)
+        encounterRevision &+= 1
     }
 
     func updateEncounterNote(id: UUID, note: String) {
@@ -1767,6 +1857,8 @@ final class HermesSessionViewModel {
             capturePhotos = []
             conversationCaptureSnapCount = 0
         }
+        badgeAssistTask?.cancel()
+        badgeAssistTask = nil
         sessionObserverTask?.cancel()
         sessionObserverTask = nil
         speechSynthesizer.stop()
