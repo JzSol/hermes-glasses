@@ -1851,7 +1851,13 @@ final class HermesSessionViewModel {
             stopCaptureVision()
             conversationCaptureActive = false
             if captureModel.hasContent {
-                encounterStore.save(note: captureModel.note, photos: capturePhotos)
+                // Same event stream the stop command saves - this is one of
+                // only two ways a capture ends, and both must produce a
+                // timeline. The badge-assist pass is deliberately NOT started
+                // here: the session is being torn down (badgeAssistTask is
+                // cancelled a few lines below), so a network pass into a
+                // dying session would be wrong.
+                encounterStore.save(events: captureModel.events, photos: capturePhotos)
                 encounterRevision &+= 1
             }
             capturePhotos = []
