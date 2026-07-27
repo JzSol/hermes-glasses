@@ -249,6 +249,41 @@ photo via the DAT camera API.
   detectors' own phrase lists (`IntentDetector.navTriggers` etc. are internal,
   NOT private, for exactly this). Never hand-copy trigger phrases into the UI -
   add them to the detector and the tester-facing list updates itself.
+- **Encounter events are stored raw; grouping happens at render.**
+  `EncounterTimeline.build` orders and merges sightings by badge name every
+  time the screen draws. The deferred badge-assist pass fills in names
+  minutes after the recording ended, and only render-time grouping lets the
+  timeline regroup itself when that happens. `Encounter.note` and
+  `.photoFilenames` are DERIVED from the events at save time and kept only
+  so pre-timeline readers (the People row, the day grouping) still work -
+  never treat them as the source of truth for a capture with events.
+- **Badge reading is two grants of trust, not two engines.** On-device
+  Vision (`BadgeReader`, `usesLanguageCorrection = false` - correction
+  mangles surnames) runs at snap time and never leaves the phone. The
+  opt-in AI pass (`BadgeAssist`, `badge_assist_enabled`, default off) runs
+  ONLY after the encounter is on disk, through
+  `DirectClient.askOneShot` - which exists because plain `ask()` would
+  splice badge photos into the user's conversation memory. Capped at 6
+  reads, 20 s each, abandoned on the first auth failure. When it is on,
+  PeopleView's "Stored on this iPhone only" notice MUST change text.
+- **Grouping is by badge text, never by face.** Two unbadged sightings never
+  merge, no matter how close in time. There is no face recognition in this
+  app and adding dwell-adjacency merging would silently claim two people
+  are one.
+- **Renaming a merged sighting must rename every event under it.** A timeline
+  row can be several sightings folded together by badge name, but each is
+  still its own stored `EncounterEvent`. Patching only the row's first event
+  makes the group keys diverge, and the row visibly SPLITS APART on the next
+  render - the user's correction undoing itself in front of them. That is why
+  `Row` carries `eventIDs` and why the write goes through
+  `EncounterStore.updateBadgeName(encounterID:eventIDs:name:)`, which unifies
+  the name while preserving each event's own `rawLines`.
+- **Badge assist must never outlive `badge_ocr_enabled`.** The assist pass
+  selects sightings whose badge is nil. With on-device OCR off, EVERY sighting
+  is nil, so assist would run at its full 6-call maximum - turning OCR off to
+  stay on-device would silently send the MOST photos to the provider and cost
+  the most. `startBadgeAssist` therefore guards on BOTH flags itself; the UI
+  greying out a toggle is not a spend guarantee.
 
 ## Build & run
 
