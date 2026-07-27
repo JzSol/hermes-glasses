@@ -162,7 +162,14 @@ final class HermesSessionViewModel {
     /// On-device Vision only - nothing leaves the phone. Default on.
     var badgeOCREnabled: Bool =
         (UserDefaults.standard.object(forKey: "badge_ocr_enabled") as? Bool) ?? true {
-        didSet { UserDefaults.standard.set(badgeOCREnabled, forKey: "badge_ocr_enabled") }
+        didSet {
+            UserDefaults.standard.set(badgeOCREnabled, forKey: "badge_ocr_enabled")
+            // Assist exists to catch what on-device OCR missed. With OCR off
+            // every sighting is "missed", so leaving assist on would send the
+            // MOST photos off-device - the opposite of what turning OCR off
+            // suggests the user wants.
+            if !badgeOCREnabled { badgeAssistEnabled = false }
+        }
     }
     /// After a recording ends, ask the configured AI provider to read the
     /// badges Vision could not. This is the ONLY part of the People feature
@@ -1604,7 +1611,7 @@ final class HermesSessionViewModel {
 
         // Only now, with the encounter safely on disk, may anything touch
         // the network.
-        if badgeAssistEnabled { startBadgeAssist(for: saved) }
+        startBadgeAssist(for: saved)
 
         // Mirror into the on-phone chat, cover photo and all.
         pendingPhoto = photos.first
@@ -1650,6 +1657,15 @@ final class HermesSessionViewModel {
     /// result lands through the same store write a manual edit uses, so an
     /// open People screen fills in names while the user watches.
     private func startBadgeAssist(for encounter: Encounter) {
+        // The guarantee belongs here, not at the call site: assist only
+        // makes sense as a top-up on sightings on-device OCR genuinely
+        // could not read. With OCR off every sighting has badge == nil, so
+        // without this guard the pass would run at its full cap on every
+        // recording instead of only the sightings Vision missed - the UI
+        // toggle clearing assist when OCR goes off is a courtesy, not the
+        // enforcement.
+        guard badgeOCREnabled, badgeAssistEnabled else { return }
+
         let unnamed = encounter.events.filter {
             $0.kind == .sighting && $0.badge == nil && !$0.photoFilenames.isEmpty
         }
