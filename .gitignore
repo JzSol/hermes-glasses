@@ -27,3 +27,6 @@ docs/superpowers/plans/
 
 # Xcode user state (any depth)
 **/xcuserdata/
+
+# Claude Code worktrees
+.claude/worktrees/
