@@ -225,7 +225,12 @@ each with a 20 s timeout, and the whole pass is abandoned on the first
 five more times. The cap is logged when it truncates.
 
 Results land via a new `EncounterStore.update(encounterID:eventID:badge:)` plus an
-`encounterRevision` bump — so an open People screen fills in names live.
+`encounterRevision` bump. That refreshes the People *list*, but the list rows
+show the note rather than badges, and an open detail screen holds a value
+snapshot — so in practice a name appears the next time the entry is opened,
+not while the user is looking at it. There is deliberately no live-refresh
+mechanism: tearing the screen down mid-read to show a name is worse than
+waiting for the next visit.
 
 ### Settings
 
@@ -279,9 +284,12 @@ decides, the view only renders.
     only when the minute changes, so a fast exchange is not a column of
     identical clocks.
 
-Correcting a name writes through `EncounterStore.update(encounterID:eventID:badge:)` with
-`source: .manual` — the *same* write path the assist pass uses, so there is
-one way for a badge to change and one revision bump.
+Correcting a name writes through `EncounterStore.updateBadgeName(encounterID:eventIDs:name:)`
+with `source: .manual`, which renames *every* event the row was merged from
+so the row regroups as one person instead of splitting. It is deliberately
+NOT the assist pass's `update(encounterID:eventID:badge:)`: that one replaces
+a single event's badge wholesale, which would discard the other events' raw
+lines. Two methods, one revision bump each.
 
 The whole-note `TextField` stays only on `.singleNote`. On a conversation the
 note is derived transcript, so it is shown read-only rather than offering an

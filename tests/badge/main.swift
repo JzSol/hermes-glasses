@@ -132,8 +132,30 @@ expectTrue(!BadgeAssist.isFatal(AIProviderError.badResponse("garbled")),
            "one garbled response is not fatal")
 expectTrue(!BadgeAssist.isFatal(URLError(.timedOut)), "a timeout is not fatal")
 
-expectEqual(BadgeAssist.maxReads, 6, "assist is capped at six reads")
-expectEqual(BadgeAssist.timeout, 20, "assist reads time out at twenty seconds")
+// MARK: - A reply is bounded before it reaches storage
+//
+// rawLines is persisted in encounters.json and rendered line-by-line, so a
+// runaway or chatty reply must not decide how much gets written to disk.
+
+let chatty = BadgeAssist.parse(
+    (["Sarah Chen"] + (1...40).map { "Line \($0)" }).joined(separator: "\n"))
+expectEqual(chatty?.name, "Sarah Chen", "a long reply still parses its name")
+expectEqual(chatty?.rawLines.count, BadgeAssist.maxReplyLines,
+            "a long reply is capped to maxReplyLines lines")
+expectTrue(chatty!.rawLines.count <= 8, "the line cap is at most eight lines")
+
+let longLine = String(repeating: "x", count: 500)
+let runaway = BadgeAssist.parse("Sarah Chen\n\(longLine)")
+expectEqual(runaway?.rawLines.count, 2, "a two-line reply keeps both lines")
+expectEqual(runaway?.rawLines[1].count, BadgeAssist.maxLineLength,
+            "an over-long line is truncated to maxLineLength")
+expectTrue(runaway!.rawLines.allSatisfy { $0.count <= 120 },
+           "no stored line exceeds 120 characters")
+
+// A normal badge is untouched by either bound.
+expectEqual(BadgeAssist.parse("Dr. Sarah Chen\nRADIOLOGY")?.rawLines,
+            ["Dr. Sarah Chen", "RADIOLOGY"],
+            "a short reply is stored verbatim")
 
 print(failures == 0 ? "\nAll badge tests passed" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

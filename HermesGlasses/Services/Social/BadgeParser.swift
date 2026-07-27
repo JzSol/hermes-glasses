@@ -119,6 +119,15 @@ enum BadgeAssist {
     static let maxReads = 6
     static let timeout: TimeInterval = 20
 
+    /// Bounds on what a single reply may contribute. The lines survive into
+    /// `Badge.rawLines`, which is persisted in `encounters.json` (rewritten
+    /// whole on every mutation) and rendered line-by-line on the sighting
+    /// screen. The text is both model-generated and printed by whoever made
+    /// the badge, so an unbounded reply is a storage and display problem,
+    /// not merely noise. A real badge is a handful of short lines.
+    static let maxReplyLines = 8
+    static let maxLineLength = 120
+
     static let systemPrompt = """
         You read name badges from photographs. Reply with only the lines of \
         text printed on the badge, one per line. Add no commentary.
@@ -140,6 +149,8 @@ enum BadgeAssist {
             .split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+            .prefix(maxReplyLines)
+            .map { String($0.prefix(maxLineLength)) }
         return BadgeParser.parse(lines, source: .assisted)
     }
 

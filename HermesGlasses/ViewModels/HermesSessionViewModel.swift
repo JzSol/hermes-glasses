@@ -1653,9 +1653,11 @@ final class HermesSessionViewModel {
     /// Deferred, opt-in: name the sightings on-device OCR left blank.
     ///
     /// Runs AFTER the encounter is saved, sequentially, capped, and gives up
-    /// on the whole pass the moment the provider says the key is bad. Every
-    /// result lands through the same store write a manual edit uses, so an
-    /// open People screen fills in names while the user watches.
+    /// on the whole pass the moment the provider says the key is bad. Each
+    /// result is written to the store and bumps `encounterRevision`; the
+    /// name shows up the next time that entry is opened, NOT live under a
+    /// reader's hands - a screen that rebuilds itself mid-read would lose an
+    /// in-progress name edit.
     private func startBadgeAssist(for encounter: Encounter) {
         // The guarantee belongs here, not at the call site: assist only
         // makes sense as a top-up on sightings on-device OCR genuinely
@@ -1713,20 +1715,9 @@ final class HermesSessionViewModel {
         encounterStore.photoData(for: encounter)
     }
 
-    func encounterPhotos(_ encounter: Encounter) -> [Data] {
-        encounterStore.photoDatas(for: encounter)
-    }
-
     /// One photo by filename - the timeline addresses photos per event.
     func encounterPhotoData(filename: String) -> Data? {
         encounterStore.photoData(filename: filename)
-    }
-
-    /// Correct a badge from the review screen. Same write path the assist
-    /// pass uses, so there is one way a badge changes.
-    func updateEncounterBadge(encounterID: UUID, eventID: UUID, badge: Badge?) {
-        encounterStore.update(encounterID: encounterID, eventID: eventID, badge: badge)
-        encounterRevision &+= 1
     }
 
     /// Rename a whole timeline row (every event it was merged from).

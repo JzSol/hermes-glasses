@@ -19,6 +19,13 @@ struct PeopleView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var days: [(label: String, encounters: [Encounter])] {
+        // Read the revision so @Observable tracks it: allEncounters() reads
+        // the store directly, so nothing else here tells SwiftUI to re-run.
+        // This replaces an .id(revision) on the NavigationStack root, which
+        // rebuilt the whole tree - popping an open detail screen and
+        // discarding an in-progress name edit every time the badge-assist
+        // pass bumped the revision asynchronously.
+        _ = hermesVM.encounterRevision
         let all = hermesVM.allEncounters()  // newest first
         let calendar = Calendar.current
         var order: [Date] = []
@@ -76,8 +83,6 @@ struct PeopleView: View {
                     }
                 }
             }
-            // Re-read the store after a save/edit/delete.
-            .id(hermesVM.encounterRevision)
             .navigationTitle("People")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(HermesTheme.groupedCanvas, for: .navigationBar)
@@ -309,7 +314,18 @@ private struct TimelineRowView: View {
     let row: EncounterTimeline.Row
     let showsTime: Bool
 
+    /// Loaded once in `.onAppear`, never read from `body` - the same defect
+    /// `SightingDetailView` fixed: `body` re-runs whenever the list
+    /// recomputes (every badge-assist revision bump, every scroll pass), and
+    /// re-reading the JPEG off disk each time is a real cost.
+    @State private var thumbnailImage: UIImage?
+
     var body: some View {
+        content.onAppear(perform: loadThumbnail)
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch row.content {
         case .sighting(let filenames, let badge):
             NavigationLink {
@@ -330,7 +346,7 @@ private struct TimelineRowView: View {
 
     private func sighting(filenames: [String], badge: Badge?) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            thumbnail(filenames.first)
+            thumbnail
             VStack(alignment: .leading, spacing: 4) {
                 Text(badge?.name ?? "Unnamed")
                     .font(.system(size: 15, weight: .semibold))
@@ -384,11 +400,18 @@ private struct TimelineRowView: View {
         row.timestamp.formatted(date: .omitted, time: .shortened)
     }
 
+    private func loadThumbnail() {
+        guard thumbnailImage == nil,
+              case .sighting(let filenames, _) = row.content,
+              let filename = filenames.first,
+              let data = hermesVM.encounterPhotoData(filename: filename)
+        else { return }
+        thumbnailImage = UIImage(data: data)
+    }
+
     @ViewBuilder
-    private func thumbnail(_ filename: String?) -> some View {
-        if let filename,
-           let data = hermesVM.encounterPhotoData(filename: filename),
-           let image = UIImage(data: data) {
+    private var thumbnail: some View {
+        if let image = thumbnailImage {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFill()

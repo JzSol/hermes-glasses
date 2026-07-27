@@ -848,6 +848,7 @@ private struct PeoplePage: View {
                     get: { hermesVM.badgeOCREnabled },
                     set: { hermesVM.badgeOCREnabled = $0 }
                 ))
+                .disabled(!hermesVM.socialNotesEnabled)
             } footer: {
                 Text("While recording a conversation, Hermes reads any name badge it can see and labels that person on the timeline. Done entirely on this iPhone.")
             }
@@ -857,7 +858,11 @@ private struct PeoplePage: View {
                     get: { hermesVM.badgeAssistEnabled },
                     set: { hermesVM.badgeAssistEnabled = $0 }
                 ))
-                .disabled(!hermesVM.badgeOCREnabled)
+                // Both badge toggles live UNDER "Remember people I meet":
+                // with social notes off nothing can capture a sighting, so
+                // offering their settings is offering settings for a
+                // switched-off feature.
+                .disabled(!hermesVM.socialNotesEnabled || !hermesVM.badgeOCREnabled)
             } footer: {
                 Text(assistFooter)
             }
@@ -887,6 +892,9 @@ private struct PeoplePage: View {
 
     /// Says plainly what turning this on changes about where the photos go.
     private var assistFooter: String {
+        guard hermesVM.socialNotesEnabled else {
+            return "Turn on \"Remember people I meet\" first."
+        }
         guard hermesVM.badgeOCREnabled else {
             return "Turn on \"Read name tags\" first."
         }

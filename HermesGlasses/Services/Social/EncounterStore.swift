@@ -164,9 +164,12 @@ final class EncounterStore: @unchecked Sendable {
         return encounter
     }
 
-    /// Fill in or correct one sighting's badge. Used by the deferred assist
-    /// pass and by a manual edit on the review screen - one write path, so
-    /// there is one way for a badge to change. Unknown ids are a no-op.
+    /// Replace ONE event's badge wholesale. This is the machine-read path:
+    /// the deferred assist pass, which has a complete badge (name, title,
+    /// org, rawLines) for one specific sighting. A manual correction is NOT
+    /// this - it renames every event a timeline row was merged from and
+    /// keeps their raw lines, which is `updateBadgeName` below.
+    /// Unknown ids are a no-op.
     func update(encounterID: UUID, eventID: UUID, badge: Badge?) {
         lock.withLock {
             guard let entry = encounters.firstIndex(where: { $0.id == encounterID }),

@@ -93,10 +93,13 @@ events.updateBadge(eventID: UUID(), badge: nil)
 expectEqual(events.events[1].badge?.name, "Sarah Chen", "unknown id leaves badges alone")
 expectTrue(secondSighting != firstSighting, "each sighting gets its own id")
 
-// Sightings alone still count as content worth saving.
+// addSighting records an event on its own - no snap-gate call needed. It does
+// NOT make the capture worth saving: `hasContent` is the spoken lines plus the
+// snap gate, and a sighting touches neither.
 var snapsOnly = ConversationCaptureModel()
 _ = snapsOnly.addSighting(photoIndex: 0, at: at3(0))
 expectTrue(snapsOnly.events.count == 1, "sighting recorded without a snap gate call")
+expectTrue(!snapsOnly.hasContent, "a sighting alone is not content worth saving")
 
 // recordSnap (the gate) and addSighting (the record) are deliberately
 // separate calls - the gate never appends an event by itself, and

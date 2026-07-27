@@ -140,12 +140,13 @@ expectEqual(EncounterTimeline.build(single).rows.map(\.id),
             EncounterTimeline.build(single).rows.map(\.id),
             "legacy row ids are stable across builds")
 
-// Legacy row ids are not UUIDs - Task 10 relies on this to identify
-// non-editable legacy rows via UUID(uuidString:) returning nil.
-expectTrue(UUID(uuidString: singleTimeline.rows[0].id) == nil,
-           "legacy photo row id is not a UUID")
-expectTrue(UUID(uuidString: singleTimeline.rows[1].id) == nil,
-           "legacy note row id is not a UUID")
+// Legacy rows are synthesised, not stored, so they have NO eventIDs - and
+// that emptiness is exactly how the review screen knows their name cannot be
+// edited (there is no event to write a badge onto).
+expectEqual(singleTimeline.rows[0].eventIDs, [], "legacy photo row has no eventIDs")
+expectEqual(singleTimeline.rows[1].eventIDs, [], "legacy note row has no eventIDs")
+expectTrue(grouped.rows.allSatisfy { !$0.eventIDs.isEmpty },
+           "every stored row carries at least one eventID")
 
 // MARK: - Row.eventIDs (fix round 1: renaming a merged row must not split it)
 

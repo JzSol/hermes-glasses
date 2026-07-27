@@ -33,11 +33,6 @@ struct EncounterTimeline: Equatable {
         /// for legacy rows, which are synthesised rather than stored — and
         /// that emptiness is how the view knows they are not editable.
         let eventIDs: [UUID]
-
-        var frameCount: Int {
-            if case .sighting(let files, _) = content { return files.count }
-            return 0
-        }
     }
 
     let kind: Kind
