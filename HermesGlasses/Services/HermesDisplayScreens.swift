@@ -35,6 +35,18 @@ enum HermesDisplayScreens {
         .padding(24)
     }
 
+    /// A person snapped during a conversation capture. Shows their name
+    /// when a badge could be read; otherwise it is the plain photo flash.
+    static func personSighted(name: String?, subtitle: String?) -> FlexBox {
+        FlexBox(direction: .column, spacing: 6, crossAlignment: .start) {
+            Text(name ?? "Photo captured", style: .body)
+            for line in [subtitle].compactMap({ $0 }) {
+                Text(line, style: .meta, color: .secondary)
+            }
+        }
+        .padding(24)
+    }
+
     /// The reply card. Stop appears only while TTS is playing.
     /// ComponentBuilder has no buildOptional, so conditional buttons are
     /// prebuilt as an array and emitted with a for-loop (buildArray).

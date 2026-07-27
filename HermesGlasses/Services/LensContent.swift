@@ -17,6 +17,9 @@ enum LensContent: Equatable {
     case listening(partial: String)
     case thinking(query: String)
     case photoCaptured
+    /// A person was snapped during a conversation capture. `name` is nil
+    /// when no badge could be read - most of the time, at glasses range.
+    case personSighted(name: String?, subtitle: String?)
     case reply(text: String, speaking: Bool, choices: [ReplyChoice] = [])
     case definition(text: String, imageURL: String?)
     case navigation(title: String, step: String, eta: String, mapURL: String?, mode: TransportMode)
@@ -36,6 +39,7 @@ enum LensContent: Equatable {
         case .listening: return "LISTENING"
         case .thinking: return nil
         case .photoCaptured: return "PHOTO"
+        case .personSighted: return "PERSON"
         case .reply: return nil
         case .definition: return nil
         case .navigation: return "NAVIGATION"
@@ -57,6 +61,8 @@ enum LensContent: Equatable {
             return query
         case .photoCaptured:
             return "Photo captured"
+        case .personSighted(let name, _):
+            return name ?? "Photo captured"
         case .reply(let text, _, _):
             return text
         case .definition(let text, _):
@@ -80,6 +86,8 @@ enum LensContent: Equatable {
         switch self {
         case .blank, .photoCaptured, .encounterSaved, .newConversation:
             return nil
+        case .personSighted(_, let subtitle):
+            return subtitle
         case .listening:
             return "listening"
         case .thinking:
@@ -112,7 +120,8 @@ enum LensContent: Equatable {
     /// keep looking at, so the simulated lens keeps a live dot lit.
     var isLive: Bool {
         switch self {
-        case .blank, .photoCaptured, .encounterSaved, .newConversation:
+        case .blank, .photoCaptured, .encounterSaved, .newConversation,
+             .personSighted:
             return false
         case .listening, .thinking, .reply, .definition, .navigation,
              .encounterPrompt, .recording:

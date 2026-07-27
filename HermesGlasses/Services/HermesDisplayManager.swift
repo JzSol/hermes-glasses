@@ -168,6 +168,15 @@ final class HermesDisplayManager {
         send(HermesDisplayScreens.photoCaptured())
     }
 
+    /// Conversation capture snapped a person. Best-effort like every other
+    /// display call; a second call with a name replaces the unnamed flash
+    /// when on-device OCR finishes.
+    func showPersonSighted(name: String?, subtitle: String?) {
+        content = .personSighted(name: name, subtitle: subtitle)
+        cancelDwell()
+        send(HermesDisplayScreens.personSighted(name: name, subtitle: subtitle))
+    }
+
     /// speaking=true keeps the card up (Stop button shown, no dwell);
     /// dwellSeconds non-nil blanks the lens after that many seconds.
     func showReply(text: String, speaking: Bool, dwellSeconds: Double?) {

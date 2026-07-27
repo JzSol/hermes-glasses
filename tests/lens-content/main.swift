@@ -136,8 +136,9 @@ let all: [LensContent] = [
     .reply(text: "c", speaking: true), .definition(text: "d", imageURL: nil),
     .navigation(title: "e", step: "f", eta: "g", mapURL: nil, mode: .walking),
     .encounterPrompt, .recording, .encounterSaved(note: "h"), .newConversation,
+    .personSighted(name: "i", subtitle: "j"),
 ]
-expect(all.count == 11, "all 11 cases covered")
+expect(all.count == 12, "all 12 cases covered")
 // No case may trap: exercising each accessor is the assertion.
 for content in all {
     _ = content.label
@@ -148,6 +149,20 @@ for content in all {
     _ = content.isBlank
 }
 expect(true, "every accessor is total over all cases")
+
+// MARK: - personSighted
+
+let named = LensContent.personSighted(name: "Sarah Chen", subtitle: "Radiology")
+expectEqual(named.label, "PERSON", "person sighting is labelled PERSON")
+expectEqual(named.body, "Sarah Chen", "named sighting shows the name")
+expectEqual(named.statusLine, "Radiology", "subtitle becomes the status line")
+expect(!named.isLive, "a sighting flash is not live")
+expectEqual(named.imageURL, nil, "a sighting has no remote image")
+expect(!named.isBlank, "a sighting is not blank")
+
+let unnamed = LensContent.personSighted(name: nil, subtitle: nil)
+expectEqual(unnamed.body, "Photo captured", "unnamed sighting falls back to the flash text")
+expectEqual(unnamed.statusLine, nil, "no subtitle means no status line")
 
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)
