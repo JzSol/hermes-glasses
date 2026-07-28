@@ -7,6 +7,7 @@
 //
 
 import Foundation
+import os
 
 /// WebSocket-based client for Hermes Agent voice API
 final class HermesAPIClient: NSObject {
@@ -31,7 +32,13 @@ final class HermesAPIClient: NSObject {
     private let endpoint: String
     private var webSocket: URLSessionWebSocketTask?
     private var session: URLSession?
-    private(set) var isConnected: Bool = false
+    /// Behind a lock because the receive loop clears it from a background
+    /// executor while the view model reads it on the main actor to decide
+    /// whether an utterance can be sent. A plain `Bool` was a data race; an
+    /// actor hop would have made `disconnect()` land after callers had
+    /// already read the stale value.
+    private let connectedFlag = OSAllocatedUnfairLock(initialState: false)
+    var isConnected: Bool { connectedFlag.withLock { $0 } }
     private var receiveTask: Task<Void, Never>?
     private var isFinalized: Bool = false
     /// TTS audio accumulated between audio_start and audio_end
@@ -65,7 +72,7 @@ final class HermesAPIClient: NSObject {
         do {
             // The bridge sends {"type":"welcome"} immediately on connect
             let first = try await ws.receive()
-            isConnected = true
+            setConnected(true)
             await handleMessage(first)
 
             receiveTask = Task { [weak self] in
@@ -87,7 +94,7 @@ final class HermesAPIClient: NSObject {
         webSocket = nil
         session?.invalidateAndCancel()
         session = nil
-        isConnected = false
+        setConnected(false)
         isFinalized = false
         Task { @MainActor in
             onDisconnected?()
@@ -180,6 +187,10 @@ final class HermesAPIClient: NSObject {
 
     // MARK: - Private
 
+    private func setConnected(_ value: Bool) {
+        connectedFlag.withLock { $0 = value }
+    }
+
     private func receiveLoop() async {
         guard let ws = webSocket else { return }
 
@@ -188,7 +199,7 @@ final class HermesAPIClient: NSObject {
                 let message = try await ws.receive()
                 await handleMessage(message)
             } catch {
-                isConnected = false
+                setConnected(false)
                 if !Task.isCancelled {
                     await reportError("Connection lost: \(error.localizedDescription)")
                     await MainActor.run { [weak self] in

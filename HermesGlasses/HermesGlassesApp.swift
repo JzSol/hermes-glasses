@@ -77,6 +77,14 @@ struct HermesGlassesApp: App {
                 } message: {
                     Text(hermesSessionViewModel.errorMessage)
                 }
+                // Separate surface, deliberately not titled as a fault: a
+                // fallback that worked ("using the iPhone mic") is news, not
+                // an error, and the Error alert said otherwise.
+                .alert("Hermes", isPresented: $hermesSessionViewModel.showNotice) {
+                    Button("OK") { hermesSessionViewModel.dismissNotice() }
+                } message: {
+                    Text(hermesSessionViewModel.noticeMessage)
+                }
             }
             // A cover, not a sibling: as a sibling it laid out UNDER the
             // session screen, leaving half the app visible above it.

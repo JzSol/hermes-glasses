@@ -160,7 +160,7 @@ final class PhoneCameraManager: NSObject, @unchecked Sendable, VisionSource {
         guard let image = stateLock.withLockUnchecked({ $0.latestImage }) else {
             return nil
         }
-        return image.jpegData(compressionQuality: 0.85)
+        return image.jpegData(compressionQuality: HermesCameraManager.jpegQuality)
     }
 
     // MARK: - Permission

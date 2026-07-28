@@ -101,7 +101,9 @@ final class HermesSessionViewModel {
     var cameraPermissionGranted: Bool? = nil
     /// Preferred microphone source; the banner chip shows the ACTUAL route
     var micSource: MicSource = MicSource(
-        rawValue: UserDefaults.standard.string(forKey: "mic_source") ?? ""
+        rawValue: UserDefaults.standard.string(
+            forKey: HermesSessionViewModel.micSourceKey
+        ) ?? ""
     ) ?? .phone
     /// On-device voice (fast, robotic) vs bridge edge-tts (natural, +1-3s).
     /// Default: bridge voice.
@@ -277,6 +279,12 @@ final class HermesSessionViewModel {
     var conversationHistory: [ConversationTurn] = []
     var showError: Bool = false
     var errorMessage: String = ""
+    /// Advisories that are NOT failures: a fallback that worked, a HUD that
+    /// had to step aside. They went through `showError`, whose alert is
+    /// titled "Hermes Error" - which told the user that using the iPhone mic
+    /// instead of an absent headset was something that had gone wrong.
+    var showNotice: Bool = false
+    var noticeMessage: String = ""
 
     /// Hermes Agent WebSocket endpoint
     var hermesEndpoint: String {
@@ -284,6 +292,24 @@ final class HermesSessionViewModel {
             ?? "ws://localhost:8765/voice")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    // MARK: - Constants
+
+    /// How long the speaker's tail is given to fade before the recognizer
+    /// listens again. There is no echo cancellation on the phone route (the
+    /// audio session runs in `.default`, not `.voiceChat`), so a shorter
+    /// wait means transcribing the end of Hermes's own reply.
+    private static let speechResumeGraceNanos: UInt64 = 700_000_000
+
+    /// Both mic fallbacks are announced from two places - session start and
+    /// a mid-session switch - and must say the same thing in both.
+    private static let glassesMicFallbackNotice =
+        "Glasses mic not available - using iPhone mic"
+    private static let headsetMicFallbackNotice =
+        "No headset mic found - using iPhone mic. Connect AirPods or another Bluetooth headset first."
+
+    private static let micSourceKey = "mic_source"
+    private static let endpointPresetsKey = "endpoint_presets"
 
     // MARK: - Private
 
@@ -612,7 +638,7 @@ final class HermesSessionViewModel {
                 connectionState = .disconnected
                 return
             }
-            show("Glasses unreachable - using this iPhone as the eye.")
+            show(notice: "Glasses unreachable - using this iPhone as the eye.")
             route = .phone
         }
 
@@ -641,9 +667,149 @@ final class HermesSessionViewModel {
                 return
             }
         } else {
-        // Bridge mode: connect with all callbacks wired up first
+            // Bridge mode: connect with all callbacks wired up first
+            let client = makeBridgeClient()
+            apiClient = client
+
+            let connected = await client.connect()
+            guard connected else {
+                show("Failed to connect to Hermes bridge at \(hermesEndpoint)")
+                endSession()
+                return
+            }
+
+            // Wired only once the socket is up. `connect()` calls
+            // `disconnect()` on its own failure path, and the guard above
+            // already reports that - wiring earlier would report it twice.
+            client.onDisconnected = { [weak self] in
+                Task { @MainActor [weak self] in
+                    guard let self, self.connectionState != .disconnected else { return }
+                    // Without this the UI sat on "Listening" forever while
+                    // every utterance was dropped at submitQuery's
+                    // isConnected guard - silence indistinguishable from
+                    // Hermes having nothing to say.
+                    self.liveTranscript = ""
+                    self.endSession()
+                    self.show("Lost the connection to the Hermes bridge. Start listening again to reconnect.")
+                }
+            }
+        }
+
+        // 3. Start audio capture + on-device recognition.
+        // Audio is transcribed ON the phone; only final text goes to the
+        // bridge. No mic audio is streamed over WiFi anymore.
+        let speechOK = await speechRecognizer.requestAuthorization()
+        if !speechOK {
+            show(HermesSpeechError.notAuthorized.localizedDescription)
+        }
+
+        audioManager.onRawBuffer = { [weak self] buffer in
+            self?.speechRecognizer.append(buffer)
+        }
+        audioManager.onLevel = { [weak self] level in
+            self?.micLevel = level
+        }
+        audioManager.onPlaybackComplete = { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.displayManager.replySpeakingFinished()
+                if case .speaking = self.connectionState {
+                    self.connectionState = .listening
+                }
+                // Grace period: let the speaker's tail fade before the mic
+                // listens again, or the recognizer hears the end of the TTS
+                try? await Task.sleep(nanoseconds: Self.speechResumeGraceNanos)
+                self.speechRecognizer.isSuspended = false
+            }
+        }
+
+        // On-device TTS finished (or was interrupted) - same completion
+        // flow as bridge-audio playback
+        speechSynthesizer.onFinished = { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.displayManager.replySpeakingFinished()
+                if case .speaking = self.connectionState {
+                    self.connectionState = .listening
+                }
+                try? await Task.sleep(nanoseconds: Self.speechResumeGraceNanos)
+                self.speechRecognizer.isSuspended = false
+            }
+        }
+
+        speechRecognizer.onPartial = { [weak self] text in
+            guard let self else { return }
+            if case .speaking = self.connectionState {
+                // Words while Hermes talks = barge-in, unless the glasses
+                // are hearing Hermes's own voice
+                guard !self.isEchoOfResponse(text) else { return }
+                self.liveTranscript = text
+                self.displayManager.showListening(partial: text)
+                if text.split(separator: " ").count >= 2 {
+                    self.interruptSpeech()
+                }
+            } else {
+                self.liveTranscript = text
+                // A late partial can trail the finalized utterance - don't
+                // let it overwrite the Thinking screen on the lens
+                switch self.connectionState {
+                case .listening, .recording:
+                    self.displayManager.showListening(partial: text)
+                default:
+                    break
+                }
+            }
+        }
+        speechRecognizer.onFinal = { [weak self] text in
+            self?.submitQuery(text)
+        }
+
+        audioManager.onRouteChanged = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.speechRecognizer.restartCycle()
+            }
+        }
+
+        do {
+            let bluetoothActive = try await audioManager.startCapture(
+                route: micSource.captureRoute
+            )
+            if micSource == .glasses && !bluetoothActive {
+                show(notice: Self.glassesMicFallbackNotice)
+            }
+            if micSource == .headset && !bluetoothActive {
+                show(notice: Self.headsetMicFallbackNotice)
+            }
+            if speechOK {
+                try speechRecognizer.start()
+            }
+        } catch {
+            show("Audio setup failed: \(error.localizedDescription)")
+            endSession()
+            return
+        }
+
+        // Attach the lens HUD only when the mic route leaves the lens
+        // free - the GLASSES' hands-free link brings up their call screen
+        // (a headset's hands-free link does not). In phone mode there is no
+        // DeviceSession to attach to; the simulated lens reads
+        // `displayManager.content` instead, which updates either way.
+        if let session = deviceSession,
+           displayHUDEnabled, !lensBlockedByCallScreen {
+            // stop() first: a standalone Display test may still hold an
+            // attachment to its temporary session
+            displayManager.stop()
+            displayManager.start(session: session)
+        }
+
+        // Bridge connected, mic live, recognizer running
+        connectionState = .listening
+    }
+
+    /// Every bridge callback in one place, so `startSession` reads as the
+    /// sequence of steps it is. Returns the client ready to `connect()`.
+    private func makeBridgeClient() -> HermesAPIClient {
         let client = HermesAPIClient(endpoint: hermesEndpoint)
-        apiClient = client
 
         client.onTranscript = { [weak self] text in
             Task { @MainActor [weak self] in
@@ -659,6 +825,7 @@ final class HermesSessionViewModel {
                     userText: self.lastTranscript,
                     agentText: text
                 )
+                self.completeTestOutcome(.success(()))
                 // On-device TTS: speak immediately unless the bridge is
                 // about to stream its own audio (legacy flag)
                 if !bridgeWillSendAudio {
@@ -698,7 +865,7 @@ final class HermesSessionViewModel {
         client.onPlaybackComplete = { [weak self] in
             Task { @MainActor [weak self] in
                 self?.connectionState = .listening
-                try? await Task.sleep(nanoseconds: 700_000_000)
+                try? await Task.sleep(nanoseconds: Self.speechResumeGraceNanos)
                 self?.speechRecognizer.isSuspended = false
             }
         }
@@ -742,123 +909,7 @@ final class HermesSessionViewModel {
             }
         }
 
-        let connected = await client.connect()
-        guard connected else {
-            show("Failed to connect to Hermes bridge at \(hermesEndpoint)")
-            endSession()
-            return
-        }
-        }  // end bridge-mode setup
-
-        // 3. Start audio capture + on-device recognition.
-        // Audio is transcribed ON the phone; only final text goes to the
-        // bridge. No mic audio is streamed over WiFi anymore.
-        let speechOK = await speechRecognizer.requestAuthorization()
-        if !speechOK {
-            show(HermesSpeechError.notAuthorized.localizedDescription)
-        }
-
-        audioManager.onRawBuffer = { [weak self] buffer in
-            self?.speechRecognizer.append(buffer)
-        }
-        audioManager.onLevel = { [weak self] level in
-            self?.micLevel = level
-        }
-        audioManager.onPlaybackComplete = { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.displayManager.replySpeakingFinished()
-                if case .speaking = self.connectionState {
-                    self.connectionState = .listening
-                }
-                // Grace period: let the speaker's tail fade before the mic
-                // listens again, or the recognizer hears the end of the TTS
-                try? await Task.sleep(nanoseconds: 700_000_000)
-                self.speechRecognizer.isSuspended = false
-            }
-        }
-
-        // On-device TTS finished (or was interrupted) - same completion
-        // flow as bridge-audio playback
-        speechSynthesizer.onFinished = { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.displayManager.replySpeakingFinished()
-                if case .speaking = self.connectionState {
-                    self.connectionState = .listening
-                }
-                try? await Task.sleep(nanoseconds: 700_000_000)
-                self.speechRecognizer.isSuspended = false
-            }
-        }
-
-        speechRecognizer.onPartial = { [weak self] text in
-            guard let self else { return }
-            if case .speaking = self.connectionState {
-                // Words while Hermes talks = barge-in, unless the glasses
-                // are hearing Hermes's own voice
-                guard !self.isEchoOfResponse(text) else { return }
-                self.liveTranscript = text
-                self.displayManager.showListening(partial: text)
-                if text.split(separator: " ").count >= 2 {
-                    self.interruptSpeech()
-                }
-            } else {
-                self.liveTranscript = text
-                // A late partial can trail the finalized utterance - don't
-                // let it overwrite the Thinking screen on the lens
-                switch self.connectionState {
-                case .listening, .recording:
-                    self.displayManager.showListening(partial: text)
-                default:
-                    break
-                }
-            }
-        }
-        speechRecognizer.onFinal = { [weak self] text in
-            self?.submitQuery(text)
-        }
-
-        audioManager.onRouteChanged = { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.speechRecognizer.restartCycle()
-            }
-        }
-
-        do {
-            let bluetoothActive = try await audioManager.startCapture(
-                route: micSource.captureRoute
-            )
-            if micSource == .glasses && !bluetoothActive {
-                show("Glasses mic not available - using iPhone mic")
-            }
-            if micSource == .headset && !bluetoothActive {
-                show("No headset mic found - using iPhone mic. Connect AirPods or another Bluetooth headset first.")
-            }
-            if speechOK {
-                try speechRecognizer.start()
-            }
-        } catch {
-            show("Audio setup failed: \(error.localizedDescription)")
-            endSession()
-            return
-        }
-
-        // Attach the lens HUD only when the mic route leaves the lens
-        // free - the GLASSES' hands-free link brings up their call screen
-        // (a headset's hands-free link does not). In phone mode there is no
-        // DeviceSession to attach to; the simulated lens reads
-        // `displayManager.content` instead, which updates either way.
-        if let session = deviceSession,
-           displayHUDEnabled, !lensBlockedByCallScreen {
-            // stop() first: a standalone Display test may still hold an
-            // attachment to its temporary session
-            displayManager.stop()
-            displayManager.start(session: session)
-        }
-
-        // Bridge connected, mic live, recognizer running
-        connectionState = .listening
+        return client
     }
 
     /// Send finalized text to the active brain and move the UI into processing
@@ -979,6 +1030,7 @@ final class HermesSessionViewModel {
             let reply = try await directClient.ask(text, photoJPEG: photo, contextLine: context)
             lastResponse = reply
             addTurn(userText: text, agentText: reply)
+            completeTestOutcome(.success(()))
             presentReply(reply)
         } catch {
             show(error.localizedDescription)
@@ -1600,9 +1652,6 @@ final class HermesSessionViewModel {
                     }
                 }
             }
-            if !conversationCaptureActive {
-                removeVisionFrameObserver(Self.captureObserverKey)
-            }
             return
         }
 
@@ -1649,7 +1698,9 @@ final class HermesSessionViewModel {
 
         let cropped = LensViewModel.crop(frame, to: snap.rect, padding: 0.25)
         let personImage = cropped ?? frame
-        guard let jpeg = personImage.jpegData(compressionQuality: 0.85) else { return }
+        guard let jpeg = personImage.jpegData(
+            compressionQuality: HermesCameraManager.jpegQuality
+        ) else { return }
         capturePhotos.append(jpeg)
         conversationCaptureSnapCount = capturePhotos.count
 
@@ -1999,7 +2050,7 @@ final class HermesSessionViewModel {
     @discardableResult
     func setMicSource(_ target: MicSource, announceFallback: Bool = true) async -> Bool {
         micSource = target
-        UserDefaults.standard.set(target.rawValue, forKey: "mic_source")
+        UserDefaults.standard.set(target.rawValue, forKey: Self.micSourceKey)
 
         // Nothing to route yet - the choice is remembered for next session.
         guard connectionState != .disconnected else { return true }
@@ -2011,30 +2062,32 @@ final class HermesSessionViewModel {
             )
             speechRecognizer.restartCycle()
             if announceFallback, target == .glasses, !bluetoothActive {
-                show("Glasses mic not available - using iPhone mic")
+                show(notice: Self.glassesMicFallbackNotice)
             }
             if announceFallback, target == .headset, !bluetoothActive {
-                show("No headset mic found - using iPhone mic. Connect AirPods or another Bluetooth headset first.")
+                show(notice: Self.headsetMicFallbackNotice)
             }
             // The route can differ from what was asked for; keep the label
             // honest rather than claiming a device that didn't answer.
             if !bluetoothActive, target != .phone {
                 micSource = .phone
-                UserDefaults.standard.set(MicSource.phone.rawValue, forKey: "mic_source")
+                UserDefaults.standard.set(
+                    MicSource.phone.rawValue, forKey: Self.micSourceKey
+                )
                 return false
             }
-            return true
             // HUD ⇄ GLASSES hands-free mic are mutually exclusive: the
             // glasses show their call screen while their hands-free link
             // is active. Headset mode leaves the lens free.
             if displayHUDEnabled, let session = deviceSession {
                 if lensBlockedByCallScreen {
                     displayManager.stop()
-                    show("Lens HUD paused - the glasses show their call screen while their hands-free mic is on. The iPhone or a headset mic keeps the HUD visible.")
+                    show(notice: "Lens HUD paused - the glasses show their call screen while their hands-free mic is on. The iPhone or a headset mic keeps the HUD visible.")
                 } else if displayManager.status == .off {
                     displayManager.start(session: session)
                 }
             }
+            return true
         } catch {
             show("Mic switch failed: \(error.localizedDescription)")
             endSession()
@@ -2092,6 +2145,9 @@ final class HermesSessionViewModel {
         liveTranscript = ""
         micLevel = 0
         audioManager.stopCapture()
+        // Clear the drop handler first: this teardown is deliberate, and the
+        // handler exists to report the socket going away UNDER us.
+        apiClient?.onDisconnected = nil
         apiClient?.disconnect()
         apiClient = nil
         cameraManager.reset()
@@ -2175,7 +2231,7 @@ final class HermesSessionViewModel {
     /// Named endpoint presets (UserDefaults-backed; tokens stay on-device)
     var endpointPresets: [(name: String, url: String)] {
         let dict = UserDefaults.standard
-            .dictionary(forKey: "endpoint_presets") as? [String: String]
+            .dictionary(forKey: Self.endpointPresetsKey) as? [String: String]
             ?? [:]
         return dict.sorted { $0.key < $1.key }
             .map { (name: $0.key, url: $0.value) }
@@ -2186,17 +2242,17 @@ final class HermesSessionViewModel {
         let trimmedURL = url.trimmingCharacters(in: .whitespaces)
         guard !trimmedName.isEmpty, !trimmedURL.isEmpty else { return }
         var dict = UserDefaults.standard
-            .dictionary(forKey: "endpoint_presets") as? [String: String]
+            .dictionary(forKey: Self.endpointPresetsKey) as? [String: String]
             ?? [:]
         dict[trimmedName] = trimmedURL
-        UserDefaults.standard.set(dict, forKey: "endpoint_presets")
+        UserDefaults.standard.set(dict, forKey: Self.endpointPresetsKey)
     }
 
     func deletePreset(name: String) {
         var dict = UserDefaults.standard
-            .dictionary(forKey: "endpoint_presets") as? [String: String] ?? [:]
+            .dictionary(forKey: Self.endpointPresetsKey) as? [String: String] ?? [:]
         dict.removeValue(forKey: name)
-        UserDefaults.standard.set(dict, forKey: "endpoint_presets")
+        UserDefaults.standard.set(dict, forKey: Self.endpointPresetsKey)
     }
 
     /// Probe the Hermes bridge (connect, await welcome, disconnect) without
@@ -2212,6 +2268,10 @@ final class HermesSessionViewModel {
 
     func dismissError() {
         showError = false
+    }
+
+    func dismissNotice() {
+        showNotice = false
     }
 
     // MARK: - Test panel
@@ -2331,7 +2391,9 @@ final class HermesSessionViewModel {
             guard backend == .direct || apiClient?.isConnected == true else {
                 throw TestFailure("Bridge mode needs a running session - or switch to Direct")
             }
-            submitQuery("Respond with exactly: OK")
+            try await awaitTestReply {
+                submitQuery("Respond with exactly: OK")
+            }
         }
     }
 
@@ -2356,11 +2418,17 @@ final class HermesSessionViewModel {
             guard backend == .direct || apiClient?.isConnected == true else {
                 throw TestFailure("Bridge mode needs a running session - or switch to Direct")
             }
-            // Warm a camera session so the capture inside submitQuery has one
-            // to use; the query itself outlives this call, so the session is
-            // kept until the answer lands rather than released here.
-            try await ensureCameraSession()
-            submitQuery("What am I looking at? Answer in one short sentence.")
+            // Borrowed for the whole round trip: the capture happens inside
+            // submitQuery, so the session has to outlive this call - and
+            // waiting for the answer is what tells us it did. This used to
+            // call ensureCameraSession() and walk away, leaving a cold-start
+            // session running with nothing on any path to release it
+            // (endSession() only tears down the VOICE session).
+            try await withCameraSession {
+                try await awaitTestReply {
+                    submitQuery("What am I looking at? Answer in one short sentence.")
+                }
+            }
         }
     }
 
@@ -2422,6 +2490,46 @@ final class HermesSessionViewModel {
         var errorDescription: String? { message }
     }
 
+    /// Resumed by the first reply (or error) that follows a test's query.
+    @ObservationIgnored
+    private var pendingTestOutcome: CheckedContinuation<Void, Error>?
+
+    /// Longest a test waits for a brain before calling it a failure. Generous
+    /// on purpose: a bridge shelling out to `hermes chat` with an image
+    /// attached is slow, and a false failure is as useless as a false pass.
+    private static let testReplyTimeout: Double = 90
+
+    /// Run `submit` and wait for the answer it produces.
+    ///
+    /// The Query and Visual tests used to report a pass the moment
+    /// `submitQuery` returned - which only says the text was dispatched, not
+    /// that any brain answered. A panel that exists to diagnose a broken
+    /// setup must not go green on a dead bridge.
+    private func awaitTestReply(_ submit: () -> Void) async throws {
+        let timeout = Self.testReplyTimeout
+        let timer = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.completeTestOutcome(
+                .failure(TestFailure("No answer within \(Int(timeout)) s"))
+            )
+        }
+        defer { timer.cancel() }
+        try await withCheckedThrowingContinuation { cont in
+            // A second test started while this one was waiting would strand
+            // the first continuation forever - fail it instead.
+            completeTestOutcome(.failure(TestFailure("Superseded by another test")))
+            pendingTestOutcome = cont
+            submit()
+        }
+    }
+
+    private func completeTestOutcome(_ result: Result<Void, Error>) {
+        guard let cont = pendingTestOutcome else { return }
+        pendingTestOutcome = nil
+        cont.resume(with: result)
+    }
+
     private func runTest(_ name: String, _ body: () async throws -> Void) async {
         testRunning.insert(name)
         defer { testRunning.remove(name) }
@@ -2472,6 +2580,16 @@ final class HermesSessionViewModel {
     private func show(_ message: String) {
         errorMessage = message
         showError = true
+        // A test waiting on a round trip has just learnt its outcome: this
+        // is the only path every brain's failures share.
+        completeTestOutcome(.failure(TestFailure(message)))
+    }
+
+    /// The same surface for something that merely happened, phrased as news
+    /// rather than as a fault.
+    private func show(notice message: String) {
+        noticeMessage = message
+        showNotice = true
     }
 }
 

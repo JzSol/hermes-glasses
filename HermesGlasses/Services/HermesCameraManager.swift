@@ -46,6 +46,12 @@ enum HermesCameraError: LocalizedError {
 }
 
 final class HermesCameraManager: @unchecked Sendable {
+    /// One quality for every still the app produces - glasses camera, phone
+    /// camera and the person crops a conversation capture keeps. They all
+    /// end up in the same places (a provider's vision endpoint, the
+    /// encounter store), so they must not drift apart.
+    static let jpegQuality: CGFloat = 0.85
+
     private let logger = Logger(subsystem: "com.flowsxr.hermesglasses", category: "camera")
 
     /// Diagnostic breadcrumbs (stream states, timings) - surfaced in the
@@ -94,7 +100,7 @@ final class HermesCameraManager: @unchecked Sendable {
         }
         if let liveFrame {
             guard let image = liveFrame.makeUIImage(),
-                  let jpeg = image.jpegData(compressionQuality: 0.85) else {
+                  let jpeg = image.jpegData(compressionQuality: Self.jpegQuality) else {
                 throw HermesCameraError.captureFailed
             }
             debug("camera: photo served from live frame (\(jpeg.count) bytes)")
