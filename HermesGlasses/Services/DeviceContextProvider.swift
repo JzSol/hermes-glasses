@@ -190,15 +190,21 @@ final class DeviceContextProvider: NSObject {
               let lastFixAt, Date().timeIntervalSince(lastFixAt) < 3600 else { return }
         if let weatherAt, Date().timeIntervalSince(weatherAt) < 900 { return }
         guard !weatherFetchInFlight else { return }
-        weatherFetchInFlight = true
 
         // %.5f: raw Double interpolation renders tiny values as "3e-05",
         // which the API may misparse
         let lat = String(format: "%.5f", fix.coordinate.latitude)
         let lon = String(format: "%.5f", fix.coordinate.longitude)
-        let url = URL(string:
+        // Built before the in-flight flag is raised: a URL we can't form is
+        // no fetch, and must not leave the flag stuck on.
+        guard let url = URL(string:
             "https://api.open-meteo.com/v1/forecast?latitude=\(lat)&longitude=\(lon)&current_weather=true"
-        )!
+        ) else {
+            logger.error("Weather URL could not be formed - skipping fetch")
+            return
+        }
+        weatherFetchInFlight = true
+
         Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.weatherFetchInFlight = false } }
             do {

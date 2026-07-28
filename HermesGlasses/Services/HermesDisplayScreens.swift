@@ -143,7 +143,7 @@ enum HermesDisplayScreens {
         // The mode was previously decided by how the request was phrased and
         // never shown, so a walking route to somewhere 5 km away could only
         // be fixed by asking again. The active mode is the primary button.
-        var buttons: [Button] = [
+        let buttons: [Button] = [
             Button(
                 label: "Walk", style: mode == .walking ? .primary : .secondary,
                 onClick: onWalk

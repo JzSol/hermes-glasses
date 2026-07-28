@@ -36,12 +36,16 @@ struct GeminiProvider: AIProvider {
             "systemInstruction": ["parts": [["text": systemText(req)]]],
             "contents": contents,
         ]
-        let urlString = "\(req.baseURL)/v1beta/models/\(req.model):generateContent?key=\(key)"
+        // The key travels as a header, never as a query item: a keyed URL
+        // ends up in the invalidURL error below, in the UI alert that renders
+        // it, and in every log line that mentions the request.
+        let urlString = "\(req.baseURL)/v1beta/models/\(req.model):generateContent"
         guard let url = URL(string: urlString) else {
             throw AIProviderError.invalidURL(urlString)
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.setValue(key, forHTTPHeaderField: "x-goog-api-key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 60
         request.httpBody = try JSONSerialization.data(withJSONObject: body)

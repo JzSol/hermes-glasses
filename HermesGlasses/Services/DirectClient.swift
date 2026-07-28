@@ -10,7 +10,9 @@ import Foundation
 import os
 
 final class DirectClient: @unchecked Sendable {
-    private let logger = Logger(subsystem: "com.flowsxr.hermesglasses", category: "direct")
+    private static let logger = Logger(
+        subsystem: "com.flowsxr.hermesglasses", category: "direct"
+    )
 
     // MARK: - Provider selection (UserDefaults)
 
@@ -46,18 +48,27 @@ final class DirectClient: @unchecked Sendable {
 
     private static func account(_ providerID: String) -> String { "\(providerID)_api_key" }
 
-    static func storeKey(_ key: String, for providerID: String) {
+    /// Returns false when the Keychain refused the write - the caller must
+    /// not tell the user the key is stored on the strength of having asked.
+    @discardableResult
+    static func storeKey(_ key: String, for providerID: String) -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: account(providerID),
         ]
         SecItemDelete(query as CFDictionary)
-        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return }
+        // An empty key is a deletion, and the delete above already did it
+        guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return true }
         var attributes = query
         attributes[kSecValueData as String] = data
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(attributes as CFDictionary, nil)
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            logger.error("Keychain store failed for \(providerID, privacy: .public): OSStatus \(status)")
+            return false
+        }
+        return true
     }
 
     static func loadKey(for providerID: String) -> String? {
@@ -90,10 +101,17 @@ final class DirectClient: @unchecked Sendable {
         direct, natural, and helpful.
         """
 
-    private static func todayString() -> String {
+    /// Cached: building a DateFormatter costs more than the comparison it
+    /// feeds, and this runs on every ask. Formatting on a shared instance is
+    /// thread-safe.
+    private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
+        return formatter
+    }()
+
+    private static func todayString() -> String {
+        dayFormatter.string(from: Date())
     }
 
     private static func loadHistory() -> [Turn] {
@@ -138,7 +156,7 @@ final class DirectClient: @unchecked Sendable {
             apiKey: key)
 
         let urlRequest = try provider.buildRequest(request)
-        logger.info("Direct request to \(provider.id, privacy: .public) (photo=\(photoJPEG != nil))")
+        Self.logger.info("Direct request to \(provider.id, privacy: .public) (photo=\(photoJPEG != nil))")
         let (data, response) = try await URLSession.shared.data(for: urlRequest)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         let reply = try provider.parseReply(data, status: status)
@@ -195,8 +213,11 @@ enum VisualQueryDetector {
         "through the camera",
     ]
 
-    /// "this X"/"that X"/"the one" - visual unless the noun is abstract
-    private static let deicticPattern = try! NSRegularExpression(
+    /// "this X"/"that X"/"the one" - visual unless the noun is abstract.
+    /// Optional rather than `try!`: the pattern is a literal, so the only way
+    /// it fails is a typo in an edit, and losing deictic detection beats
+    /// trapping every query on the voice path.
+    private static let deicticPattern = try? NSRegularExpression(
         pattern: "\\b(this|that|these|those)\\s+([a-z]+)|\\bthe one\\b",
         options: [.caseInsensitive]
     )
@@ -228,6 +249,7 @@ enum VisualQueryDetector {
         if keywords.contains(where: { lowered.contains($0) }) {
             return true
         }
+        guard let deicticPattern else { return false }
         let range = NSRange(text.startIndex..., in: text)
         let matches = deicticPattern.matches(in: text, range: range)
         for match in matches {

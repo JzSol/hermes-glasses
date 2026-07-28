@@ -94,7 +94,6 @@ final class LensViewModel {
     init(hermesVM: HermesSessionViewModel) {
         self.hermesVM = hermesVM
 
-
         // Restore the saved dwell time (default 2 s) and sync the tracker.
         let stored = UserDefaults.standard.object(forKey: Self.dwellKey) as? Double
         dwellSeconds = min(max(stored ?? 2.0, Self.minDwell), Self.maxDwell)

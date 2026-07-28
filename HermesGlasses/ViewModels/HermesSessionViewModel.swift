@@ -1042,8 +1042,13 @@ final class HermesSessionViewModel {
 
     /// Store/replace the API key for the current provider (Keychain)
     func setProviderKey(_ key: String) {
-        DirectClient.storeKey(key, for: directProviderID)
+        let stored = DirectClient.storeKey(key, for: directProviderID)
+        // hasKey re-reads the Keychain, so the badge reflects what is
+        // actually there - but a silent failure needs saying out loud.
         hasDirectKey = DirectClient.hasKey(for: directProviderID)
+        if !stored, !hasDirectKey {
+            show("Could not save the API key to the Keychain.")
+        }
     }
 
     /// "Send now" button - don't wait for the pause detection

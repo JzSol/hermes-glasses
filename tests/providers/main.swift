@@ -139,9 +139,14 @@ do {
         imageJPEG: Data([0xFF, 0xD8]), model: "gemini-2.5-flash",
         baseURL: p.defaultBaseURL, apiKey: "g-key")
     let ur = try! p.buildRequest(req)
+    // The key is a header, never a query item: the URL reaches error
+    // strings, alerts and logs, and must not carry a secret into them.
     expectEqual(ur.url!.absoluteString,
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=g-key",
-        "gemini url with key query")
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        "gemini url without key")
+    expectEqual(ur.value(forHTTPHeaderField: "x-goog-api-key"), "g-key",
+        "gemini key in header")
+    expect(!(ur.url!.absoluteString.contains("g-key")), "gemini url has no key")
     let body = bodyJSON(ur)
     let sys = (body["systemInstruction"] as? [String: Any])?["parts"] as? [[String: Any]] ?? []
     expect((sys.first?["text"] as? String)?.contains("Current user context: ctx") ?? false,

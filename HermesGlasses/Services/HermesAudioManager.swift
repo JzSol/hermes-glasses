@@ -24,15 +24,63 @@ enum CaptureRoute {
 /// Manages audio capture and playback for the Hermes Glasses app
 final class HermesAudioManager: NSObject, @unchecked Sendable {
     // MARK: - Callbacks
+    //
+    // Assigned on the main actor, read on the audio-render thread. They live
+    // in one locked struct and the tap snapshots the whole set once per
+    // buffer, so a mid-buffer reassignment can't be seen half-applied.
 
-    var onAudioChunk: ((Data) -> Void)?
-    var onSpeechDetected: (() -> Void)?
-    var onSilenceDetected: (() -> Void)?
-    var onPlaybackComplete: (() -> Void)?
+    private struct Callbacks {
+        var onAudioChunk: ((Data) -> Void)?
+        var onSpeechDetected: (() -> Void)?
+        var onSilenceDetected: (() -> Void)?
+        var onPlaybackComplete: (() -> Void)?
+        var onDebug: ((String) -> Void)?
+        var onRawBuffer: ((AVAudioPCMBuffer) -> Void)?
+        var onLevel: ((Float) -> Void)?
+        var onRouteChanged: (() -> Void)?
+    }
+
+    private let callbackLock = OSAllocatedUnfairLock(uncheckedState: Callbacks())
+
+    var onAudioChunk: ((Data) -> Void)? {
+        get { callbackLock.withLockUnchecked { $0.onAudioChunk } }
+        set { callbackLock.withLockUnchecked { $0.onAudioChunk = newValue } }
+    }
+    var onSpeechDetected: (() -> Void)? {
+        get { callbackLock.withLockUnchecked { $0.onSpeechDetected } }
+        set { callbackLock.withLockUnchecked { $0.onSpeechDetected = newValue } }
+    }
+    var onSilenceDetected: (() -> Void)? {
+        get { callbackLock.withLockUnchecked { $0.onSilenceDetected } }
+        set { callbackLock.withLockUnchecked { $0.onSilenceDetected = newValue } }
+    }
+    var onPlaybackComplete: (() -> Void)? {
+        get { callbackLock.withLockUnchecked { $0.onPlaybackComplete } }
+        set { callbackLock.withLockUnchecked { $0.onPlaybackComplete = newValue } }
+    }
     /// Diagnostic messages (mic route, levels) for remote debugging
-    var onDebug: ((String) -> Void)?
+    var onDebug: ((String) -> Void)? {
+        get { callbackLock.withLockUnchecked { $0.onDebug } }
+        set { callbackLock.withLockUnchecked { $0.onDebug = newValue } }
+    }
     /// Raw tap buffer, pre-conversion - for on-device speech recognition
-    var onRawBuffer: ((AVAudioPCMBuffer) -> Void)?
+    var onRawBuffer: ((AVAudioPCMBuffer) -> Void)? {
+        get { callbackLock.withLockUnchecked { $0.onRawBuffer } }
+        set { callbackLock.withLockUnchecked { $0.onRawBuffer = newValue } }
+    }
+    /// Mic RMS level (0..~1), throttled to ~4/s - for the UI level meter
+    var onLevel: ((Float) -> Void)? {
+        get { callbackLock.withLockUnchecked { $0.onLevel } }
+        set { callbackLock.withLockUnchecked { $0.onLevel = newValue } }
+    }
+    /// Fired (on main) after a route/config change re-installed the tap.
+    /// Consumers feeding SFSpeech MUST restart their recognition request -
+    /// it cannot absorb a buffer-format change mid-request.
+    var onRouteChanged: (() -> Void)? {
+        get { callbackLock.withLockUnchecked { $0.onRouteChanged } }
+        set { callbackLock.withLockUnchecked { $0.onRouteChanged = newValue } }
+    }
+
     /// Converted PCM16 mono 16 kHz samples, delivered ON THE AUDIO THREAD and
     /// ungated by VAD - for `ConversationRecorder`.
     ///
@@ -40,13 +88,23 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     /// second, routing a recording through the main queue makes the recording
     /// hostage to whatever the UI is doing. Handlers must not block; the
     /// recorder only enqueues onto its own serial queue.
-    var onRecordChunk: ((Data) -> Void)?
-    /// Mic RMS level (0..~1), throttled to ~4/s - for the UI level meter
-    var onLevel: ((Float) -> Void)?
-    /// Fired (on main) after a route/config change re-installed the tap.
-    /// Consumers feeding SFSpeech MUST restart their recognition request -
-    /// it cannot absorb a buffer-format change mid-request.
-    var onRouteChanged: (() -> Void)?
+    ///
+    /// This one has its own lock, and it is the ONE callback invoked with a
+    /// lock held. `finishConversationCapture` nils it out and then closes the
+    /// recorder's file handle, so "no chunk can still be in flight once the
+    /// setter returns" has to be a guarantee, not a hope - a snapshot taken
+    /// one instruction before the nil-out would otherwise write into a closed
+    /// handle. The contract above (enqueue and return, never block, never
+    /// call back into this class) is what keeps that safe on a real-time
+    /// thread.
+    var onRecordChunk: ((Data) -> Void)? {
+        get { recordChunkLock.withLockUnchecked { $0 } }
+        set { recordChunkLock.withLockUnchecked { $0 = newValue } }
+    }
+
+    private let recordChunkLock = OSAllocatedUnfairLock<((Data) -> Void)?>(
+        uncheckedState: nil
+    )
 
     // MARK: - Private
 
@@ -63,19 +121,29 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
 
     private var isCapturing: Bool = false
     private var configChangeObserver: NSObjectProtocol?
-    private var tapBufferCount: Int = 0
-    private var lastDebugTime: TimeInterval = 0
-    private var lastLevelTime: TimeInterval = 0
-    // Lazy conversion state - rebuilt whenever the tap's buffer format changes
-    private var converter: AVAudioConverter?
-    private var converterInputFormat: AVAudioFormat?
 
-    // VAD
-    private var isSpeechActive: Bool = false
-    private var silenceCounter: Int = 0
+    /// Everything the tap block touches. `startCapture`/`rebuildEngine`/
+    /// `stopCapture` run off the main actor (they are `async` on a
+    /// non-isolated class) while the tap is live on the audio-render thread,
+    /// so all of it is read and written concurrently.
+    private struct TapState {
+        // Lazy conversion state - rebuilt whenever the tap's buffer format changes
+        var converter: AVAudioConverter?
+        var converterInputFormat: AVAudioFormat?
+        var bufferCount: Int = 0
+        var lastDebugTime: TimeInterval = 0
+        var lastLevelTime: TimeInterval = 0
+        // VAD
+        var isSpeechActive: Bool = false
+        var silenceCounter: Int = 0
+    }
+
+    private let tapLock = OSAllocatedUnfairLock(uncheckedState: TapState())
+
+    // VAD tuning
     private let silenceThreshold: Float = 0.015
     private let silenceFrames: Int = 20
-    private var vadDisabled: Bool = true
+    private let vadDisabled: Bool = true
 
     // Playback - a self-contained clip player, independent of the engine
     private var clipPlayer: AVAudioPlayer?
@@ -217,7 +285,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         }
 
         isCapturing = true
-        tapBufferCount = 0
+        tapLock.withLockUnchecked { $0.bufferCount = 0 }
         observeConfigurationChanges()
         installTap()
         do {
@@ -244,9 +312,17 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             configChangeObserver = nil
         }
         audioEngine.stop()
-        converter = nil
-        converterInputFormat = nil
+        clearConverter()
         audioEngine = AVAudioEngine()
+    }
+
+    /// Drop the cached converter so the next tap buffer rebuilds one for the
+    /// new route's format.
+    private func clearConverter() {
+        tapLock.withLockUnchecked { state in
+            state.converter = nil
+            state.converterInputFormat = nil
+        }
     }
 
     func stopCapture() {
@@ -259,8 +335,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         }
         inputNode.removeTap(onBus: 0)
         audioEngine.stop()
-        converter = nil
-        converterInputFormat = nil
+        clearConverter()
         try? AVAudioSession.sharedInstance().setActive(false)
     }
 
@@ -415,23 +490,46 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     }
 
     private func processInputBuffer(_ buffer: AVAudioPCMBuffer) {
+        // Audio-render thread. Every critical section below is a handful of
+        // stores; the conversion, the callbacks and the logging all happen
+        // with no lock held.
+        let now = Date().timeIntervalSince1970
+        let entry = tapLock.withLockUnchecked { state -> (converter: AVAudioConverter?, count: Int, level: Bool, debug: Bool) in
+            state.bufferCount += 1
+            let level = now - state.lastLevelTime > 0.25
+            if level { state.lastLevelTime = now }
+            let debug = now - state.lastDebugTime > 1.0
+            if debug { state.lastDebugTime = now }
+            let reusable = state.converterInputFormat == buffer.format
+            return (reusable ? state.converter : nil, state.bufferCount, level, debug)
+        }
+
         // (Re)build the converter whenever the incoming format changes -
-        // route switches change the sample rate under our feet
-        if converter == nil || converterInputFormat != buffer.format {
+        // route switches change the sample rate under our feet. Building one
+        // allocates, so it happens outside the critical section.
+        var converter = entry.converter
+        if converter == nil {
             converter = AVAudioConverter(from: buffer.format, to: captureFormat)
-            converterInputFormat = buffer.format
+            let format = buffer.format
+            tapLock.withLockUnchecked { state in
+                state.converter = converter
+                state.converterInputFormat = format
+            }
         }
         guard let converter else { return }
-        tapBufferCount += 1
-        if tapBufferCount == 1 || tapBufferCount % 100 == 0 {
-            logger.info("Tap delivered buffer #\(self.tapBufferCount, privacy: .public) (\(buffer.frameLength, privacy: .public) frames)")
+
+        let count = entry.count
+        if count == 1 || count % 100 == 0 {
+            logger.info("Tap delivered buffer #\(count, privacy: .public) (\(buffer.frameLength, privacy: .public) frames)")
         }
 
-        onRawBuffer?(buffer)
+        // One snapshot per buffer: the set of callbacks cannot change under
+        // the rest of this function.
+        let callbacks = callbackLock.withLockUnchecked { $0 }
 
-        let nowLevel = Date().timeIntervalSince1970
-        if nowLevel - lastLevelTime > 0.25, let onLevel {
-            lastLevelTime = nowLevel
+        callbacks.onRawBuffer?(buffer)
+
+        if entry.level, let onLevel = callbacks.onLevel {
             let level = rawFloatRMS(buffer)
             DispatchQueue.main.async { onLevel(max(0, level)) }
         }
@@ -449,52 +547,73 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
 
         // Straight to the recorder, on this thread, before any VAD gate: a
         // recording of a conversation must contain the quiet half of it.
-        onRecordChunk?(data)
+        // Invoked under its own lock - see `onRecordChunk`.
+        recordChunkLock.withLockUnchecked { handler in handler?(data) }
 
         let rms = computeRMS(channelData[0], frameLength: frameLength)
         let isVoice = rms > silenceThreshold
 
         // Periodic level diagnostics: raw float level straight off the mic
         // vs. level after conversion, plus the active input route
-        let now = Date().timeIntervalSince1970
-        if now - lastDebugTime > 1.0 {
-            lastDebugTime = now
+        if entry.debug {
             let raw = rawFloatRMS(buffer)
             let route = AVAudioSession.sharedInstance()
                 .currentRoute.inputs.first?.portName ?? "none"
             sendDebug(String(
                 format: "levels raw=%.4f converted=%.4f route=%@ frames=%d",
                 raw, rms, route, buffer.frameLength
-            ))
+            ), to: callbacks.onDebug)
         }
 
-        // Send audio whenever VAD is disabled or speech is in progress
-        if vadDisabled || isVoice || isSpeechActive {
-            DispatchQueue.main.async { [weak self] in
-                self?.onAudioChunk?(data)
+        // Advance the speech/silence state machine even when VAD gating is
+        // off, so end-of-utterance is still detected.
+        let (wasSpeechActive, transition) = tapLock.withLockUnchecked {
+            state -> (Bool, VADTransition) in
+            let wasSpeechActive = state.isSpeechActive
+            if isVoice {
+                state.silenceCounter = 0
+                guard !wasSpeechActive else { return (wasSpeechActive, .none) }
+                state.isSpeechActive = true
+                return (wasSpeechActive, .speechStarted)
             }
+            guard wasSpeechActive else { return (wasSpeechActive, .none) }
+            state.silenceCounter += 1
+            guard state.silenceCounter >= silenceFrames else {
+                return (wasSpeechActive, .none)
+            }
+            state.isSpeechActive = false
+            state.silenceCounter = 0
+            return (wasSpeechActive, .silenceStarted)
         }
 
-        // Always run the speech/silence state machine so end-of-utterance
-        // is detected even when VAD gating is off.
-        if isVoice {
-            if !isSpeechActive {
-                isSpeechActive = true
-                DispatchQueue.main.async { [weak self] in
-                    self?.onSpeechDetected?()
-                }
+        // Send audio whenever VAD is disabled or speech is in progress (the
+        // gate reads the state as it was BEFORE this buffer advanced it).
+        // The bridge's legacy audio path has no app-side consumer today, so
+        // skip the hop to main entirely when nobody is listening - at ~47
+        // buffers a second an empty dispatch is pure overhead.
+        if let onAudioChunk = callbacks.onAudioChunk,
+           vadDisabled || isVoice || wasSpeechActive {
+            DispatchQueue.main.async { onAudioChunk(data) }
+        }
+
+        switch transition {
+        case .none:
+            break
+        case .speechStarted:
+            if let onSpeechDetected = callbacks.onSpeechDetected {
+                DispatchQueue.main.async { onSpeechDetected() }
             }
-            silenceCounter = 0
-        } else if isSpeechActive {
-            silenceCounter += 1
-            if silenceCounter >= silenceFrames {
-                isSpeechActive = false
-                silenceCounter = 0
-                DispatchQueue.main.async { [weak self] in
-                    self?.onSilenceDetected?()
-                }
+        case .silenceStarted:
+            if let onSilenceDetected = callbacks.onSilenceDetected {
+                DispatchQueue.main.async { onSilenceDetected() }
             }
         }
+    }
+
+    private enum VADTransition {
+        case none
+        case speechStarted
+        case silenceStarted
     }
 
     private func convertBuffer(
@@ -530,11 +649,12 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         return error == nil ? output : nil
     }
 
-    private func sendDebug(_ message: String) {
+    /// `to:` lets the tap reuse the handler it already snapshotted rather
+    /// than re-reading it; callers off the audio thread pass nothing.
+    private func sendDebug(_ message: String, to handler: ((String) -> Void)? = nil) {
         logger.info("\(message, privacy: .public)")
-        DispatchQueue.main.async { [weak self] in
-            self?.onDebug?(message)
-        }
+        guard let handler = handler ?? onDebug else { return }
+        DispatchQueue.main.async { handler(message) }
     }
 
     /// RMS of the untouched float buffer straight from the input tap
