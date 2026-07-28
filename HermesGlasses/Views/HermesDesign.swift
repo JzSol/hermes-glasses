@@ -420,6 +420,9 @@ struct HermesBadge: View {
 struct HermesStatusPill: View {
     let text: String
     var dot: Color? = nil
+    /// Trailing SF Symbol - e.g. a snap count while a recording runs.
+    /// Keeps counters in the app's own iconography instead of an emoji.
+    var icon: String? = nil
     /// Terracotta-tinted (connected) vs neutral (everything else).
     var tinted: Bool = true
 
@@ -435,6 +438,11 @@ struct HermesStatusPill: View {
                 .foregroundStyle(tinted ? HermesTheme.accentOnCard : Color.secondary)
                 .lineLimit(1)
                 .fixedSize()
+            if let icon {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(tinted ? HermesTheme.accentOnCard : Color.secondary)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
@@ -752,5 +760,18 @@ struct HermesScrollPage<Content: View>: View {
                 .padding(.bottom, 44)
         }
         .background(HermesTheme.groupedCanvas.ignoresSafeArea())
+    }
+}
+
+extension View {
+    /// Stock `Form`/`List` pages keep their controls but pick up the warm
+    /// canvas, so a sub-page never flashes iOS grey against the hub. The one
+    /// real definition - `SettingsView` and `PeopleView` each used to carry
+    /// their own copy of these three modifiers.
+    func hermesFormStyle() -> some View {
+        self
+            .scrollContentBackground(.hidden)
+            .background(HermesTheme.groupedCanvas)
+            .tint(HermesTheme.accent)
     }
 }

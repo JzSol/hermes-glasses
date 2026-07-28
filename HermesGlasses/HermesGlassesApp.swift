@@ -9,10 +9,13 @@
 
 import MWDATCore
 import SwiftUI
+import os
 
 #if DEBUG
 import MWDATMockDevice
 #endif
+
+private let logger = Logger(subsystem: "com.flowsxr.hermesglasses", category: "startup")
 
 @main
 struct HermesGlassesApp: App {
@@ -36,9 +39,9 @@ struct HermesGlassesApp: App {
         do {
             try Wearables.configure()
         } catch {
-            #if DEBUG
-            NSLog("[HermesGlasses] Failed to configure Wearables SDK: \(error)")
-            #endif
+            // Unconditional: a release build with a broken SDK config should
+            // still leave a breadcrumb, not just the DEBUG console.
+            logger.error("Failed to configure Wearables SDK: \(error.localizedDescription, privacy: .public)")
         }
 
         #if DEBUG
@@ -88,8 +91,18 @@ struct HermesGlassesApp: App {
             }
             // A cover, not a sibling: as a sibling it laid out UNDER the
             // session screen, leaving half the app visible above it.
+            //
+            // Gated on `onboardingComplete`: onboarding's own glasses step
+            // can also drive `registrationState` to `.registering` (its
+            // "Connect Glasses" button), and it already shows its own
+            // inline waiting state (OnboardingView.swift:75-82) for exactly
+            // that. Without the gate, two full-screen covers wanted to
+            // present at once.
             .fullScreenCover(isPresented: Binding(
-                get: { wearablesViewModel.registrationState == .registering },
+                get: {
+                    onboardingComplete
+                        && wearablesViewModel.registrationState == .registering
+                },
                 set: { _ in }
             )) {
                 RegistrationInProgressView(viewModel: wearablesViewModel)

@@ -157,6 +157,7 @@ struct PhoneModeSessionView: View {
                 ))
                 .labelsHidden()
                 .tint(HermesTheme.accent)
+                .accessibilityLabel("Speak replies aloud")
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 8)

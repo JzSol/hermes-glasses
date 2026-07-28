@@ -18,7 +18,7 @@ struct PeopleView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    private var days: [(label: String, encounters: [Encounter])] {
+    private var days: [(date: Date, label: String, encounters: [Encounter])] {
         // Read the revision so @Observable tracks it: allEncounters() reads
         // the store directly, so nothing else here tells SwiftUI to re-run.
         // This replaces an .id(revision) on the NavigationStack root, which
@@ -38,7 +38,7 @@ struct PeopleView: View {
             }
             groups[day]?.append(encounter)
         }
-        return order.map { (label: Self.dayLabel($0), encounters: groups[$0] ?? []) }
+        return order.map { (date: $0, label: Self.dayLabel($0), encounters: groups[$0] ?? []) }
     }
 
     var body: some View {
@@ -53,7 +53,7 @@ struct PeopleView: View {
                             : "Stored on this iPhone only",
                             systemImage: hermesVM.badgeAssistEnabled ? "cloud" : "lock")
 
-                        ForEach(Array(days.enumerated()), id: \.element.label) { index, day in
+                        ForEach(Array(days.enumerated()), id: \.element.date) { index, day in
                             HermesSection(
                                 header: day.label,
                                 footer: index == days.count - 1
@@ -125,6 +125,13 @@ private struct EncounterRow: View {
     let hermesVM: HermesSessionViewModel
     let encounter: Encounter
 
+    /// Loaded once in `.onAppear`, never read from `body` - the same defect
+    /// `TimelineRowView` and `SightingDetailView` fix below: `body` re-runs
+    /// whenever the list recomputes (a badge-assist revision bump, a scroll
+    /// pass), and re-decoding the JPEG off disk each time is a real cost
+    /// with a screenful of rows.
+    @State private var thumbnailImage: UIImage?
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             thumbnail
@@ -151,6 +158,7 @@ private struct EncounterRow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
         .contentShape(Rectangle())
+        .onAppear(perform: loadThumbnail)
     }
 
     private var photoCount: Int {
@@ -166,11 +174,17 @@ private struct EncounterRow: View {
         return "spoken note · \(time)"
     }
 
+    private func loadThumbnail() {
+        guard thumbnailImage == nil,
+              let data = hermesVM.encounterPhoto(encounter)
+        else { return }
+        thumbnailImage = UIImage(data: data)
+    }
+
     @ViewBuilder
     private var thumbnail: some View {
-        if let data = hermesVM.encounterPhoto(encounter),
-           let image = UIImage(data: data) {
-            Image(uiImage: image)
+        if let thumbnailImage {
+            Image(uiImage: thumbnailImage)
                 .resizable()
                 .scaledToFill()
                 .frame(width: 52, height: 52)
@@ -243,12 +257,7 @@ private struct EncounterDetailView: View {
                 }
             }
         }
-        // `hermesFormStyle()` is a PRIVATE extension inside SettingsView.swift
-        // and is not visible here - these are the same three modifiers, which
-        // is what this file already used before the timeline.
-        .scrollContentBackground(.hidden)
-        .background(HermesTheme.groupedCanvas.ignoresSafeArea())
-        .tint(HermesTheme.accent)
+        .hermesFormStyle()
         .onAppear { note = encounter.note }
         .onDisappear {
             // Swipe-back must not discard an edit (same contract as Settings).
@@ -529,9 +538,7 @@ private struct SightingDetailView: View {
                 }
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(HermesTheme.groupedCanvas.ignoresSafeArea())
-        .tint(HermesTheme.accent)
+        .hermesFormStyle()
         .navigationTitle(badge?.name ?? "Unnamed")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {

@@ -13,6 +13,14 @@
 
 import SwiftUI
 
+/// The user-bubble shape (rounded, tail on the bottom-trailing corner) -
+/// shared so `ContentView.liveTranscriptBubble` and the nested `UserBubble`
+/// draw the exact same geometry instead of each carrying its own copy.
+fileprivate let userBubbleShape = UnevenRoundedRectangle(
+    topLeadingRadius: 20, bottomLeadingRadius: 20,
+    bottomTrailingRadius: 6, topTrailingRadius: 20
+)
+
 // MARK: - Appearance
 
 /// Light/dark override for the whole app. `.system` follows the phone.
@@ -173,12 +181,10 @@ struct ContentView: View {
 
     private var emptyStateBody: String {
         switch glassesSetupState {
-        case .ready:
+        case .ready, .notPaired:
             return "\(assistantName) talks to you through your Meta Ray-Ban glasses - mic, speaker, and camera."
         case .phoneChosen:
             return "This iPhone is the eye: its camera sees for you and the lens is simulated on screen."
-        case .notPaired:
-            return "\(assistantName) talks to you through your Meta Ray-Ban glasses - mic, speaker, and camera."
         case .pairedButUnreachable:
             return "They're paired but out of reach right now. Start anyway and this iPhone will be the eye."
         }
@@ -207,13 +213,13 @@ struct ContentView: View {
                 Spacer(minLength: 4)
 
                 // New conversation
-                iconCircle("plus") {
+                iconCircle("plus", label: "New conversation") {
                     hermesVM.startNewConversation()
                 }
                 .disabled(hermesVM.connectionState == .disconnected)
                 .opacity(hermesVM.connectionState == .disconnected ? 0.4 : 1)
 
-                iconCircle("gearshape") {
+                iconCircle("gearshape", label: "Settings") {
                     showSettings = true
                 }
             }
@@ -299,16 +305,21 @@ struct ContentView: View {
                 // Live capture indicator. The entry point is the Record quick
                 // action below - this only earns its place while a capture is
                 // running, when the snap count is worth seeing.
+                // This pill only ever renders while a capture is running -
+                // `conversationCaptureActive` gates the `if` above, so the
+                // three ternaries this used to carry were always the same
+                // branch.
                 if hermesVM.socialNotesEnabled,
                    hermesVM.conversationCaptureActive {
                     Button {
                         hermesVM.toggleConversationCapture()
                     } label: {
                         HermesStatusPill(
-                            text: hermesVM.conversationCaptureActive
-                                ? recordingPillLabel : "Record",
-                            dot: hermesVM.conversationCaptureActive ? .red : nil,
-                            tinted: hermesVM.conversationCaptureActive
+                            text: recordingPillLabel,
+                            dot: .red,
+                            icon: hermesVM.conversationCaptureSnapCount > 0
+                                ? "camera.fill" : nil,
+                            tinted: true
                         )
                     }
                     .buttonStyle(.plain)
@@ -321,11 +332,12 @@ struct ContentView: View {
 
     private var recordingPillLabel: String {
         let snaps = hermesVM.conversationCaptureSnapCount
-        return snaps == 0 ? "Recording…" : "Recording… \(snaps) 📸"
+        return snaps == 0 ? "Recording…" : "Recording… \(snaps)"
     }
 
     private func iconCircle(
         _ systemName: String,
+        label: String,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -336,6 +348,7 @@ struct ContentView: View {
                 .background(Color.secondary.opacity(0.12), in: Circle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     private var directKeyReady: Bool {
@@ -443,6 +456,7 @@ struct ContentView: View {
             }
             .buttonStyle(.plain)
             .padding(.bottom, 20)
+            .accessibilityLabel("Send now")
         }
     }
 
@@ -524,13 +538,6 @@ struct ContentView: View {
 
     // MARK: - Bubbles
 
-    private var userBubbleShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            topLeadingRadius: 20, bottomLeadingRadius: 20,
-            bottomTrailingRadius: 6, topTrailingRadius: 20
-        )
-    }
-
     struct UserBubble: View {
         let text: String
 
@@ -543,13 +550,7 @@ struct ContentView: View {
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
-                    .background(
-                        HermesTheme.accent,
-                        in: UnevenRoundedRectangle(
-                            topLeadingRadius: 20, bottomLeadingRadius: 20,
-                            bottomTrailingRadius: 6, topTrailingRadius: 20
-                        )
-                    )
+                    .background(HermesTheme.accent, in: userBubbleShape)
             }
         }
     }

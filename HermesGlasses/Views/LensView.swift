@@ -84,6 +84,7 @@ struct LensView: View {
             .buttonStyle(.plain)
             .disabled(model.loggedObjectCount == 0)
             .opacity(model.loggedObjectCount == 0 ? 0.4 : 1)
+            .accessibilityLabel("Export PDF")
 
             HermesChromePill(title: "History") {
                 model.pauseStreaming()
@@ -197,6 +198,14 @@ struct LensView: View {
                     height: r.height * fitted.height
                 )
                 let isTarget = detection.label == model.targetLabel
+                let label = Text(" \(detection.label) ")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(isTarget ? .white : Color.white.opacity(0.6))
+                // Sized to the label, not a fixed 62x16 - a long name like
+                // "refrigerator" overflowed the old fixed-width tag.
+                let labelSize = context.resolve(label)
+                    .measure(in: CGSize(width: fitted.width, height: 20))
+
                 // Terracotta on the object being looked at, dashed cream
                 // on everything else - one accent, one focus (design 4c).
                 if isTarget {
@@ -206,8 +215,8 @@ struct LensView: View {
                         lineWidth: 2.5
                     )
                     let tag = CGRect(
-                        x: box.minX, y: max(box.minY - 16, 0),
-                        width: 62, height: 16
+                        x: box.minX, y: max(box.minY - labelSize.height, 0),
+                        width: labelSize.width, height: labelSize.height
                     )
                     context.fill(
                         Path(roundedRect: tag, cornerRadius: 3),
@@ -220,12 +229,12 @@ struct LensView: View {
                         style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
                     )
                 }
-                let label = Text(" \(detection.label) ")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(isTarget ? .white : Color.white.opacity(0.6))
                 context.draw(
                     label,
-                    at: CGPoint(x: box.minX + 4, y: max(box.minY - 8, 8)),
+                    at: CGPoint(
+                        x: box.minX + 4,
+                        y: max(box.minY - labelSize.height / 2, labelSize.height / 2)
+                    ),
                     anchor: .leading
                 )
             }
@@ -250,7 +259,7 @@ struct LensView: View {
                     HStack(spacing: 6) {
                         Image(systemName: stage == .flash
                             ? "camera.fill" : "scissors")
-                        Text(stage == .flash ? "Taking a pic…" : "Cropping…")
+                        Text(stage == .flash ? "Taking a photo…" : "Cropping…")
                     }
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white)
@@ -425,7 +434,14 @@ struct LensView: View {
         let data = LensPDFRenderer.makePDF(title: title, rows: rows)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("object-log.pdf")
-        try? data.write(to: url, options: .atomic)
-        shareItem = ShareItem(url: url)
+        do {
+            try data.write(to: url, options: .atomic)
+            shareItem = ShareItem(url: url)
+        } catch {
+            // The header already surfaces `model.errorBanner` (design 4c's
+            // one error affordance on this screen) - reuse it rather than
+            // presenting a share sheet for a file that was never written.
+            model.errorBanner = "Couldn't save the PDF: \(error.localizedDescription)"
+        }
     }
 }

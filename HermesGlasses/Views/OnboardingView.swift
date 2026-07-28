@@ -244,7 +244,7 @@ struct OnboardingView: View {
                                    denied: "Camera declined - no phone-mode eye")
             }
 
-            Text("The glasses camera is granted separately, on your first photo, via the Meta AI app.")
+            Text("The glasses camera is a separate grant from the Meta AI app - Hermes asks for it as soon as the glasses finish pairing, and you can re-request it any time from Settings → Devices.")
                 .font(.system(size: 13))
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)

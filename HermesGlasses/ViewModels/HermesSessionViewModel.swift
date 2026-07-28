@@ -97,6 +97,12 @@ final class HermesSessionViewModel {
     /// Test-panel results keyed by test name: nil=never run, ""=pass, else error
     var testResults: [String: String?] = [:]
     var testRunning: Set<String> = []
+    /// The failure message from the most recently completed test, cleared on
+    /// a pass. `testResults` is a dictionary, so scanning its `.values` for
+    /// "the" failure returns whichever one the dictionary enumerates first -
+    /// this is set explicitly by `runTest` so the Developer panel always
+    /// shows the outcome of the test that was just run.
+    var lastTestFailure: String? = nil
     /// Glasses camera permission (granted in the Meta AI app); nil = unknown
     var cameraPermissionGranted: Bool? = nil
     /// Preferred microphone source; the banner chip shows the ACTUAL route
@@ -2541,8 +2547,10 @@ final class HermesSessionViewModel {
         do {
             try await body()
             testResults[name] = ""
+            lastTestFailure = nil
         } catch {
             testResults[name] = error.localizedDescription
+            lastTestFailure = error.localizedDescription
         }
     }
 

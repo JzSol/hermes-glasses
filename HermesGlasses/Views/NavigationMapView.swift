@@ -111,13 +111,18 @@ struct NavigationMapView: View {
                             .foregroundStyle(.tertiary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
                 }
 
                 // Walking vs driving changes the route, so it belongs beside
                 // the search, not buried in Settings.
                 Picker("Mode", selection: $mode) {
-                    Image(systemName: "figure.walk").tag(TransportMode.walking)
-                    Image(systemName: "car.fill").tag(TransportMode.driving)
+                    Image(systemName: "figure.walk")
+                        .accessibilityLabel("Walking")
+                        .tag(TransportMode.walking)
+                    Image(systemName: "car.fill")
+                        .accessibilityLabel("Driving")
+                        .tag(TransportMode.driving)
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 96)

@@ -35,6 +35,16 @@ struct SettingsView: View {
     @State private var endpoint: String = ""
     @State private var providerKey: String = ""
     @State private var showObjectLog: Bool = false
+    /// Seeds `endpoint` exactly once. Without this, popping back from any
+    /// sub-page re-runs the root's `onAppear` and overwrites whatever the
+    /// Assistant page has in flight, discarding it before Done (or
+    /// swipe-dismiss) can commit it - `providerKey` is never reset this way,
+    /// which is what gave the bug away.
+    @State private var didLoadEndpoint = false
+    /// Consumes `initialRoute` exactly once. Without this, popping back to
+    /// an empty `path` re-runs `onAppear` and re-pushes the same route,
+    /// trapping the user on that page - Back never actually goes back.
+    @State private var didConsumeInitialRoute = false
     @AppStorage(AppearanceMode.storageKey) private var appearanceRaw =
         AppearanceMode.system.rawValue
     @Environment(\.dismiss) private var dismiss
@@ -157,8 +167,14 @@ struct SettingsView: View {
                 }
             }
             .onAppear {
-                endpoint = hermesVM.hermesEndpoint
-                if let initialRoute, path.isEmpty { path = [initialRoute] }
+                if !didLoadEndpoint {
+                    didLoadEndpoint = true
+                    endpoint = hermesVM.hermesEndpoint
+                }
+                if !didConsumeInitialRoute, let initialRoute {
+                    didConsumeInitialRoute = true
+                    path = [initialRoute]
+                }
             }
             .onDisappear(perform: commitTypedValues)
             .sheet(isPresented: $showObjectLog) {
@@ -427,7 +443,7 @@ private struct GlassesStatusPage: View {
             } header: {
                 Text("Status")
             } footer: {
-                Text("0 devices with \"Registered\" means the glasses aren't reachable over Bluetooth right now, or the pairing is stale. Camera permission is granted on first photo, via the Meta AI app.")
+                Text("0 devices with \"Registered\" means the glasses aren't reachable over Bluetooth right now, or the pairing is stale. Camera permission is requested via the Meta AI app as soon as the glasses pair - re-request it from Devices → Camera access.")
             }
 
             Section {
@@ -453,7 +469,7 @@ private struct GlassesStatusPage: View {
     private var cameraPermissionText: String {
         switch hermesVM.cameraPermissionGranted {
         case .some(true): return "Granted"
-        case .some(false): return "Denied - tap Photo test to grant"
+        case .some(false): return "Denied - go back to Devices and tap Allow under Camera access"
         case .none: return "Unknown (start a session)"
         }
     }
@@ -519,6 +535,7 @@ private struct AssistantPage: View {
                 hermesVM.savePreset(name: presetName, url: endpoint)
                 presetsVersion += 1
             }
+            .disabled(presetName.trimmingCharacters(in: .whitespaces).isEmpty)
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Saves the current URL so you can switch with one tap.")
@@ -684,6 +701,12 @@ private struct AssistantPage: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .contextMenu {
+                    Button("Delete", role: .destructive) {
+                        hermesVM.deletePreset(name: preset.name)
+                        presetsVersion += 1
+                    }
+                }
 
                 HermesDivider()
             }
@@ -1078,9 +1101,11 @@ private struct DeveloperPage: View {
                         }
                     }
 
-                    // Most recent failure message, if any
-                    if let failure = hermesVM.testResults.values
-                        .compactMap({ $0 }).first(where: { !$0.isEmpty }) {
+                    // Failure from whichever test was just run - tracked
+                    // explicitly, since `testResults` is a dictionary and
+                    // scanning `.values` returns an arbitrary one, not
+                    // necessarily the latest.
+                    if let failure = hermesVM.lastTestFailure {
                         Text(failure)
                             .font(.caption2)
                             .foregroundStyle(HermesTheme.destructive)
@@ -1182,18 +1207,5 @@ private struct DeveloperPage: View {
         case .some(false): return "Denied"
         case .none: return "Unknown"
         }
-    }
-}
-
-// MARK: - Form styling
-
-private extension View {
-    /// Stock `Form`/`List` pages keep their controls but pick up the warm
-    /// canvas, so a sub-page never flashes iOS grey against the hub.
-    func hermesFormStyle() -> some View {
-        self
-            .scrollContentBackground(.hidden)
-            .background(HermesTheme.groupedCanvas)
-            .tint(HermesTheme.accent)
     }
 }

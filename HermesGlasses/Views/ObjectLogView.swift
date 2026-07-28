@@ -17,7 +17,13 @@ struct ObjectLogView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    private var days: [(label: String, sessions: [LensSession])] {
+    private var days: [(date: Date, label: String, sessions: [LensSession])] {
+        // Read the revision so @Observable tracks it, instead of forcing a
+        // rebuild with `.id(revision)` on the NavigationStack below - that
+        // reset the whole tree (and popped an open session detail) every
+        // time a save or delete bumped the revision. Same fix as
+        // PeopleView.days (PeopleView.swift:21-27).
+        _ = hermesVM.lensSessionRevision
         let all = hermesVM.allLensSessions()  // newest first
         let calendar = Calendar.current
         var order: [Date] = []
@@ -31,7 +37,7 @@ struct ObjectLogView: View {
             groups[day]?.append(session)
         }
         return order.map {
-            (label: PeopleView.dayLabel($0), sessions: groups[$0] ?? [])
+            (date: $0, label: PeopleView.dayLabel($0), sessions: groups[$0] ?? [])
         }
     }
 
@@ -42,7 +48,7 @@ struct ObjectLogView: View {
                     emptyState
                 } else {
                     List {
-                        ForEach(days, id: \.label) { day in
+                        ForEach(days, id: \.date) { day in
                             Section(day.label) {
                                 ForEach(day.sessions) { session in
                                     NavigationLink {
@@ -65,8 +71,6 @@ struct ObjectLogView: View {
                     .background(HermesTheme.groupedCanvas.ignoresSafeArea())
                 }
             }
-            // Re-read the store after a save/delete.
-            .id(hermesVM.lensSessionRevision)
             .navigationTitle("Object Log")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(HermesTheme.groupedCanvas, for: .navigationBar)
@@ -123,6 +127,7 @@ private struct LensSessionDetailView: View {
     let session: LensSession
 
     @State private var shareItem: ShareItem?
+    @State private var exportError: String?
     @Environment(\.dismiss) private var dismiss
 
     /// The longest look, used to scale every attention bar.
@@ -181,6 +186,17 @@ private struct LensSessionDetailView: View {
         .sheet(item: $shareItem) { item in
             ShareSheet(items: [item.url])
         }
+        .alert(
+            "Couldn't export the PDF",
+            isPresented: Binding(
+                get: { exportError != nil },
+                set: { if !$0 { exportError = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { exportError = nil }
+        } message: {
+            Text(exportError ?? "")
+        }
     }
 
     private func objectRow(_ entry: LensSession.Entry) -> some View {
@@ -238,7 +254,11 @@ private struct LensSessionDetailView: View {
         let data = LensPDFRenderer.makePDF(title: title, rows: rows)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("object-log-\(session.id.uuidString).pdf")
-        try? data.write(to: url, options: .atomic)
-        shareItem = ShareItem(url: url)
+        do {
+            try data.write(to: url, options: .atomic)
+            shareItem = ShareItem(url: url)
+        } catch {
+            exportError = error.localizedDescription
+        }
     }
 }
