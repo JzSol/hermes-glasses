@@ -130,7 +130,11 @@ def build_provider_request(
         parts.append({"text": prompt})
         body = {"contents": [{"role": "user", "parts": parts}],
                 "systemInstruction": {"parts": [{"text": system}]}}
-        url = "%s/v1beta/models/%s:generateContent?key=%s" % (base_url, model, api_key)
+        # The key travels in a header, never in the URL: query strings end up
+        # in proxy logs, crash reports and error messages.
+        if api_key:
+            headers["x-goog-api-key"] = api_key
+        url = "%s/v1beta/models/%s:generateContent" % (base_url, model)
         return url, headers, body
     raise ValueError("unknown brain: %s" % brain)
 

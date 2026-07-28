@@ -771,7 +771,7 @@ extension View {
     func hermesFormStyle() -> some View {
         self
             .scrollContentBackground(.hidden)
-            .background(HermesTheme.groupedCanvas)
+            .background(HermesTheme.groupedCanvas.ignoresSafeArea())
             .tint(HermesTheme.accent)
     }
 }

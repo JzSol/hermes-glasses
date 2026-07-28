@@ -340,7 +340,10 @@ class ProviderRequestTests(unittest.TestCase):
         url, headers, body = build_provider_request(
             "gemini", "gemini-2.5-flash",
             "https://generativelanguage.googleapis.com", "g-key", "hi", None)
-        self.assertIn(":generateContent?key=g-key", url)
+        self.assertTrue(url.endswith(":generateContent"))
+        # The key belongs in a header, not the query string (proxy logs).
+        self.assertNotIn("key=", url)
+        self.assertEqual(headers["x-goog-api-key"], "g-key")
 
     def test_gemini_request_has_persona_system_instruction(self):
         _, _, body = build_provider_request(

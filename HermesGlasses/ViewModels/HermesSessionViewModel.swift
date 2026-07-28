@@ -133,7 +133,9 @@ final class HermesSessionViewModel {
                     Task { @MainActor [weak self] in
                         guard let self, self.micSource == .glasses else { return }
                         await self.setMicSource(.phone)
-                        self.show("Switched to the iPhone mic - the lens HUD can't show while the glasses' hands-free mic is active.")
+                        // News, not a fault: `show(_:)` is the error channel
+                        // and also fails any pending Developer-panel test.
+                        self.show(notice: "Switched to the iPhone mic - the lens HUD can't show while the glasses' hands-free mic is active.")
                     }
                 } else {
                     displayManager.stop()
@@ -940,6 +942,11 @@ final class HermesSessionViewModel {
                 captureModel.addLine(trimmed, at: Date())
                 liveTranscript = ""
             }
+            // No brain will answer this, so a Developer-panel test waiting on
+            // a reply would sit out its full timeout. Tell it now.
+            completeTestOutcome(.failure(TestFailure(
+                "A conversation recording is claiming every utterance - stop the recording before running this test."
+            )))
             return
         }
 
@@ -949,6 +956,9 @@ final class HermesSessionViewModel {
         // dispatched to a provider this session never connected.
         guard !recordingOnlySession else {
             liveTranscript = ""
+            completeTestOutcome(.failure(TestFailure(
+                "This session was started for recording only - no brain is connected to answer."
+            )))
             return
         }
 
@@ -2080,16 +2090,22 @@ final class HermesSessionViewModel {
             }
             // The route can differ from what was asked for; keep the label
             // honest rather than claiming a device that didn't answer.
-            if !bluetoothActive, target != .phone {
+            let tookRequestedRoute = bluetoothActive || target == .phone
+            if !tookRequestedRoute {
                 micSource = .phone
                 UserDefaults.standard.set(
                     MicSource.phone.rawValue, forKey: Self.micSourceKey
                 )
-                return false
             }
             // HUD ⇄ GLASSES hands-free mic are mutually exclusive: the
             // glasses show their call screen while their hands-free link
             // is active. Headset mode leaves the lens free.
+            //
+            // This reconcile runs on BOTH exits, and reads `micSource`
+            // AFTER the fallback above - a failed switch away from the
+            // glasses mic leaves the iPhone mic live, and the HUD must
+            // come back with it. Skipping it here once stranded the lens
+            // off with no recovery but toggling the HUD setting.
             if displayHUDEnabled, let session = deviceSession {
                 if lensBlockedByCallScreen {
                     displayManager.stop()
@@ -2098,7 +2114,7 @@ final class HermesSessionViewModel {
                     displayManager.start(session: session)
                 }
             }
-            return true
+            return tookRequestedRoute
         } catch {
             show("Mic switch failed: \(error.localizedDescription)")
             endSession()
