@@ -63,6 +63,11 @@ final class NavigationController: NSObject {
     private static let minMoveMeters: CLLocationDistance = 15
     private static let minInterval: TimeInterval = 4
     private static let arrivalMeters: CLLocationDistance = 25
+    /// How close to a step's end point counts as having taken that turn.
+    /// Deliberately its own constant even though it matches `arrivalMeters`
+    /// today: tightening arrival detection must not silently start (or stop)
+    /// advancing turns early.
+    private static let stepPassedMeters: CLLocationDistance = 25
     private static let mapZoom: Double = 16
     /// Repaint on turn only past this many degrees (hand-shake is smaller).
     private static let minTurnDegrees: Double = 20
@@ -273,8 +278,6 @@ final class NavigationController: NSObject {
         renderFrame(for: location)
     }
 
-    /// Re-emit the current navigation frame immediately (bypassing the
-    /// throttle) - used to restore the map after an answer overlay ends.
     /// A new compass reading. Heading changes far faster than position, so
     /// it only repaints when the user has actually turned meaningfully -
     /// the lens send throttle would otherwise be saturated by hand-shake.
@@ -289,6 +292,8 @@ final class NavigationController: NSObject {
         renderFrame(for: location)
     }
 
+    /// Re-emit the current navigation frame immediately (bypassing the
+    /// throttle) - used to restore the map after an answer overlay ends.
     func refreshDisplay() {
         guard isActive, let location = lastLocation else { return }
         lastSentAt = Date()
@@ -327,7 +332,6 @@ final class NavigationController: NSObject {
             onNotice?("Add a Mapbox token in Settings to see the map.")
         }
         let eta = NavigationFormat.eta(seconds: route.expectedTravelTime)
-        onShow?(mapURL, destinationName, stepText, eta, mode)
         let relativeBearing = currentHeading.flatMap { heading -> Double? in
             guard let destinationCoord else { return nil }
             return Bearing.relative(
@@ -337,10 +341,13 @@ final class NavigationController: NSObject {
         }
         // The compass has to be legible on a text-only lens too - the map
         // image needs a Mapbox token, and rotating it is invisible without
-        // one. This line changes as you turn, token or not.
+        // one. This line changes as you turn, token or not. It is appended
+        // BEFORE `onShow` because the lens is the consumer that needs it: the
+        // in-app banner already draws a heading arrow.
         if let relativeBearing {
             stepText += " · \(destinationName) is \(Bearing.direction(relative: relativeBearing).label)"
         }
+        onShow?(mapURL, destinationName, stepText, eta, mode)
         onRoute?(RouteSnapshot(
             destination: destinationName,
             step: stepText,
@@ -364,7 +371,7 @@ final class NavigationController: NSObject {
             let ends = Self.coords(of: step.polyline)
             guard let last = ends.last else { break }
             let endLoc = CLLocation(latitude: last.lat, longitude: last.lon)
-            if location.distance(from: endLoc) <= Self.arrivalMeters {
+            if location.distance(from: endLoc) <= Self.stepPassedMeters {
                 currentStepIndex += 1
             } else {
                 break

@@ -54,9 +54,16 @@ enum MapboxStaticMap {
         }
         let sizePart = "\(dim)x\(dim)\(retina ? "@2x" : "")"
 
+        // Escaped like the polyline above: a pasted token carrying a `+` or
+        // `&` would otherwise end the query value early and the map would
+        // just be a 401 the wearer never sees an explanation for.
+        let escapedToken = token.addingPercentEncoding(
+            withAllowedCharacters: pathAllowed
+        ) ?? token
+
         return "https://api.mapbox.com/styles/v1/\(style)/static/"
             + "\(overlayPart)/\(centerPart)/\(sizePart)"
-            + "?access_token=\(token)"
+            + "?access_token=\(escapedToken)"
     }
 
     /// Mapbox wants 0..<360 whole degrees; a compass hands us anything,

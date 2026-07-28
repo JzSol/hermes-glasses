@@ -132,5 +132,21 @@ expectEqual(
     ["Ends mid-sentence and then"],
     "a trailing fragment is kept, not dropped")
 
+// MARK: - Reported duration
+
+// `finish()` keeps bytesWritten (the header patch needs it), so a duration
+// read off the byte count alone reported the PREVIOUS take's length for the
+// whole gap between recordings.
+let timed = ConversationRecorder()
+let timedURL = root.appendingPathComponent("timed.wav")
+expectEqual(timed.recordedSeconds, 0, "nothing recorded yet is zero seconds")
+expectTrue(timed.start(url: timedURL), "start opens a file for the timed take")
+// One second: PCM16 mono, so two bytes a frame.
+timed.append(Data(count: ConversationRecorder.sampleRate * 2))
+expectEqual(timed.recordedSeconds, 1, "a second of audio reads as one second")
+expectTrue(timed.finish() != nil, "the timed take finishes")
+expectEqual(timed.recordedSeconds, 0,
+            "duration goes back to zero when the recording ends")
+
 print(failures == 0 ? "\nAll recording tests passed" : "\n\(failures) failure(s)")
 exit(failures == 0 ? 0 : 1)

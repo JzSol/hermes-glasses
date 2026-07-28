@@ -9,6 +9,10 @@
 // day of networking is tens of entries, so the simplicity is worth more
 // than incremental writes.
 //
+// Memory is the source of truth and is updated synchronously; the bytes
+// follow on one serial queue, in order. Reads that touch the filesystem go
+// through that queue too, so a photo saved a moment ago is readable now.
+//
 
 import Foundation
 import os
@@ -23,10 +27,25 @@ final class EncounterStore: @unchecked Sendable {
     private let recordingsURL: URL
     private let indexURL: URL
 
-    /// Guards `encounters` - saves are kicked off from the main actor but
-    /// the disk work runs off it.
+    /// Guards `encounters`. Every mutation lands here synchronously, so the
+    /// caller's `encounterRevision` bump and the next `all()` already see it
+    /// - only the bytes are deferred.
     private let lock = NSLock()
     private var encounters: [Encounter] = []
+
+    /// Every byte this type writes or deletes goes through this one queue, in
+    /// order. Saves are kicked off from the main actor and a capture ends with
+    /// up to twelve JPEGs plus a pretty-printed index re-encode; doing that
+    /// inline stalled the UI at the exact moment the wearer is told "Saved".
+    ///
+    /// Static, not per-instance, because ordering has to hold ACROSS
+    /// instances: a second store opened over the same directory (the People
+    /// screen, a test reopening the index) reads files an earlier instance
+    /// may still have queued, and one shared queue is what makes that read
+    /// see them.
+    private static let diskQueue = DispatchQueue(
+        label: "com.flowsxr.hermesglasses.encounters.disk", qos: .utility
+    )
 
     /// - Parameter directory: root for this store. Defaults to
     ///   Application Support/Encounters; tests pass a temp directory.
@@ -37,7 +56,9 @@ final class EncounterStore: @unchecked Sendable {
         recordingsURL = root.appendingPathComponent("recordings", isDirectory: true)
         indexURL = root.appendingPathComponent("encounters.json")
         createDirectories()
-        encounters = loadIndex()
+        // On the disk queue, so an index another instance queued a moment ago
+        // is on disk before it is read.
+        encounters = Self.diskQueue.sync { loadIndex() }
     }
 
     private static func defaultDirectory() -> URL {
@@ -56,24 +77,33 @@ final class EncounterStore: @unchecked Sendable {
     }
 
     /// The cover photo (first capture).
+    ///
+    /// Read on the disk queue like every other photo read: a JPEG saved a
+    /// moment ago may still be queued behind the index write, and a thumbnail
+    /// that comes back nil because the bytes are 5 ms late is a bug the user
+    /// sees as a lost photo.
     func photoData(for encounter: Encounter) -> Data? {
         guard let filename = encounter.photoFilename else { return nil }
-        return try? Data(
-            contentsOf: photosURL.appendingPathComponent(filename)
-        )
+        return Self.diskQueue.sync {
+            try? Data(contentsOf: photosURL.appendingPathComponent(filename))
+        }
     }
 
     /// All photos, in capture order. Files that went missing are skipped.
     func photoDatas(for encounter: Encounter) -> [Data] {
-        encounter.photoFilenames.compactMap { filename in
-            try? Data(contentsOf: photosURL.appendingPathComponent(filename))
+        Self.diskQueue.sync {
+            encounter.photoFilenames.compactMap { filename in
+                try? Data(contentsOf: photosURL.appendingPathComponent(filename))
+            }
         }
     }
 
     /// One photo by filename - what the timeline rows and the assist pass
     /// use, since both address photos per-event rather than per-encounter.
     func photoData(filename: String) -> Data? {
-        try? Data(contentsOf: photosURL.appendingPathComponent(filename))
+        Self.diskQueue.sync {
+            try? Data(contentsOf: photosURL.appendingPathComponent(filename))
+        }
     }
 
     /// Where a capture in progress should write its audio. The encounter does
@@ -87,7 +117,9 @@ final class EncounterStore: @unchecked Sendable {
     func recordingURL(for encounter: Encounter) -> URL? {
         guard let filename = encounter.audioFilename else { return nil }
         let url = recordingsURL.appendingPathComponent(filename)
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        return Self.diskQueue.sync {
+            FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
     }
 
     // MARK: - Writes
@@ -100,25 +132,25 @@ final class EncounterStore: @unchecked Sendable {
     }
 
     /// Save an encounter with any number of photos (conversation capture).
-    /// A photo that fails to write is dropped, never fatal - a missing
-    /// picture beats a lost encounter.
+    /// A photo that fails to write costs the picture, never the encounter -
+    /// the failure is logged from the disk queue and the entry stands.
     @discardableResult
     func save(note: String, photos: [Data], timestamp: Date = Date()) -> Encounter {
         let id = UUID()
+        // Filenames are decided here and now - the encounter handed back has
+        // to be complete - while the bytes go out on the disk queue. A write
+        // that fails therefore leaves a filename with no file behind it, and
+        // every read path already treats a missing photo as nil.
         var filenames: [String] = []
+        var pending: [(name: String, data: Data)] = []
         for (index, photo) in photos.enumerated() {
             let name = photos.count == 1
                 ? "\(id.uuidString).jpg"
                 : "\(id.uuidString)-\(index).jpg"
-            do {
-                try photo.write(
-                    to: photosURL.appendingPathComponent(name), options: .atomic
-                )
-                filenames.append(name)
-            } catch {
-                logger.error("Photo write failed: \(error.localizedDescription, privacy: .public)")
-            }
+            filenames.append(name)
+            pending.append((name, photo))
         }
+        writePhotos(pending)
 
         let encounter = Encounter(
             id: id,
@@ -141,26 +173,22 @@ final class EncounterStore: @unchecked Sendable {
     ) -> Encounter {
         let id = UUID()
 
-        // Write first, then resolve - a photo that fails to write leaves its
-        // event with no filename rather than losing the event.
-        var filenames: [String?] = Array(repeating: nil, count: photos.count)
+        // Named here, written on the disk queue: the events an event stream
+        // resolves to must be complete before this returns, and a capture's
+        // twelve JPEGs are not something to make the main actor wait for.
+        var filenames: [String] = []
+        var pending: [(name: String, data: Data)] = []
         for (index, photo) in photos.enumerated() {
             let name = "\(id.uuidString)-\(index).jpg"
-            do {
-                try photo.write(
-                    to: photosURL.appendingPathComponent(name), options: .atomic
-                )
-                filenames[index] = name
-            } catch {
-                logger.error("Photo write failed: \(error.localizedDescription, privacy: .public)")
-            }
+            filenames.append(name)
+            pending.append((name, photo))
         }
+        writePhotos(pending)
 
         let resolved: [EncounterEvent] = events.map { event in
             var files: [String] = []
-            if let index = event.photoIndex, index >= 0, index < filenames.count,
-               let name = filenames[index] {
-                files = [name]
+            if let index = event.photoIndex, index >= 0, index < filenames.count {
+                files = [filenames[index]]
             }
             return EncounterEvent(
                 id: event.id, kind: event.kind, timestamp: event.timestamp,
@@ -187,17 +215,24 @@ final class EncounterStore: @unchecked Sendable {
     /// duplicating it to rename it would briefly double the disk it needs.
     @discardableResult
     func attachRecording(encounterID: UUID, from staged: URL) -> URL? {
-        guard FileManager.default.fileExists(atPath: staged.path) else { return nil }
         let filename = "\(encounterID.uuidString).wav"
         let destination = recordingsURL.appendingPathComponent(filename)
 
-        do {
-            try? FileManager.default.removeItem(at: destination)
-            try FileManager.default.moveItem(at: staged, to: destination)
-        } catch {
-            logger.error("Recording move failed: \(error.localizedDescription, privacy: .public)")
-            return nil
+        // On the disk queue for ordering, but synchronously: this is a rename,
+        // not a copy, and the caller is handed the destination to transcribe
+        // from the moment it returns.
+        let moved: Bool = Self.diskQueue.sync {
+            guard FileManager.default.fileExists(atPath: staged.path) else { return false }
+            do {
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.moveItem(at: staged, to: destination)
+                return true
+            } catch {
+                logger.error("Recording move failed: \(error.localizedDescription, privacy: .public)")
+                return false
+            }
         }
+        guard moved else { return nil }
 
         lock.withLock {
             guard let index = encounters.firstIndex(where: { $0.id == encounterID })
@@ -299,18 +334,27 @@ final class EncounterStore: @unchecked Sendable {
             guard let index = encounters.firstIndex(where: { $0.id == id }) else { return nil }
             return encounters.remove(at: index)
         }
-        for filename in removed?.photoFilenames ?? [] {
-            try? FileManager.default.removeItem(
-                at: photosURL.appendingPathComponent(filename)
-            )
-        }
-        if let audio = removed?.audioFilename {
-            // Deleting an encounter must take its recording with it - leaving
-            // an orphaned hour of conversation on disk is the opposite of
-            // what the person pressing Delete asked for.
-            try? FileManager.default.removeItem(
-                at: recordingsURL.appendingPathComponent(audio)
-            )
+        // Nothing removed, nothing to rewrite - an unknown id must not cost a
+        // full index re-encode.
+        guard let removed else { return }
+
+        // On the disk queue (so a photo still queued for these very files is
+        // written before it is deleted, not after) but synchronously: Delete
+        // is done when it returns, files and all.
+        Self.diskQueue.sync {
+            for filename in removed.photoFilenames {
+                try? FileManager.default.removeItem(
+                    at: photosURL.appendingPathComponent(filename)
+                )
+            }
+            if let audio = removed.audioFilename {
+                // Deleting an encounter must take its recording with it -
+                // leaving an orphaned hour of conversation on disk is the
+                // opposite of what the person pressing Delete asked for.
+                try? FileManager.default.removeItem(
+                    at: recordingsURL.appendingPathComponent(audio)
+                )
+            }
         }
         writeIndex()
     }
@@ -339,16 +383,43 @@ final class EncounterStore: @unchecked Sendable {
         }
     }
 
+    /// Queue the photo bytes for a save. Ordered ahead of the index write
+    /// that follows, so the index never names a file that isn't there yet.
+    private func writePhotos(_ photos: [(name: String, data: Data)]) {
+        guard !photos.isEmpty else { return }
+        Self.diskQueue.async { [logger, photosURL] in
+            for photo in photos {
+                do {
+                    try photo.data.write(
+                        to: photosURL.appendingPathComponent(photo.name),
+                        options: .atomic
+                    )
+                } catch {
+                    logger.error("Photo write failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
+
+    /// Persist the whole index.
+    ///
+    /// The snapshot is taken INSIDE the queued block, not at the call site:
+    /// snapshotting first let two mutators enqueue out of order and persist
+    /// the older state last, silently losing the newer edit. Encoding from
+    /// current memory at write time makes every write at least as new as the
+    /// mutation that asked for it, and the last one always current.
     private func writeIndex() {
-        let snapshot = lock.withLock { encounters }
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        do {
-            let data = try encoder.encode(snapshot)
-            try data.write(to: indexURL, options: .atomic)
-        } catch {
-            logger.error("Index write failed: \(error.localizedDescription, privacy: .public)")
+        Self.diskQueue.async { [self] in
+            let snapshot = lock.withLock { encounters }
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            do {
+                let data = try encoder.encode(snapshot)
+                try data.write(to: indexURL, options: .atomic)
+            } catch {
+                logger.error("Index write failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 }

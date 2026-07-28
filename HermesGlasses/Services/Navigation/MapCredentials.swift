@@ -7,9 +7,13 @@
 
 import Foundation
 import Security
+import os
 
 enum MapCredentials {
     private static let account = "mapbox_access_token"
+    private static let logger = Logger(
+        subsystem: "com.flowsxr.hermesglasses", category: "map-credentials"
+    )
 
     static func storeToken(_ token: String) {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -17,12 +21,21 @@ enum MapCredentials {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(query as CFDictionary)
+        // Logged, never surfaced: a keychain that refuses the write turns
+        // into "the map just stopped working" with nothing to go on, and
+        // errSecItemNotFound on the delete is the normal first-save case.
+        let deleteStatus = SecItemDelete(query as CFDictionary)
+        if deleteStatus != errSecSuccess, deleteStatus != errSecItemNotFound {
+            logger.error("Token delete failed: OSStatus \(deleteStatus, privacy: .public)")
+        }
         guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8) else { return }
         var attributes = query
         attributes[kSecValueData as String] = data
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(attributes as CFDictionary, nil)
+        let addStatus = SecItemAdd(attributes as CFDictionary, nil)
+        if addStatus != errSecSuccess {
+            logger.error("Token store failed: OSStatus \(addStatus, privacy: .public)")
+        }
     }
 
     static func loadToken() -> String? {

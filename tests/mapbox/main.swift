@@ -71,5 +71,20 @@ let rounded = MapboxStaticMap.url(
 )
 expect(rounded.contains("/0,0,14,45/"), "bearing rounded to whole degrees")
 
+// A pasted token carrying reserved characters must not end the query value
+// early - the map would just be a 401 nobody can explain.
+let awkwardToken = MapboxStaticMap.url(
+    token: "pk.a+b&c", center: MapCoordinate(lat: 0, lon: 0), zoom: 14, size: 600,
+    user: MapCoordinate(lat: 0, lon: 0), destination: nil, route: []
+)
+expect(awkwardToken.hasSuffix("?access_token=pk.a%2Bb%26c"),
+       "the access token is percent-encoded")
+let ordinaryToken = MapboxStaticMap.url(
+    token: "pk.eyJ1Ijoi-abc_123", center: MapCoordinate(lat: 0, lon: 0), zoom: 14,
+    size: 600, user: MapCoordinate(lat: 0, lon: 0), destination: nil, route: []
+)
+expect(ordinaryToken.hasSuffix("?access_token=pk.eyJ1Ijoi-abc_123"),
+       "a normal token is passed through untouched")
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

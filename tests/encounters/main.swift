@@ -366,5 +366,46 @@ expectEqual(silentAfter.events.filter { $0.kind == .speech }.map(\.text),
             ["Recovered."],
             "a capture the live recogniser heard nothing in still gets a transcript")
 
+// MARK: - Disk writes are deferred but ordered
+
+// Photo bytes now go out on the store's disk queue, so a read taken the
+// instant save returns is the case that has to keep working - the People
+// screen loads a thumbnail immediately after a capture ends.
+let asyncStore = EncounterStore(directory: root.appendingPathComponent("async"))
+let asyncSaved = asyncStore.save(note: "just saved", photo: photoBytes)
+expectEqual(asyncStore.photoData(for: asyncSaved), photoBytes,
+            "a photo is readable the moment save returns")
+expectEqual(
+    EncounterStore(directory: root.appendingPathComponent("async"))
+        .all().count, 1,
+    "a store reopened straight after a save sees the index")
+
+// Concurrent mutators must not lose an update. writeIndex used to snapshot at
+// the call site, so two threads could enqueue out of order and persist the
+// older state last.
+let raceRoot = root.appendingPathComponent("race")
+let raceStore = EncounterStore(directory: raceRoot)
+let raceIDs = (0..<20).map { raceStore.save(note: "n\($0)", photo: nil).id }
+DispatchQueue.concurrentPerform(iterations: raceIDs.count) { index in
+    raceStore.update(id: raceIDs[index], note: "updated-\(index)")
+}
+let raceReloaded = EncounterStore(directory: raceRoot)
+expectEqual(raceReloaded.all().count, 20, "every encounter persisted")
+expectTrue(raceReloaded.all().allSatisfy { $0.note.hasPrefix("updated-") },
+           "no concurrent update is lost to a stale index snapshot")
+
+// Deleting an id that isn't there must not rewrite the index: the file is
+// removed by hand here, and a rewrite would put it straight back.
+let untouchedRoot = root.appendingPathComponent("untouched")
+let untouchedStore = EncounterStore(directory: untouchedRoot)
+untouchedStore.save(note: "one", photo: nil)
+_ = EncounterStore(directory: untouchedRoot)  // waits for the queued write
+let untouchedIndex = untouchedRoot.appendingPathComponent("encounters.json")
+try? FileManager.default.removeItem(at: untouchedIndex)
+untouchedStore.delete(id: UUID())
+_ = EncounterStore(directory: untouchedRoot)  // waits again, if anything ran
+expectTrue(!FileManager.default.fileExists(atPath: untouchedIndex.path),
+           "deleting an unknown id does not rewrite the index")
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

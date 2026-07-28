@@ -162,8 +162,9 @@ enum IntentDetector {
 
     private static func detectDefine(_ lowered: String, original: String) -> HermesIntent? {
         for trigger in defineTriggers {
-            // Anchor to the start so "so what is" style mid-sentence hits are
-            // still fine, but the subject is what follows the trigger.
+            // Matched anywhere in the utterance, not just at the start, so
+            // "so what is a lanyard" still lands; the subject is whatever
+            // follows the trigger.
             guard let range = lowered.range(of: trigger) else { continue }
             let subject = extractTail(original, loweredMatchEnd: range.upperBound, lowered: lowered)
             guard !subject.isEmpty else { return nil }

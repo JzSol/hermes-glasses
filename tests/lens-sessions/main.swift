@@ -62,5 +62,22 @@ store.delete(id: saved.id)
 expectEqual(store.all().count, 1, "one left after delete")
 expectTrue(store.photoData(for: saved.entries[0]) == nil, "deleted crop file gone")
 
+// Deleting an id that isn't there must not rewrite the index: the file is
+// removed by hand here, and a rewrite would put it straight back.
+let untouchedRoot = root.appendingPathComponent("untouched")
+let untouchedStore = LensSessionStore(directory: untouchedRoot)
+untouchedStore.save(
+    startedAt: start, endedAt: end,
+    entries: [LensSessionInput(label: "mug", totalLookTime: 1, lookCount: 1,
+                               photo: cropBytes)]
+)
+_ = LensSessionStore(directory: untouchedRoot)  // waits for the queued write
+let untouchedIndex = untouchedRoot.appendingPathComponent("sessions.json")
+try? FileManager.default.removeItem(at: untouchedIndex)
+untouchedStore.delete(id: UUID())
+_ = LensSessionStore(directory: untouchedRoot)  // waits again, if anything ran
+expectTrue(!FileManager.default.fileExists(atPath: untouchedIndex.path),
+           "deleting an unknown id does not rewrite the index")
+
 if failures > 0 { print("\n\(failures) FAILURES"); exit(1) }
 print("\nAll lens-sessions tests passed")

@@ -55,6 +55,11 @@ enum TranscriptionService {
         guard SFSpeechRecognizer.authorizationStatus() == .authorized else {
             throw TranscriptionError.notAuthorized
         }
+        // Pinned to the same locale as the live recogniser
+        // (`HermesSpeechRecognizer`), deliberately: the file transcript
+        // REPLACES what the live pass heard, and two engines disagreeing
+        // about the language would show up as a transcript that changes
+        // dialect halfway through the encounter.
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
               recognizer.isAvailable, recognizer.supportsOnDeviceRecognition
         else {
@@ -70,35 +75,85 @@ enum TranscriptionService {
         request.shouldReportPartialResults = false
         request.addsPunctuation = true
 
-        let transcription = try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<SFTranscription, Error>) in
-            // `resume` must happen exactly once, but the handler fires for
-            // partials, the final result AND errors - and can deliver a
-            // result and then an error. Guard it.
-            let hasResumed = OSAllocatedUnfairLock(initialState: false)
-            func finish(_ outcome: Result<SFTranscription, Error>) {
-                let first = hasResumed.withLock { resumed -> Bool in
-                    guard !resumed else { return false }
-                    resumed = true
-                    return true
+        let handle = Handle()
+        let transcription = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<SFTranscription, Error>) in
+                handle.begin(continuation)
+                let task = recognizer.recognitionTask(with: request) { result, error in
+                    if let result, result.isFinal {
+                        handle.finish(.success(result.bestTranscription))
+                    } else if let error {
+                        handle.finish(.failure(error))
+                    }
                 }
-                guard first else { return }
-                continuation.resume(with: outcome)
+                handle.track(task)
             }
-
-            recognizer.recognitionTask(with: request) { result, error in
-                if let result, result.isFinal {
-                    finish(.success(result.bestTranscription))
-                } else if let error {
-                    finish(.failure(error))
-                }
-            }
+        } onCancel: {
+            handle.cancel()
         }
 
         let lines = segment(transcription)
         guard !lines.isEmpty else { throw TranscriptionError.empty }
         logger.info("Transcribed \(lines.count, privacy: .public) line(s) from \(url.lastPathComponent, privacy: .public)")
         return lines
+    }
+
+    /// The state one file transcription needs shared between three places:
+    /// the continuation closure, the Speech callback queue, and the
+    /// cancellation handler.
+    ///
+    /// Two jobs. `resume` must happen exactly once - the handler fires for
+    /// partials, the final result AND errors, and can deliver a result and
+    /// then an error. And the `SFSpeechRecognitionTask` has to be reachable
+    /// from outside the closure: it used to be discarded, so cancelling the
+    /// enclosing Swift task left an hour of audio being recognised for an
+    /// answer nobody was waiting for any more.
+    private final class Handle: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<SFTranscription, Error>?
+        private var recognition: SFSpeechRecognitionTask?
+        private var isCancelled = false
+
+        func begin(_ continuation: CheckedContinuation<SFTranscription, Error>) {
+            lock.lock()
+            self.continuation = continuation
+            let already = isCancelled
+            lock.unlock()
+            // Cancellation can land before the continuation exists.
+            if already { cancel() }
+        }
+
+        func track(_ task: SFSpeechRecognitionTask) {
+            lock.lock()
+            let already = isCancelled
+            if !already { recognition = task }
+            lock.unlock()
+            if already { task.cancel() }
+        }
+
+        func finish(_ outcome: Result<SFTranscription, Error>) {
+            lock.lock()
+            let pending = continuation
+            continuation = nil
+            recognition = nil
+            lock.unlock()
+            pending?.resume(with: outcome)
+        }
+
+        /// Abort the Speech task and fail the await. The await is failed here
+        /// rather than left to the result handler: cancelling a URL request
+        /// is not guaranteed to call it back, and a continuation nobody ever
+        /// resumes is a leak that never resolves.
+        func cancel() {
+            lock.lock()
+            isCancelled = true
+            let task = recognition
+            recognition = nil
+            lock.unlock()
+            task?.cancel()
+            finish(.failure(CancellationError()))
+        }
     }
 
     /// Break one long transcription into readable lines.

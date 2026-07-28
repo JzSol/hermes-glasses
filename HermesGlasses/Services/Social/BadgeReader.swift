@@ -13,9 +13,14 @@
 import Foundation
 import UIKit
 import Vision
+import os
 
 /// On-device text recognition over a person crop.
 enum BadgeReader {
+    private static let logger = Logger(
+        subsystem: "com.flowsxr.hermesglasses", category: "badge"
+    )
+
     /// Below this, the "text" is usually a fold in a shirt.
     static let minimumConfidence: Float = 0.4
 
@@ -75,7 +80,7 @@ enum BadgeReader {
         do {
             try handler.perform([request])
         } catch {
-            NSLog("[Hermes] badge: vision failed - \(error.localizedDescription)")
+            logger.error("Vision text request failed: \(error.localizedDescription, privacy: .public)")
             return []
         }
 

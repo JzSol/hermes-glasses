@@ -148,9 +148,14 @@ final class ConversationRecorder: @unchecked Sendable {
         try? FileManager.default.removeItem(at: doomed)
     }
 
-    /// Seconds of audio recorded so far.
+    /// Seconds of audio recorded so far, 0 when nothing is being recorded.
+    ///
+    /// Keyed off the open file, not the byte count: `finish()` needs
+    /// `bytesWritten` to patch the header and so never clears it, which left
+    /// this reporting the length of the PREVIOUS capture for the whole gap
+    /// between recordings.
     var recordedSeconds: TimeInterval {
-        queue.sync { duration(ofBytes: bytesWritten) }
+        queue.sync { handle == nil ? 0 : duration(ofBytes: bytesWritten) }
     }
 
     private func duration(ofBytes bytes: Int) -> TimeInterval {

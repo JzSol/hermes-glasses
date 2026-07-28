@@ -25,6 +25,11 @@ enum PolylineEncoder {
     }
 
     /// Encode one signed delta into the base-64-ish polyline alphabet.
+    ///
+    /// Both `UnicodeScalar(...)!` unwraps below are total, not optimism: the
+    /// algorithm masks to five bits and adds 63, so every byte it produces is
+    /// in 63...126 - printable ASCII. Don't "make them safe" with a fallback
+    /// character; that would encode a wrong route instead of trapping.
     private static func chunk(_ value: Int) -> String {
         var v = value < 0 ? ~(value << 1) : (value << 1)
         var out = ""
