@@ -296,10 +296,11 @@ struct ContentView: View {
                     tinted: hermesVM.displayHUDEnabled
                 )
 
-                // Conversation capture: one tap = same as saying "record this
-                // conversation" / "stop recording".
+                // Live capture indicator. The entry point is the Record quick
+                // action below - this only earns its place while a capture is
+                // running, when the snap count is worth seeing.
                 if hermesVM.socialNotesEnabled,
-                   hermesVM.connectionState != .disconnected {
+                   hermesVM.conversationCaptureActive {
                     Button {
                         hermesVM.toggleConversationCapture()
                     } label: {
@@ -682,6 +683,15 @@ struct ContentView: View {
                 .onTapGesture { showAppDrawer = true }
 
             HStack(spacing: 8) {
+                // Record is an action, not a screen, so it is deliberately
+                // NOT a HermesApp - it has no presentation and nothing to
+                // open. It sits here because this row is where people look
+                // for features, and recording a conversation used to be
+                // reachable only from a chip that appeared after a voice
+                // session was already running.
+                if hermesVM.socialNotesEnabled {
+                    recordQuickAction
+                }
                 ForEach(HermesAppRegistry.pinned) { app in
                     quickAction(app)
                 }
@@ -714,6 +724,39 @@ struct ContentView: View {
         case "log": showObjectLog = true
         default: break
         }
+    }
+
+    /// Start/stop a conversation capture from a cold start.
+    ///
+    /// `toggleConversationCapture` brings up the microphone itself when
+    /// nothing is running, so this tile never needs a session first.
+    private var recordQuickAction: some View {
+        Button {
+            hermesVM.toggleConversationCapture()
+        } label: {
+            VStack(spacing: 5) {
+                Image(
+                    systemName: hermesVM.conversationCaptureActive
+                        ? "stop.circle.fill" : "waveform.circle"
+                )
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(
+                    hermesVM.conversationCaptureActive ? .red : HermesTheme.accent
+                )
+                Text(hermesVM.conversationCaptureActive ? "Stop" : "Record")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(HermesTheme.inkSoft)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(
+                hermesVM.conversationCaptureActive
+                    ? Color.red.opacity(0.12) : HermesTheme.card,
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+            .shadow(color: .black.opacity(0.04), radius: 1, y: 1)
+        }
+        .buttonStyle(.plain)
     }
 
     private func quickAction(_ app: HermesApp) -> some View {

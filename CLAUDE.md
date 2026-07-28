@@ -278,12 +278,57 @@ photo via the DAT camera API.
   `Row` carries `eventIDs` and why the write goes through
   `EncounterStore.updateBadgeName(encounterID:eventIDs:name:)`, which unifies
   the name while preserving each event's own `rawLines`.
+- **Badges need a REGION and a magnifier, not a bigger threshold.** OCR over
+  the whole person crop returns nothing at the resolution the glasses stream:
+  a lanyard's name line is under 1% of a head-to-knees crop's height.
+  `VNRecognizeTextRequest.minimumTextHeight` is a red herring - lowering it
+  changes nothing, because the text never had the pixels. `BadgeReader` runs
+  TWO passes: `BadgeRegion`'s upper-torso band upscaled to ~1000 px on the
+  short side (this is the one that works), then the whole crop as a safety
+  net for a tag worn high or held up. Band lines come FIRST because
+  `BadgeParser` takes the first name-shaped line it sees. Re-measure with
+  `tools/ocr-probe.swift` before touching the constants - it compiles the
+  real `BadgeRegion` and prints old vs new side by side.
+- **The recording is the transcript's source, not the live recogniser.**
+  `SFSpeechRecognizer` is a dictation model driven one utterance at a time;
+  it finalises after 1.5 s of silence and used to rebuild its request between
+  utterances, during which `append(_:)` silently dropped every mic buffer -
+  which in a two-way conversation is exactly when the other person starts
+  talking. Capture now streams the mic to a WAV (`ConversationRecorder`, fed
+  by `HermesAudioManager.onRecordChunk` ON THE AUDIO THREAD, ungated by VAD)
+  and `TranscriptionService` re-transcribes the finished file, replacing the
+  live transcript via `EncounterStore.replaceTranscript`. That store call
+  rewrites ONLY speech events - sightings carry the photos and badges and
+  their timestamps are what tie a face to a moment - and ignores an empty
+  result rather than blanking what was heard live. The WAV is KEPT after
+  transcription: on-device recognition is the weakest link here and the audio
+  is the only thing that makes a better transcript possible later.
+  `rotateCycle()` (not tearDown-then-start) is what closes the buffer gap;
+  don't reorder it.
+- **What post-hoc transcription does NOT fix is far-field pickup.** The phone
+  mic is tuned for the wearer. Someone across a table is often too quiet to
+  reach the recogniser at all, recorded or not - that is acoustic, and the
+  recording exists so it stays recoverable rather than lost.
+- **Recording must start from a cold start.** `toggleConversationCapture`
+  calls `startSessionForRecording()` when nothing is running: mic + camera +
+  lens, no bridge, no provider, no TTS. `recordingOnlySession` makes
+  `submitQuery` DISCARD anything the capture doesn't claim, so an utterance
+  in the gap can't be dispatched to a brain that was never connected. The
+  Record quick action is deliberately NOT a `HermesApp` - it is an action
+  with no screen to present.
 - **Badge assist must never outlive `badge_ocr_enabled`.** The assist pass
   selects sightings whose badge is nil. With on-device OCR off, EVERY sighting
   is nil, so assist would run at its full 6-call maximum - turning OCR off to
   stay on-device would silently send the MOST photos to the provider and cost
   the most. `startBadgeAssist` therefore guards on BOTH flags itself; the UI
-  greying out a toggle is not a spend guarantee.
+  greying out a toggle is not a spend guarantee. The per-encounter
+  `readBadgesWithAI` button in PeopleView deliberately checks NEITHER flag:
+  those govern the pass that fires by itself on every recording, where the
+  danger is unnoticed spend, and someone tapping "Read badges with AI" on one
+  entry has decided. It is still capped at `BadgeAssist.maxReads` and still
+  abandoned on the first auth failure. Without it an all-"Unnamed" capture
+  had no route to a name - the only remedy was to flip a global setting and
+  have the conversation again.
 
 ## Build & run
 

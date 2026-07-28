@@ -275,12 +275,49 @@ private struct EncounterDetailView: View {
                 }
             }
 
+            if hermesVM.transcriptionIsRunning {
+                HermesNotice(
+                    text: "Transcribing the recording - this entry will update itself.",
+                    systemImage: "waveform")
+            }
+
+            // The way out of an all-"Unnamed" capture. Badge assist is off by
+            // default and stays that way (it spends money on every recording),
+            // so without a per-encounter trigger a sighting Vision could not
+            // read had no route to a name at all.
+            if hasUnnamedSightings {
+                Button {
+                    hermesVM.readBadgesWithAI(for: encounter.id)
+                } label: {
+                    Label(
+                        hermesVM.badgeAssistIsRunning
+                            ? "Reading badges…" : "Read badges with AI",
+                        systemImage: "sparkles")
+                }
+                .font(.system(size: 15, weight: .semibold))
+                .disabled(hermesVM.badgeAssistIsRunning)
+                .padding(.top, 4)
+
+                HermesNotice(
+                    text: "Sends the unnamed sightings' photos to \(hermesVM.directProvider.displayName).",
+                    systemImage: "cloud")
+            }
+
             Button("Delete", role: .destructive) {
                 hermesVM.deleteEncounter(id: encounter.id)
                 dismiss()
             }
             .font(.system(size: 15, weight: .semibold))
             .padding(.top, 4)
+        }
+    }
+
+    /// True when at least one sighting has a photo but no name - the only
+    /// state in which an AI read has anything to do.
+    private var hasUnnamedSightings: Bool {
+        encounter.events.contains {
+            $0.kind == .sighting && $0.badge?.name == nil
+                && !$0.photoFilenames.isEmpty
         }
     }
 

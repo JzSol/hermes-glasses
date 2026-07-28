@@ -285,5 +285,86 @@ expectEqual(oobSaved.events[0].photoFilenames, [], "out-of-range positive index 
 expectEqual(oobSaved.events[1].photoFilenames, [], "negative index gives no file")
 expectEqual(oobSaved.photoFilenames, [], "derived photoFilenames stays empty for out-of-range indices")
 
+// MARK: - Recordings
+
+let recStore = EncounterStore(directory: root.appendingPathComponent("recordings"))
+let recSaved = recStore.save(note: "with audio", photos: [], timestamp: at2(0))
+expectTrue(recSaved.audioFilename == nil, "an encounter starts with no recording")
+expectTrue(recStore.recordingURL(for: recSaved) == nil, "no recording, no URL")
+
+let staged = recStore.stagingRecordingURL()
+try? Data("fake wav".utf8).write(to: staged)
+let attached = recStore.attachRecording(encounterID: recSaved.id, from: staged)
+expectTrue(attached != nil, "attachRecording returns the adopted file")
+expectTrue(
+    !FileManager.default.fileExists(atPath: staged.path),
+    "the staged file is MOVED, not copied - an hour of audio is not duplicated")
+
+let recReread = recStore.all().first { $0.id == recSaved.id }
+expectEqual(recReread?.audioFilename, "\(recSaved.id.uuidString).wav",
+            "the recording is filed under the encounter's id")
+expectTrue(recStore.recordingURL(for: recReread!) != nil, "the recording resolves back")
+
+// Attaching a file that isn't there must not invent a filename - the entry
+// would then claim audio that cannot be played or transcribed.
+let ghost = recStore.stagingRecordingURL()
+expectTrue(
+    recStore.attachRecording(encounterID: recSaved.id, from: ghost) == nil,
+    "attaching a missing file is a no-op")
+
+// Deleting takes the recording with it.
+let audioURL = recStore.recordingURL(for: recReread!)!
+recStore.delete(id: recSaved.id)
+expectTrue(
+    !FileManager.default.fileExists(atPath: audioURL.path),
+    "deleting an encounter deletes its recording")
+
+// MARK: - Transcript replacement
+
+let txStore = EncounterStore(directory: root.appendingPathComponent("transcript"))
+let txEvents: [CapturedEvent] = [
+    CapturedEvent(kind: .speech, timestamp: at2(0), text: "hi there"),
+    CapturedEvent(kind: .sighting, timestamp: at2(30), photoIndex: 0),
+    CapturedEvent(kind: .speech, timestamp: at2(60), text: "what do you do"),
+]
+let txSaved = txStore.save(events: txEvents, photos: [jpegA], timestamp: at2(0))
+let photoBefore = txSaved.events.first { $0.kind == .sighting }?.photoFilenames
+
+txStore.replaceTranscript(
+    encounterID: txSaved.id,
+    lines: ["Hi there.", "What do you do?", "I'm a radiographer."])
+let txAfter = txStore.all().first { $0.id == txSaved.id }!
+
+expectEqual(txAfter.events.filter { $0.kind == .speech }.map(\.text),
+            ["Hi there.", "What do you do?", "I'm a radiographer."],
+            "speech events are replaced by the better transcript")
+expectEqual(txAfter.events.filter { $0.kind == .sighting }.count, 1,
+            "sightings survive re-transcription")
+expectEqual(txAfter.events.first { $0.kind == .sighting }?.photoFilenames,
+            photoBefore, "the sighting keeps its photo")
+expectEqual(txAfter.note, "Hi there.\nWhat do you do?\nI'm a radiographer.",
+            "the derived note is rebuilt from the new transcript")
+expectTrue(
+    txAfter.events.map(\.timestamp) == txAfter.events.map(\.timestamp).sorted(),
+    "the merged timeline stays in chronological order")
+
+// A failed transcription must never blank a transcript that was heard live.
+txStore.replaceTranscript(encounterID: txSaved.id, lines: [])
+let txUntouched = txStore.all().first { $0.id == txSaved.id }!
+expectEqual(txUntouched.events.filter { $0.kind == .speech }.count, 3,
+            "an empty transcription is ignored, not applied")
+
+// A capture with no speech at all - the exact case the recorder exists for -
+// must still accept a transcript.
+let silentStore = EncounterStore(directory: root.appendingPathComponent("silent"))
+let silentSaved = silentStore.save(
+    events: [CapturedEvent(kind: .sighting, timestamp: at2(0), photoIndex: 0)],
+    photos: [jpegA], timestamp: at2(0))
+silentStore.replaceTranscript(encounterID: silentSaved.id, lines: ["Recovered."])
+let silentAfter = silentStore.all().first { $0.id == silentSaved.id }!
+expectEqual(silentAfter.events.filter { $0.kind == .speech }.map(\.text),
+            ["Recovered."],
+            "a capture the live recogniser heard nothing in still gets a transcript")
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

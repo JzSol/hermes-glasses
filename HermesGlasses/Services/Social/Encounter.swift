@@ -22,6 +22,16 @@ struct Encounter: Codable, Identifiable, Equatable {
     /// single-shot "remember this person" captures - `EncounterTimeline`
     /// synthesises rows from `note`/`photoFilenames` in that case.
     var events: [EncounterEvent]
+    /// The recording this capture's transcript came from, inside the store's
+    /// recordings directory. Nil for encounters saved before recording
+    /// existed, for "remember this person" (which records nothing), and when
+    /// the recorder could not open a file.
+    ///
+    /// Kept after transcription on purpose: on-device recognition is the
+    /// weakest link in this feature, and the audio is the only thing that
+    /// makes a better transcript possible later without asking the wearer to
+    /// have the conversation again.
+    var audioFilename: String?
 
     /// The cover photo - what rows and single-photo call sites show.
     var photoFilename: String? { photoFilenames.first }
@@ -31,19 +41,22 @@ struct Encounter: Codable, Identifiable, Equatable {
         note: String,
         timestamp: Date,
         photoFilenames: [String] = [],
-        events: [EncounterEvent] = []
+        events: [EncounterEvent] = [],
+        audioFilename: String? = nil
     ) {
         self.id = id
         self.note = note
         self.timestamp = timestamp
         self.photoFilenames = photoFilenames
         self.events = events
+        self.audioFilename = audioFilename
     }
 
     // MARK: - Codable (with pre-multi-photo migration)
 
     private enum CodingKeys: String, CodingKey {
         case id, note, timestamp, photoFilenames, photoFilename, events
+        case audioFilename
     }
 
     init(from decoder: Decoder) throws {
@@ -61,6 +74,8 @@ struct Encounter: Codable, Identifiable, Equatable {
         }
         // Absent on every index written before the timeline existed.
         events = try c.decodeIfPresent([EncounterEvent].self, forKey: .events) ?? []
+        // Absent on every index written before capture recorded audio.
+        audioFilename = try c.decodeIfPresent(String.self, forKey: .audioFilename)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -70,5 +85,6 @@ struct Encounter: Codable, Identifiable, Equatable {
         try c.encode(timestamp, forKey: .timestamp)
         try c.encode(photoFilenames, forKey: .photoFilenames)
         try c.encode(events, forKey: .events)
+        try c.encodeIfPresent(audioFilename, forKey: .audioFilename)
     }
 }

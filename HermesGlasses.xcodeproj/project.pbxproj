@@ -40,6 +40,9 @@
 		AAAA00000000000000000850 /* BadgeParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000849 /* BadgeParser.swift */; };
 		AAAA00000000000000000852 /* EncounterTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000851 /* EncounterTimeline.swift */; };
 		AAAA00000000000000000854 /* BadgeReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000853 /* BadgeReader.swift */; };
+		AAAA00000000000000000860 /* TranscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000859 /* TranscriptionService.swift */; };
+		AAAA00000000000000000858 /* ConversationRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000857 /* ConversationRecorder.swift */; };
+		AAAA00000000000000000856 /* BadgeRegion.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000855 /* BadgeRegion.swift */; };
 		AAAA00000000000000000030 /* EncounterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000133 /* EncounterStore.swift */; };
 		AAAA00000000000000000039 /* ConversationCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000142 /* ConversationCapture.swift */; };
 		AAAA00000000000000000031 /* PeopleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000134 /* PeopleView.swift */; };
@@ -115,6 +118,9 @@
 		AAAA00000000000000000849 /* BadgeParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/BadgeParser.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000851 /* EncounterTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/EncounterTimeline.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000853 /* BadgeReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/BadgeReader.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000859 /* TranscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/TranscriptionService.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000857 /* ConversationRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/ConversationRecorder.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000855 /* BadgeRegion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/BadgeRegion.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000133 /* EncounterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/EncounterStore.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000142 /* ConversationCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Social/ConversationCapture.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000134 /* PeopleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PeopleView.swift; sourceTree = "<group>"; };
@@ -246,6 +252,9 @@
 				AAAA00000000000000000849 /* BadgeParser.swift */,
 				AAAA00000000000000000851 /* EncounterTimeline.swift */,
 				AAAA00000000000000000853 /* BadgeReader.swift */,
+				AAAA00000000000000000859 /* TranscriptionService.swift */,
+				AAAA00000000000000000857 /* ConversationRecorder.swift */,
+				AAAA00000000000000000855 /* BadgeRegion.swift */,
 				AAAA00000000000000000133 /* EncounterStore.swift */,
 				AAAA00000000000000000142 /* ConversationCapture.swift */,
 				AAAA00000000000000000135 /* VoiceCommandCatalog.swift */,
@@ -394,6 +403,9 @@
 				AAAA00000000000000000850 /* BadgeParser.swift in Sources */,
 				AAAA00000000000000000852 /* EncounterTimeline.swift in Sources */,
 				AAAA00000000000000000854 /* BadgeReader.swift in Sources */,
+				AAAA00000000000000000860 /* TranscriptionService.swift in Sources */,
+				AAAA00000000000000000858 /* ConversationRecorder.swift in Sources */,
+				AAAA00000000000000000856 /* BadgeRegion.swift in Sources */,
 				AAAA00000000000000000030 /* EncounterStore.swift in Sources */,
 				AAAA00000000000000000039 /* ConversationCapture.swift in Sources */,
 				AAAA00000000000000000031 /* PeopleView.swift in Sources */,

@@ -33,6 +33,14 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     var onDebug: ((String) -> Void)?
     /// Raw tap buffer, pre-conversion - for on-device speech recognition
     var onRawBuffer: ((AVAudioPCMBuffer) -> Void)?
+    /// Converted PCM16 mono 16 kHz samples, delivered ON THE AUDIO THREAD and
+    /// ungated by VAD - for `ConversationRecorder`.
+    ///
+    /// Deliberately NOT `onAudioChunk`, which hops to main: at ~47 buffers a
+    /// second, routing a recording through the main queue makes the recording
+    /// hostage to whatever the UI is doing. Handlers must not block; the
+    /// recorder only enqueues onto its own serial queue.
+    var onRecordChunk: ((Data) -> Void)?
     /// Mic RMS level (0..~1), throttled to ~4/s - for the UI level meter
     var onLevel: ((Float) -> Void)?
     /// Fired (on main) after a route/config change re-installed the tap.
@@ -438,6 +446,10 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             bytes: channelData[0],
             count: frameLength * MemoryLayout<Int16>.size
         )
+
+        // Straight to the recorder, on this thread, before any VAD gate: a
+        // recording of a conversation must contain the quiet half of it.
+        onRecordChunk?(data)
 
         let rms = computeRMS(channelData[0], frameLength: frameLength)
         let isVoice = rms > silenceThreshold

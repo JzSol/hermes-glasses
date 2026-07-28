@@ -20,6 +20,7 @@ final class EncounterStore: @unchecked Sendable {
 
     private let rootURL: URL
     private let photosURL: URL
+    private let recordingsURL: URL
     private let indexURL: URL
 
     /// Guards `encounters` - saves are kicked off from the main actor but
@@ -33,6 +34,7 @@ final class EncounterStore: @unchecked Sendable {
         let root = directory ?? Self.defaultDirectory()
         rootURL = root
         photosURL = root.appendingPathComponent("photos", isDirectory: true)
+        recordingsURL = root.appendingPathComponent("recordings", isDirectory: true)
         indexURL = root.appendingPathComponent("encounters.json")
         createDirectories()
         encounters = loadIndex()
@@ -72,6 +74,20 @@ final class EncounterStore: @unchecked Sendable {
     /// use, since both address photos per-event rather than per-encounter.
     func photoData(filename: String) -> Data? {
         try? Data(contentsOf: photosURL.appendingPathComponent(filename))
+    }
+
+    /// Where a capture in progress should write its audio. The encounter does
+    /// not exist yet at that point, so recordings are staged under their own
+    /// id and adopted by `attachRecording` once the encounter is saved.
+    func stagingRecordingURL(id: UUID = UUID()) -> URL {
+        recordingsURL.appendingPathComponent("\(id.uuidString).wav")
+    }
+
+    /// The recording behind an encounter, if one was kept.
+    func recordingURL(for encounter: Encounter) -> URL? {
+        guard let filename = encounter.audioFilename else { return nil }
+        let url = recordingsURL.appendingPathComponent(filename)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     // MARK: - Writes
@@ -164,6 +180,75 @@ final class EncounterStore: @unchecked Sendable {
         return encounter
     }
 
+    /// Adopt a staged recording into the store under the encounter's id.
+    /// Returns the final URL, or nil when there was nothing to adopt.
+    ///
+    /// The file is MOVED, not copied - a conversation can run for an hour and
+    /// duplicating it to rename it would briefly double the disk it needs.
+    @discardableResult
+    func attachRecording(encounterID: UUID, from staged: URL) -> URL? {
+        guard FileManager.default.fileExists(atPath: staged.path) else { return nil }
+        let filename = "\(encounterID.uuidString).wav"
+        let destination = recordingsURL.appendingPathComponent(filename)
+
+        do {
+            try? FileManager.default.removeItem(at: destination)
+            try FileManager.default.moveItem(at: staged, to: destination)
+        } catch {
+            logger.error("Recording move failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+
+        lock.withLock {
+            guard let index = encounters.firstIndex(where: { $0.id == encounterID })
+            else { return }
+            encounters[index].audioFilename = filename
+        }
+        writeIndex()
+        return destination
+    }
+
+    /// Replace a capture's speech events wholesale with a better transcript.
+    ///
+    /// Sightings are left exactly where they are: they carry the photos and
+    /// badges, and their timestamps are the only thing tying a face to a
+    /// moment in the conversation. Only the speech is rewritten, spread
+    /// evenly across the span the live transcript covered so the interleaving
+    /// with sightings stays approximately honest.
+    ///
+    /// A no-op when `lines` is empty - a failed transcription must never
+    /// erase the transcript the live path did manage to hear.
+    func replaceTranscript(encounterID: UUID, lines: [String]) {
+        guard !lines.isEmpty else { return }
+        lock.withLock {
+            guard let index = encounters.firstIndex(where: { $0.id == encounterID })
+            else { return }
+
+            let events = encounters[index].events
+            let speech = events.filter { $0.kind == .speech }
+            let start = speech.first?.timestamp
+                ?? events.first?.timestamp
+                ?? encounters[index].timestamp
+            let end = speech.last?.timestamp
+                ?? events.last?.timestamp
+                ?? start
+            let span = max(0, end.timeIntervalSince(start))
+            let step = lines.count > 1 ? span / Double(lines.count - 1) : 0
+
+            let rebuilt = lines.enumerated().map { offset, line in
+                EncounterEvent.speech(
+                    line, at: start.addingTimeInterval(step * Double(offset))
+                )
+            }
+
+            let kept = events.filter { $0.kind != .speech }
+            let merged = (kept + rebuilt).sorted { $0.timestamp < $1.timestamp }
+            encounters[index].events = merged
+            encounters[index].note = EncounterEvent.derivedNote(merged)
+        }
+        writeIndex()
+    }
+
     /// Replace ONE event's badge wholesale. This is the machine-read path:
     /// the deferred assist pass, which has a complete badge (name, title,
     /// org, rawLines) for one specific sighting. A manual correction is NOT
@@ -219,13 +304,21 @@ final class EncounterStore: @unchecked Sendable {
                 at: photosURL.appendingPathComponent(filename)
             )
         }
+        if let audio = removed?.audioFilename {
+            // Deleting an encounter must take its recording with it - leaving
+            // an orphaned hour of conversation on disk is the opposite of
+            // what the person pressing Delete asked for.
+            try? FileManager.default.removeItem(
+                at: recordingsURL.appendingPathComponent(audio)
+            )
+        }
         writeIndex()
     }
 
     // MARK: - Disk
 
     private func createDirectories() {
-        for url in [rootURL, photosURL] {
+        for url in [rootURL, photosURL, recordingsURL] {
             try? FileManager.default.createDirectory(
                 at: url, withIntermediateDirectories: true
             )

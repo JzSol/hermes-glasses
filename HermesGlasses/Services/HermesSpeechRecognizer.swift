@@ -203,6 +203,27 @@ final class HermesSpeechRecognizer: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Swap in a fresh request/task WITHOUT ever leaving `request` nil.
+    ///
+    /// The obvious ordering - tearDownCycle() then startRecognitionCycle() -
+    /// opens a window between the two in which `append(_:)` has no request to
+    /// write to and silently discards every mic buffer, while the new
+    /// SFSpeechRecognitionTask takes hundreds of milliseconds to go live.
+    /// Utterances that begin in that window are simply never heard, which in
+    /// a two-way conversation is most of the other person's half.
+    ///
+    /// Starting the replacement first closes the window: `startRecognitionCycle`
+    /// bumps `cycleGeneration`, so when the old task is cancelled immediately
+    /// afterwards its handler sees a stale generation and is ignored - the
+    /// same guard that makes `tearDownCycle` safe.
+    private func rotateCycle() {
+        let staleTask = task
+        let staleRequest = request
+        startRecognitionCycle()
+        staleTask?.cancel()
+        staleRequest?.endAudio()
+    }
+
     private func emitFinalIfAny() {
         let text = latestPartial.trimmingCharacters(in: .whitespacesAndNewlines)
         latestPartial = ""
@@ -211,8 +232,7 @@ final class HermesSpeechRecognizer: NSObject, @unchecked Sendable {
         // Restart the cycle so the next utterance starts clean (skipped
         // while suspended - unsuspend starts the next cycle)
         if isRunning, !isSuspended {
-            tearDownCycle()
-            startRecognitionCycle()
+            rotateCycle()
         }
 
         guard !text.isEmpty else { return }

@@ -187,6 +187,18 @@ final class HermesSessionViewModel {
     var conversationCaptureActive: Bool = false
     /// Photos kept so far in the running capture (drives the UI chip).
     var conversationCaptureSnapCount: Int = 0
+    /// True while a hand-triggered badge-assist pass runs, so the button that
+    /// started it can show progress and refuse to start a second one.
+    var badgeAssistIsRunning: Bool = false
+    /// True while a saved capture is being re-transcribed from its recording.
+    /// The entry is already readable throughout; this only tells the People
+    /// screen that a better transcript is on its way.
+    var transcriptionIsRunning: Bool = false
+    /// True when the session exists only to record (started from the Record
+    /// action with nothing else running). No brain is connected, so speech
+    /// that is not claimed by a capture is discarded rather than sent to a
+    /// provider that was never set up.
+    private(set) var recordingOnlySession: Bool = false
     /// Bumped whenever an encounter is saved/edited/deleted so the People
     /// screen re-reads the store.
     var encounterRevision: Int = 0
@@ -305,6 +317,16 @@ final class HermesSessionViewModel {
     @ObservationIgnored private var captureDetector: ObjectDetector?
     @ObservationIgnored private var captureDwell: DwellTracker?
     @ObservationIgnored private var captureLatestFrame: UIImage?
+    /// Writes the capture's audio to disk. The transcript is made from this
+    /// file afterwards, not from the live recogniser - see
+    /// `ConversationRecorder` for why.
+    @ObservationIgnored private let recorder = ConversationRecorder()
+    /// Where the running capture is recording, before the encounter exists to
+    /// name the file after.
+    @ObservationIgnored private var captureRecordingURL: URL?
+    /// The post-capture transcription pass. Outlives the capture: the
+    /// encounter is already saved and this only improves its transcript.
+    @ObservationIgnored private var transcriptionTask: Task<Void, Never>?
     @ObservationIgnored private var captureStreamRunning = false
     @ObservationIgnored private var captureSetupTask: Task<Void, Never>?
     /// The deferred badge-assist pass. Outlives the capture on purpose - the
@@ -550,7 +572,27 @@ final class HermesSessionViewModel {
 
     // MARK: - Public API
 
+    /// Bring up mic + camera + lens for recording ONLY - no bridge, no
+    /// provider, no TTS answers.
+    ///
+    /// Recording a conversation uses none of the query path, so demanding a
+    /// full voice session first (which is what the Record chip's
+    /// `connectionState != .disconnected` gate amounted to) made the feature
+    /// unreachable until the user had connected a brain they were not going
+    /// to use. Same lesson as the test panel: a thing that works standalone
+    /// must start standalone.
+    func startSessionForRecording() async {
+        recordingOnlySession = true
+        await startSession(engagingBrain: false)
+        if connectionState == .disconnected { recordingOnlySession = false }
+    }
+
     func startSession() async {
+        recordingOnlySession = false
+        await startSession(engagingBrain: true)
+    }
+
+    private func startSession(engagingBrain: Bool) async {
         // The voice session owns the glasses from here on - a Lens-created
         // camera session must not compete with it. (UI-wise Lens can't be
         // open when this button is reachable; this is belt-and-braces.)
@@ -588,8 +630,11 @@ final class HermesSessionViewModel {
         contextProvider.start()
 
         // 2. Connect the brain. Direct mode needs no server at all -
-        // skip the bridge entirely.
-        if backend == .direct {
+        // skip the bridge entirely. A recording-only session skips both:
+        // nothing it captures is ever sent anywhere.
+        if !engagingBrain {
+            // nothing to connect
+        } else if backend == .direct {
             guard !directProvider.requiresKey || DirectClient.hasKey(for: directProvider.id) else {
                 show("No API key set for \(directProvider.displayName). Add one in Settings.")
                 endSession()
@@ -838,6 +883,15 @@ final class HermesSessionViewModel {
                 captureModel.addLine(trimmed, at: Date())
                 liveTranscript = ""
             }
+            return
+        }
+
+        // A recording-only session has no brain wired up. Anything not
+        // claimed by the capture above (an utterance in the gap before
+        // recording starts, or after it stops) is dropped here rather than
+        // dispatched to a provider this session never connected.
+        guard !recordingOnlySession else {
+            liveTranscript = ""
             return
         }
 
@@ -1452,6 +1506,19 @@ final class HermesSessionViewModel {
         capturePhotos = []
         conversationCaptureSnapCount = 0
 
+        // Audio first: everything below is best-effort decoration around the
+        // recording, and the recording is what the transcript is made from.
+        let staged = encounterStore.stagingRecordingURL()
+        if recorder.start(url: staged) {
+            captureRecordingURL = staged
+            audioManager.onRecordChunk = { [weak recorder] data in
+                // Audio thread. The recorder only enqueues.
+                recorder?.append(data)
+            }
+        } else {
+            captureRecordingURL = nil
+        }
+
         if navigation.isActive {
             navigation.displaySuppressed = true
         }
@@ -1472,12 +1539,28 @@ final class HermesSessionViewModel {
         }
     }
 
-    /// UI toggle (the record chip) - same paths as the voice commands.
+    /// UI toggle (the Record chip and the Record quick action) - same paths
+    /// as the voice commands, but usable from a cold start.
+    ///
+    /// Recording a conversation needs the microphone and (optionally) the
+    /// camera. It does NOT need the bridge, a provider, TTS or the query
+    /// path, so requiring a live voice session first was backwards - the same
+    /// mistake the test panel used to make. When nothing is running this
+    /// brings up just the mic and starts.
     func toggleConversationCapture() {
         if conversationCaptureActive {
             finishConversationCapture()
-        } else {
+            return
+        }
+        guard connectionState == .disconnected else {
             startConversationCapture()
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.startSessionForRecording()
+            guard self.connectionState != .disconnected else { return }
+            self.startConversationCapture()
         }
     }
 
@@ -1594,12 +1677,21 @@ final class HermesSessionViewModel {
         conversationCaptureActive = false
         liveTranscript = ""
 
+        // Stop feeding the recorder before closing it, or buffers still in
+        // flight write into a closed handle.
+        audioManager.onRecordChunk = nil
+        let recording = recorder.finish()
+        captureRecordingURL = nil
+
         let photos = capturePhotos
         capturePhotos = []
         conversationCaptureSnapCount = 0
 
-        guard captureModel.hasContent else {
-            // Nothing said, no one snapped - no entry to save.
+        // A recording on its own IS content: the live recogniser hearing
+        // nothing is exactly the failure this feature exists to survive, so
+        // "nothing was said" must be judged from the audio, not from it.
+        guard captureModel.hasContent || recording != nil else {
+            // Nothing said, no one snapped, nothing recorded - no entry.
             displayManager.clear()
             connectionState = .listening
             speechRecognizer.isSuspended = false
@@ -1609,9 +1701,14 @@ final class HermesSessionViewModel {
         let saved = encounterStore.save(events: captureModel.events, photos: photos)
         encounterRevision &+= 1
 
+        if let recording {
+            encounterStore.attachRecording(encounterID: saved.id, from: recording)
+        }
+
         // Only now, with the encounter safely on disk, may anything touch
         // the network.
         startBadgeAssist(for: saved)
+        startTranscription(for: saved.id)
 
         // Mirror into the on-phone chat, cover photo and all.
         pendingPhoto = photos.first
@@ -1650,6 +1747,40 @@ final class HermesSessionViewModel {
         }
     }
 
+    /// Re-transcribe a saved capture from its recording, replacing the live
+    /// transcript.
+    ///
+    /// Deferred like badge assist, and for the same reason: the encounter is
+    /// already on disk, so a slow or failed pass costs nothing that was
+    /// already earned. The live transcript stays exactly as it was until a
+    /// better one exists to swap in - `replaceTranscript` ignores an empty
+    /// result rather than blanking the note.
+    ///
+    /// Entirely on-device (`TranscriptionService` requires it), so this is
+    /// not a second grant of trust the way badge assist is, and needs no
+    /// opt-in.
+    func startTranscription(for encounterID: UUID) {
+        guard let encounter = encounterStore.all().first(where: { $0.id == encounterID }),
+              let url = encounterStore.recordingURL(for: encounter)
+        else { return }
+
+        transcriptionTask?.cancel()
+        transcriptionIsRunning = true
+        transcriptionTask = Task { @MainActor [weak self] in
+            defer { self?.transcriptionIsRunning = false }
+            do {
+                let lines = try await TranscriptionService.transcribe(fileAt: url)
+                guard let self, !Task.isCancelled else { return }
+                self.encounterStore.replaceTranscript(
+                    encounterID: encounterID, lines: lines
+                )
+                self.encounterRevision &+= 1
+            } catch {
+                NSLog("[Hermes] transcription failed - \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// Deferred, opt-in: name the sightings on-device OCR left blank.
     ///
     /// Runs AFTER the encounter is saved, sequentially, capped, and gives up
@@ -1667,11 +1798,42 @@ final class HermesSessionViewModel {
         // toggle clearing assist when OCR goes off is a courtesy, not the
         // enforcement.
         guard badgeOCREnabled, badgeAssistEnabled else { return }
+        runBadgeAssist(for: encounter.id)
+    }
+
+    /// The same pass, asked for by hand on one encounter.
+    ///
+    /// This deliberately does NOT consult `badgeAssistEnabled` or
+    /// `badgeOCREnabled`. Those flags govern the pass that fires by itself on
+    /// every recording, where the danger is unnoticed spend; a person tapping
+    /// "Read badges with AI" on one entry has already decided. Without this
+    /// the only way to name a sighting Vision missed was to flip a global
+    /// setting and record the conversation again - which is not a thing
+    /// anyone can do.
+    ///
+    /// Still capped by `BadgeAssist.maxReads` and still abandoned on the
+    /// first auth failure: explicit is not unlimited.
+    func readBadgesWithAI(for encounterID: UUID) {
+        guard !badgeAssistIsRunning else { return }
+        badgeAssistIsRunning = true
+        runBadgeAssist(for: encounterID) { [weak self] in
+            self?.badgeAssistIsRunning = false
+        }
+    }
+
+    /// Shared body of both paths. Re-reads the encounter from the store
+    /// rather than taking a snapshot, so a manual run started minutes later
+    /// sees any names the deferred pass already filled in.
+    private func runBadgeAssist(
+        for encounterID: UUID, completion: (() -> Void)? = nil
+    ) {
+        guard let encounter = encounterStore.all().first(where: { $0.id == encounterID })
+        else { completion?(); return }
 
         let unnamed = encounter.events.filter {
             $0.kind == .sighting && $0.badge == nil && !$0.photoFilenames.isEmpty
         }
-        guard !unnamed.isEmpty else { return }
+        guard !unnamed.isEmpty else { completion?(); return }
 
         let targets = Array(unnamed.prefix(BadgeAssist.maxReads))
         if unnamed.count > targets.count {
@@ -1680,6 +1842,7 @@ final class HermesSessionViewModel {
 
         badgeAssistTask?.cancel()
         badgeAssistTask = Task { @MainActor [weak self] in
+            defer { completion?() }
             guard let self else { return }
             for event in targets {
                 if Task.isCancelled { return }
@@ -1691,7 +1854,7 @@ final class HermesSessionViewModel {
                         photoJPEG: photo, client: self.directClient
                     ) else { continue }
                     self.encounterStore.update(
-                        encounterID: encounter.id, eventID: event.id, badge: badge
+                        encounterID: encounterID, eventID: event.id, badge: badge
                     )
                     self.encounterRevision &+= 1
                 } catch {
@@ -1867,19 +2030,35 @@ final class HermesSessionViewModel {
         if conversationCaptureActive {
             stopCaptureVision()
             conversationCaptureActive = false
-            if captureModel.hasContent {
+            audioManager.onRecordChunk = nil
+            let recording = recorder.finish()
+            captureRecordingURL = nil
+            if captureModel.hasContent || recording != nil {
                 // Same event stream the stop command saves - this is one of
                 // only two ways a capture ends, and both must produce a
                 // timeline. The badge-assist pass is deliberately NOT started
                 // here: the session is being torn down (badgeAssistTask is
                 // cancelled a few lines below), so a network pass into a
                 // dying session would be wrong.
-                encounterStore.save(events: captureModel.events, photos: capturePhotos)
+                let saved = encounterStore.save(
+                    events: captureModel.events, photos: capturePhotos
+                )
                 encounterRevision &+= 1
+                if let recording {
+                    encounterStore.attachRecording(
+                        encounterID: saved.id, from: recording
+                    )
+                }
+                // Transcription, unlike badge assist, IS started here and is
+                // deliberately NOT cancelled with the session: it never
+                // touches the network, and the session going away is no
+                // reason to leave an hour of recorded audio untranscribed.
+                startTranscription(for: saved.id)
             }
             capturePhotos = []
             conversationCaptureSnapCount = 0
         }
+        recordingOnlySession = false
         badgeAssistTask?.cancel()
         badgeAssistTask = nil
         sessionObserverTask?.cancel()
