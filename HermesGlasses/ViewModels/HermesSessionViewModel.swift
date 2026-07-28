@@ -1693,6 +1693,7 @@ final class HermesSessionViewModel {
         guard captureModel.hasContent || recording != nil else {
             // Nothing said, no one snapped, nothing recorded - no entry.
             displayManager.clear()
+            guard !recordingOnlySession else { endSession(); return }
             connectionState = .listening
             speechRecognizer.isSuspended = false
             return
@@ -1705,11 +1706,6 @@ final class HermesSessionViewModel {
             encounterStore.attachRecording(encounterID: saved.id, from: recording)
         }
 
-        // Only now, with the encounter safely on disk, may anything touch
-        // the network.
-        startBadgeAssist(for: saved)
-        startTranscription(for: saved.id)
-
         // Mirror into the on-phone chat, cover photo and all.
         pendingPhoto = photos.first
         addTurn(
@@ -1720,6 +1716,30 @@ final class HermesSessionViewModel {
         )
 
         displayManager.showEncounterSaved(note: "Conversation saved")
+
+        // A session that exists only to record is FINISHED when the recording
+        // is. Returning it to .listening left the mic up with no brain to
+        // talk to, so the only way out was the End button - "stop recording"
+        // stopped the recording but not the thing it started.
+        //
+        // Teardown comes BEFORE the deferred passes because endSession()
+        // cancels badgeAssistTask; started after, they outlive the session,
+        // which is right - both work off the saved encounter and neither
+        // needs the mic, the camera or a socket. No spoken confirmation
+        // here: the audio stack is going away and cutting off "Saved"
+        // mid-word is worse than the lens card that already said it.
+        if recordingOnlySession {
+            endSession()
+            startBadgeAssist(for: saved)
+            startTranscription(for: saved.id)
+            return
+        }
+
+        // Only now, with the encounter safely on disk, may anything touch
+        // the network.
+        startBadgeAssist(for: saved)
+        startTranscription(for: saved.id)
+
         if displaySilentActive {
             connectionState = .listening
             speechRecognizer.isSuspended = false
