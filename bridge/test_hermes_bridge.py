@@ -1,7 +1,10 @@
 import asyncio
 import base64
+import os
+import tempfile
 import unittest
 
+import hermes_bridge as hb
 from hermes_bridge import (
     is_visual_query, await_photo, build_provider_request, parse_provider_reply,
 )
@@ -83,9 +86,28 @@ class TestAwaitPhoto(unittest.TestCase):
         result = asyncio.run(await_photo(ws, timeout=0.2))
         self.assertIsNone(result)
 
+    def test_malformed_json_frame_ignored_keeps_waiting(self):
+        # A malformed text frame must not raise / abort the wait - it should
+        # be logged and skipped, leaving the loop to pick up the next frame.
+        jpeg = b"\xff\xd8\xff\xe0fakejpeg"
+        ws = FakeWebSocket([
+            "{not valid json",
+            '{"type":"photo","data":"%s"}' % base64.b64encode(jpeg).decode(),
+        ])
+        result = asyncio.run(await_photo(ws, timeout=2.0))
+        self.assertEqual(result, jpeg)
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_non_dict_json_frame_ignored_keeps_waiting(self):
+        # Valid JSON that isn't an object (e.g. a bare array) must not raise
+        # AttributeError from `.get` - it should be skipped like malformed
+        # JSON.
+        jpeg = b"\xff\xd8\xff\xe0fakejpeg"
+        ws = FakeWebSocket([
+            "[1]",
+            '{"type":"photo","data":"%s"}' % base64.b64encode(jpeg).decode(),
+        ])
+        result = asyncio.run(await_photo(ws, timeout=2.0))
+        self.assertEqual(result, jpeg)
 
 
 class TestProcessQuery(unittest.TestCase):
@@ -93,18 +115,17 @@ class TestProcessQuery(unittest.TestCase):
 
     def _run(self, text, ws, fake_reply="ok", fake_tts=b"\x00\x00",
              stored_session=None, bridge_tts=True):
-        import tempfile as tf
-
-        import hermes_bridge as hb
-
         orig_ask, orig_tts = hb.ask_hermes, hb.synthesize_speech
         orig_bridge_tts = hb.BRIDGE_TTS
         hb.BRIDGE_TTS = bridge_tts
+        # Pin the brain so an exported HERMES_BRIDGE_BRAIN can't route this
+        # around the fake ask_hermes (KeyError, or a real HTTP call).
+        orig_brain = hb.BRAIN
+        hb.BRAIN = "hermes"
         orig_session_file = hb.SESSION_FILE
-        tmp = tf.NamedTemporaryFile(suffix=".json", delete=False)
+        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
         tmp.close()
-        os_mod = __import__("os")
-        os_mod.unlink(tmp.name)  # start with no stored session
+        os.unlink(tmp.name)  # start with no stored session
         hb.SESSION_FILE = tmp.name
         if stored_session:
             hb.store_session(stored_session)
@@ -123,8 +144,9 @@ class TestProcessQuery(unittest.TestCase):
         finally:
             hb.ask_hermes, hb.synthesize_speech = orig_ask, orig_tts
             hb.BRIDGE_TTS = orig_bridge_tts
+            hb.BRAIN = orig_brain
             try:
-                os_mod.unlink(tmp.name)
+                os.unlink(tmp.name)
             except OSError:
                 pass
             hb.SESSION_FILE = orig_session_file
@@ -177,16 +199,13 @@ class TestProcessQuery(unittest.TestCase):
 
 class TestSessionStore(unittest.TestCase):
     def setUp(self):
-        import hermes_bridge as hb
-        import tempfile as tf
         self.hb = hb
-        self.tmp = tf.NamedTemporaryFile(suffix=".json", delete=False)
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
         self.tmp.close()
         self.orig = hb.SESSION_FILE
         hb.SESSION_FILE = self.tmp.name
 
     def tearDown(self):
-        import os
         self.hb.SESSION_FILE = self.orig
         try:
             os.unlink(self.tmp.name)
@@ -266,13 +285,9 @@ class TestClaudeBrain(unittest.TestCase):
         self.assertEqual(trimmed[-1]["content"], "m99")
 
     def test_claude_history_store_same_day(self):
-        import tempfile as tf
-
-        import hermes_bridge as hb
-        tmp = tf.NamedTemporaryFile(suffix=".json", delete=False)
+        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
         tmp.close()
-        os_mod = __import__("os")
-        os_mod.unlink(tmp.name)
+        os.unlink(tmp.name)
         orig = hb.CLAUDE_HISTORY_FILE
         hb.CLAUDE_HISTORY_FILE = tmp.name
         try:
@@ -282,7 +297,7 @@ class TestClaudeBrain(unittest.TestCase):
             self.assertEqual(hb.load_claude_history(), [])
         finally:
             try:
-                os_mod.unlink(tmp.name)
+                os.unlink(tmp.name)
             except OSError:
                 pass
             hb.CLAUDE_HISTORY_FILE = orig
@@ -350,3 +365,7 @@ class ProviderRequestTests(unittest.TestCase):
         url, _, _ = build_provider_request(
             "claude", "claude-opus-4-8", "https://api.anthropic.com", "k", "hi", None)
         self.assertTrue(url.endswith("/v1/messages"))
+
+
+if __name__ == "__main__":
+    unittest.main()

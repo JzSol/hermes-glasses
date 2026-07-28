@@ -16,9 +16,13 @@ Protocol (JSON text frames):
 
 import asyncio
 import base64
+import datetime
+import hmac
 import json
 import os
+import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -35,8 +39,8 @@ except ImportError:
     sys.exit(1)
 
 # ── Configuration ──────────────────────────────────────────────────────────
-HOST = "0.0.0.0"
-PORT = 8765
+HOST = os.environ.get("HERMES_BRIDGE_HOST", "0.0.0.0")
+PORT = int(os.environ.get("HERMES_BRIDGE_PORT", "8765"))
 HERMES_BIN = os.environ.get(
     "HERMES_BIN",
     os.path.expanduser("~/.hermes/hermes-agent/venv/bin/hermes"),
@@ -78,12 +82,14 @@ PROVIDER_API_KEY_ENV = {
 }
 
 
-def _canon_brain(brain):
+def _canon_brain(brain: str) -> str:
     return "anthropic" if brain == "claude" else brain
 
 
-def build_provider_request(brain, model, base_url, api_key, prompt, image_b64,
-                            system=None):
+def build_provider_request(
+    brain: str, model: str, base_url: str, api_key: str, prompt: str,
+    image_b64: str | None, system: str | None = None,
+) -> tuple[str, dict, dict]:
     """Return (url, headers, body_dict) for a one-shot chat+vision request.
 
     `system` defaults to CLAUDE_SYSTEM (the voice persona: 1-3 spoken
@@ -129,7 +135,7 @@ def build_provider_request(brain, model, base_url, api_key, prompt, image_b64,
     raise ValueError("unknown brain: %s" % brain)
 
 
-def parse_provider_reply(brain, status, body_bytes):
+def parse_provider_reply(brain: str, status: int, body_bytes: bytes) -> str:
     brain = _canon_brain(brain)
     data = json.loads(body_bytes.decode("utf-8"))
     if status != 200:
@@ -198,7 +204,8 @@ def is_visual_query(text: str) -> bool:
 
 # "this drink", "that building", "the one on the left" - references to
 # something the user is (probably) looking at
-DEICTIC_RE = None  # compiled below, after re is imported
+DEICTIC_RE = re.compile(r"\b(this|that|these|those)\s+([a-z]+)|\bthe one\b",
+                        re.IGNORECASE)
 
 
 # "this morning", "that question" - deictic in grammar but not about
@@ -219,6 +226,12 @@ DEICTIC_STOP_NOUNS = {
 }
 
 
+# Deictic follow-up captures only when no photo was taken within this many
+# seconds - within the window, conversation memory already knows what the
+# user is looking at.
+PHOTO_MEMORY_WINDOW_S = 120.0
+
+
 def should_capture_photo(text: str, last_photo_at: float, now: float) -> bool:
     """Decide whether a query needs a fresh photo.
 
@@ -229,17 +242,14 @@ def should_capture_photo(text: str, last_photo_at: float, now: float) -> bool:
     """
     if is_visual_query(text):
         return True
-    if DEICTIC_RE:
-        for match in DEICTIC_RE.finditer(text):
-            noun = (match.group(2) or "").lower()
-            if match.group(0).lower() == "the one" or (
-                noun and noun not in DEICTIC_STOP_NOUNS
-            ):
-                return (now - last_photo_at) > PHOTO_MEMORY_WINDOW_S
+    for match in DEICTIC_RE.finditer(text):
+        noun = (match.group(2) or "").lower()
+        if match.group(0).lower() == "the one" or (
+            noun and noun not in DEICTIC_STOP_NOUNS
+        ):
+            return (now - last_photo_at) > PHOTO_MEMORY_WINDOW_S
     return False
 
-
-PHOTO_MEMORY_WINDOW_S = 120.0
 
 # ── Conversation memory (same-day hermes session) ──────────────────────────
 SESSION_FILE = os.path.expanduser("~/.hermes_glasses_bridge_session.json")
@@ -254,7 +264,6 @@ VOICE_PERSONA = (
 
 
 def _today() -> str:
-    import datetime
     return datetime.date.today().isoformat()
 
 
@@ -286,8 +295,7 @@ def clear_session():
 
 
 def extract_session_id(stderr_text: str) -> str | None:
-    import re as _re
-    match = _re.search(r"session_id:\s*(\S+)", stderr_text)
+    match = re.search(r"session_id:\s*(\S+)", stderr_text)
     return match.group(1) if match else None
 
 
@@ -407,14 +415,8 @@ def ask_claude(text: str, photo: bytes | None = None) -> str | None:
 
 # ── Hermes Agent ────────────────────────────────────────────────────────────
 
-import re
-
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 BOX_CHARS = set("╭╮╰╯│─═╞╡┌┐└┘┤├")
-
-# Deictic references - compiled here because `re` is imported at this point
-DEICTIC_RE = re.compile(r"\b(this|that|these|those)\s+([a-z]+)|\bthe one\b",
-                        re.IGNORECASE)
 
 
 def extract_hermes_reply(raw: str) -> str | None:
@@ -504,36 +506,40 @@ def synthesize_speech(text: str) -> bytes | None:
         mp3_tmp.close()
         wav_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         wav_tmp.close()
+        try:
+            async def _synth():
+                communicate = edge_tts.Communicate(text, "en-US-AriaNeural")
+                await communicate.save(mp3_tmp.name)
 
-        async def _synth():
-            communicate = edge_tts.Communicate(text, "en-US-AriaNeural")
-            await communicate.save(mp3_tmp.name)
+            asyncio.run(_synth())
 
-        asyncio.run(_synth())
+            # Decode MP3 → PCM16 mono 24kHz WAV. afconvert on macOS,
+            # ffmpeg elsewhere (Linux).
+            if shutil.which("afconvert"):
+                cmd = ["afconvert", "-f", "WAVE", "-d", "LEI16@24000", "-c", "1",
+                       mp3_tmp.name, wav_tmp.name]
+            elif shutil.which("ffmpeg"):
+                cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", mp3_tmp.name,
+                       "-ar", "24000", "-ac", "1", "-sample_fmt", "s16",
+                       wav_tmp.name]
+            else:
+                cmd = None
+                print("[TTS] Neither afconvert nor ffmpeg found")
 
-        # Decode MP3 → PCM16 mono 24kHz WAV. afconvert on macOS,
-        # ffmpeg elsewhere (Linux).
-        if shutil.which("afconvert"):
-            cmd = ["afconvert", "-f", "WAVE", "-d", "LEI16@24000", "-c", "1",
-                   mp3_tmp.name, wav_tmp.name]
-        elif shutil.which("ffmpeg"):
-            cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", mp3_tmp.name,
-                   "-ar", "24000", "-ac", "1", "-sample_fmt", "s16",
-                   wav_tmp.name]
-        else:
-            cmd = None
-            print("[TTS] Neither afconvert nor ffmpeg found")
-
-        if cmd:
-            result = subprocess.run(cmd, capture_output=True, timeout=30)
-            os.unlink(mp3_tmp.name)
-            if result.returncode == 0:
-                with wave.open(wav_tmp.name, "rb") as wf:
-                    data = wf.readframes(wf.getnframes())
-                os.unlink(wav_tmp.name)
-                return data
-            os.unlink(wav_tmp.name)
-            print(f"[TTS] decode failed: {result.stderr.decode()[:200]}")
+            if cmd:
+                result = subprocess.run(cmd, capture_output=True, timeout=30)
+                if result.returncode == 0:
+                    with wave.open(wav_tmp.name, "rb") as wf:
+                        return wf.readframes(wf.getnframes())
+                print(f"[TTS] decode failed: {result.stderr.decode()[:200]}")
+        finally:
+            # NamedTemporaryFile(delete=False) - always clean up, whether
+            # synthesis/decode succeeded, failed, or raised.
+            for path in (mp3_tmp.name, wav_tmp.name):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
     except ImportError:
         pass
     except Exception as e:
@@ -543,21 +549,27 @@ def synthesize_speech(text: str) -> bytes | None:
     if not shutil.which("say"):
         print("[TTS] No 'say' fallback available on this platform")
         return None
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp.close()
     try:
-        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        tmp.close()
-        subprocess.run(
+        result = subprocess.run(
             ["say", "-o", tmp.name,
              "--file-format=WAVE", "--data-format=LEI16@24000", text],
             capture_output=True, timeout=30,
         )
+        if result.returncode != 0:
+            print(f"[TTS] 'say' failed: {result.stderr.decode()[:200]}")
+            return None
         with wave.open(tmp.name, "rb") as wf:
-            data = wf.readframes(wf.getnframes())
-        os.unlink(tmp.name)
-        return data
+            return wf.readframes(wf.getnframes())
     except Exception as e:
         print(f"[TTS] Error: {e}")
         return None
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
 
 
 # ── WebSocket Handler ──────────────────────────────────────────────────────
@@ -581,7 +593,14 @@ async def await_photo(websocket, timeout: float = 25.0) -> bytes | None:
             return None
         if isinstance(message, bytes):
             continue  # stray binary frame while waiting - drop it
-        data = json.loads(message)
+        try:
+            data = json.loads(message)
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[Bridge] Malformed JSON while awaiting photo, ignored: {e}")
+            continue
+        if not isinstance(data, dict):
+            print(f"[Bridge] Non-object JSON while awaiting photo, ignored: {data!r}")
+            continue
         msg_type = data.get("type")
         if msg_type == "photo":
             try:
@@ -653,7 +672,7 @@ async def process_query(websocket, text: str, conn_state: dict | None = None,
                 print("[Bridge] Resume failed - retrying with a fresh session")
                 clear_session()
                 response, session_id = await asyncio.to_thread(
-                    ask_hermes, VOICE_PERSONA + text, image_path, None
+                    ask_hermes, VOICE_PERSONA + query_text, image_path, None
                 )
             if session_id:
                 store_session(session_id)
@@ -696,7 +715,7 @@ def is_authorized(websocket) -> bool:
     try:
         path = websocket.request.path if websocket.request else ""
         query = parse_qs(urlparse(path).query)
-        return query.get("token", [""])[0] == AUTH_TOKEN
+        return hmac.compare_digest(query.get("token", [""])[0], AUTH_TOKEN)
     except Exception:
         return False
 
@@ -723,7 +742,14 @@ async def handle_connection(websocket):
                 # transcribes on-device now. Ignore them.
                 continue
 
-            data = json.loads(message)
+            try:
+                data = json.loads(message)
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"[Bridge] Malformed JSON frame ignored: {e}")
+                continue
+            if not isinstance(data, dict):
+                print(f"[Bridge] Non-object JSON frame ignored: {data!r}")
+                continue
             msg_type = data.get("type")
 
             if msg_type == "query":
@@ -763,7 +789,6 @@ async def handle_connection(websocket):
 
 def local_ip() -> str:
     """Best-effort LAN IP for the connection hint."""
-    import socket
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -775,6 +800,14 @@ def local_ip() -> str:
 
 
 async def main():
+    if not AUTH_TOKEN:
+        print(f"""
+!!! WARNING: no HERMES_BRIDGE_TOKEN set - this bridge is UNAUTHENTICATED.
+!!! It is listening on ws://{HOST}:{PORT}/voice - anyone who can reach
+!!! that address on the network can drive the agent (tool access
+!!! included) with no credentials. Set HERMES_BRIDGE_TOKEN before
+!!! exposing this beyond localhost.
+""")
     print(f"""
 ╔══════════════════════════════════════════════════════════╗
 ║              Hermes Glasses Bridge Server                ║
