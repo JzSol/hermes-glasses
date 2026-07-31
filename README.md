@@ -1,10 +1,12 @@
 # Hermes Glasses
 
 Talk to your own AI through Meta Ray-Ban smart glasses - hands-free voice
-conversations with live on-device transcription, and computer vision through the
-glasses camera ("what am I looking at?"). Bring your own API key for a
-zero-infrastructure setup, or point it at a Hermes Agent for full agentic,
-tool-using conversations.
+conversations with live on-device transcription, computer vision through the
+glasses camera ("what am I looking at?"), voice-started navigation on the
+lens, and a private, on-device memory of the people you meet. Bring your own
+API key for a zero-infrastructure setup, or point it at a Hermes Agent for
+full agentic, tool-using conversations. No glasses at hand? Phone mode runs
+every feature from the iPhone alone, with a simulated lens on screen.
 
 Part of the **Sidekick** project.
 
@@ -42,15 +44,59 @@ Part of the **Sidekick** project.
 
 ## What it does
 
+### Talk
+
 - 🎙️ **Live transcription** - your words appear on screen as you speak, using
   Apple's on-device speech recognition (no audio leaves the phone for STT)
 - 🤖 **Ask anything** - finished utterances go straight to your chosen AI
   provider (Direct mode) or to a Hermes Agent running on your Mac (bridge
   mode), and the answer is spoken back through text-to-speech
-- 👓 **Vision through the glasses** - say "what am I looking at?" and the app
-  captures a photo from the Ray-Ban camera and the AI answers about the image
-- 🧪 **Built-in test panel** - Bridge / Photo / Query / Visual buttons verify
-  each subsystem independently, with a live mic level meter
+- 👓 **Lens HUD** - on Ray-Ban Display glasses, transcription and replies
+  render on the lens itself; silent mode shows the text without speaking it
+- 🔘 **Choice buttons** - a reply that offers options ("A) Sydney, B)
+  Melbourne…") becomes tappable buttons on the lens and chips in the chat;
+  tapping one submits the option's words
+- 🧠 **Device context** - queries can carry the moment (time, location,
+  motion, connectivity, battery, weather) so "where can I get coffee?" gets a
+  local answer
+
+### See
+
+- 📷 **Vision** - say "what am I looking at?" and the app captures a photo
+  from the glasses camera and the AI answers about the image
+- 🔍 **Object Snap (Lens)** - a live glasses feed with on-device YOLO object
+  detection; hold an object in the reticle for 2 s and it's snapped into the
+  Object Log - no AI, no network
+- 🧭 **Navigation** - "take me to the station" starts a walking or driving
+  route with no AI round-trip: a turn-by-turn banner and a heading-aware map
+  on the lens, and a full map screen (with place search) in the app
+- 📖 **Definitions** - "what is a quokka?" answers as usual and puts a
+  Wikipedia image next to the text on the lens
+
+### Remember
+
+- 🤝 **"Remember this person"** - snaps a glasses photo while you speak a
+  note about who you just met
+- 🗣️ **"Record this conversation"** - captures the full transcript plus
+  automatic snaps of the people you're talking to (a 2 s look triggers a
+  snap), then re-transcribes from the recording for a cleaner result
+- 📛 **Badge reading** - name badges in snaps are read by on-device OCR and
+  used to group sightings into a timeline per person; an opt-in AI pass can
+  fill in badges the on-device reader missed
+- 🔒 **Private by design** - encounters, snaps and transcripts are stored on
+  this iPhone only and never touch the AI, the bridge, or the network (the
+  one exception, AI badge reading, is off by default)
+
+### No glasses? Phone mode
+
+- 📱 **The iPhone is the eye** - a Glasses/Phone toggle picks the camera; a
+  simulated Ray-Ban Display lens renders on screen, so every feature above
+  works with no glasses at all (and Auto falls back when glasses are out of
+  reach)
+- 🎧 **Headset mode** - mic and TTS live in your earbuds while the glasses
+  lens keeps the HUD - the pocket setup
+- 💬 **"What can I say?"** - a settings page listing every voice command,
+  generated from the intent detectors themselves so it never drifts
 
 ## Architecture
 
@@ -145,8 +191,9 @@ phone, and keys are stored in the iPhone Keychain, one per provider.
 3. **Settings → Assistant → Backend: Direct (your API)** → choose a Provider,
    Model, and paste your key.
 4. Start a session. First run prompts for microphone + speech recognition
-   permissions; the first photo prompts for **camera permission via Meta AI**
-   (tap the Photo test button to trigger the grant flow).
+   permissions. The **glasses camera permission is granted via the Meta AI
+   app** - Hermes asks for it right after pairing, and it can also be granted
+   later from Settings → Devices or the test panel's Photo button.
 
 ### Path B - Hermes agent (bridge), full agentic assistant
 
@@ -197,7 +244,9 @@ works with `openai`).
 
 ## Testing
 
-Use the built-in test panel (visible while a session is active):
+Use the built-in test panel (**Settings → Developer**). It works from a cold
+start - no session needs to be running, except for the bridge tests, which
+need the socket:
 
 | Button | Verifies |
 |---|---|
@@ -205,6 +254,7 @@ Use the built-in test panel (visible while a session is active):
 | Photo | Glasses camera capture alone (also runs the permission grant) |
 | Query | Bridge → Hermes → response → TTS round trip |
 | Visual | Full photo + vision pipeline |
+| Display | Renders a test card on the lens HUD |
 
 Bridge-side unit tests:
 
@@ -219,23 +269,26 @@ test suite and the full build/test workflow.
 
 ```
 HermesGlasses/
+├── Models/yolo11n.mlpackage           # bundled on-device object detector
 ├── Services/
 │   ├── HermesSpeechRecognizer.swift   # on-device live STT
-│   ├── HermesAudioManager.swift       # mic capture + TTS playback
-│   ├── HermesCameraManager.swift      # glasses photo capture (DAT camera)
+│   ├── HermesAudioManager.swift       # mic capture + TTS playback + mic switching
+│   ├── HermesCameraManager.swift      # glasses camera (DAT): photos + live stream
+│   ├── PhoneCameraManager.swift       # iPhone camera (phone mode)
+│   ├── HermesDisplayManager.swift     # lens HUD on Ray-Ban Display
 │   ├── HermesAPIClient.swift          # WebSocket client (bridge mode)
-│   └── Providers/                     # AIProvider seam for Direct mode
-│       ├── AIProvider.swift
-│       ├── AnthropicProvider.swift
-│       ├── OpenAICompatibleProvider.swift
-│       └── GeminiProvider.swift
+│   ├── DirectClient.swift             # Direct-mode conversation loop
+│   ├── Providers/                     # AIProvider seam (Claude/OpenAI/Gemini/Ollama)
+│   ├── Navigation/                    # voice intents, routing, bearing, lens maps, Wikipedia
+│   ├── Social/                        # encounters, conversation capture, badge OCR
+│   └── Lens/                          # object detection, dwell tracking, object log
 ├── ViewModels/                        # session orchestration, registration
-└── Views/                             # SwiftUI UI + test panel
+└── Views/                             # SwiftUI screens (design system: HermesDesign.swift)
 bridge/
 ├── hermes_bridge.py                   # WebSocket bridge on the Mac
 ├── .env.example                       # bridge configuration template
 └── test_hermes_bridge.py              # unit tests
-tests/                                 # standalone swiftc test suites
+tests/                                 # standalone swiftc test suites, one dir per unit
 docs/superpowers/                      # design specs and implementation plans
 ```
 
@@ -243,8 +296,13 @@ docs/superpowers/                      # design specs and implementation plans
 
 - Voice loop and vision loop are working end-to-end on device, in both
   Direct and bridge modes.
-- The microphone currently used is the **iPhone's** - routing audio through
-  the glasses microphone is the next milestone.
+- The microphone is switchable (iPhone / glasses / headset), but the glasses
+  mic is Bluetooth HFP, and an active HFP link makes the glasses firmware
+  show its call screen over the lens - so it's **mic or HUD, not both**.
+  Headset mode is the workaround: mic + TTS in the earbuds, HUD on the lens.
+- Someone speaking quietly across the table may be missed by conversation
+  capture - the phone mic is tuned for the wearer. The recording is kept so
+  a better transcription can recover it later.
 - Glasses photos may arrive rotated (EXIF orientation not yet normalized).
 - Visual-query detection is keyword-based ("look", "what is this", …).
 
