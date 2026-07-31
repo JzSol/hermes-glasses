@@ -18,13 +18,22 @@ Part of the **Sidekick** project.
 <p align="center"><em>On the Ray-Ban Display lens - a spoken reply (left) and live transcription (right), fully hands-free.</em></p>
 
 <p align="center">
-  <img src="docs/media/home.png" width="220" alt="Home screen with Glasses and Bridge both connected">
+  <img src="docs/media/home.png" width="220" alt="Home screen in phone mode with the Record, Lens, People, Map and Log quick actions">
   &nbsp;&nbsp;
-  <img src="docs/media/settings-direct.png" width="220" alt="Direct (your API) mode with the Claude provider selected">
+  <img src="docs/media/lens-live.png" width="220" alt="Phone mode: live camera feed with the simulated Ray-Ban Display lens overlaid">
   &nbsp;&nbsp;
-  <img src="docs/media/settings-features.png" width="220" alt="Voice, microphone, glasses-display and context settings">
+  <img src="docs/media/settings.png" width="220" alt="Settings hub: assistant, voice and microphone, glasses display, people, object log, navigation">
 </p>
-<p align="center"><em>Home (glasses + bridge connected), “Direct (your API)” provider settings, and the voice / glasses / context controls.</em></p>
+<p align="center"><em>Home with the quick actions, the simulated lens in phone mode, and the settings hub.</em></p>
+
+<p align="center">
+  <img src="docs/media/navigation.png" width="220" alt="Voice-started walking route on the in-app map with the lens HUD banner">
+  &nbsp;&nbsp;
+  <img src="docs/media/people.png" width="220" alt="People: recorded conversations and spoken notes with snaps (names and photos redacted)">
+  &nbsp;&nbsp;
+  <img src="docs/media/object-log.png" width="220" alt="Object Log: dwell-snapped objects grouped by day">
+</p>
+<p align="center"><em>Voice-started navigation, People (conversation captures and spoken notes), and the Object Log.</em></p>
 
 <p align="center">
   <img src="docs/media/bridge-terminal.png" width="620" alt="Bridge log: a visual query captures a glasses photo and answers in 5.3 seconds">
