@@ -157,5 +157,75 @@ expectEqual(BadgeAssist.parse("Dr. Sarah Chen\nRADIOLOGY")?.rawLines,
             ["Dr. Sarah Chen", "RADIOLOGY"],
             "a short reply is stored verbatim")
 
+// MARK: - Badge kind
+
+expectEqual(Badge.Kind(detectorLabel: "conference_lanyard"), .conferenceLanyard,
+            "detector label maps to a kind")
+expectEqual(Badge.Kind(detectorLabel: "corporate_id"), .corporateID,
+            "corporate_id maps to a kind")
+expectEqual(Badge.Kind(detectorLabel: "clinical_id"), .clinicalID,
+            "clinical_id maps to a kind")
+expectEqual(Badge.Kind(detectorLabel: "handheld_id"), .handheldID,
+            "handheld_id maps to a kind")
+expectTrue(Badge.Kind(detectorLabel: "person") == nil,
+           "an unknown label is not a badge kind")
+
+// MARK: - Source precedence
+//
+// A decoded barcode is not a guess: it outranks OCR, and a hand
+// correction still outranks everything.
+
+expectTrue(Badge.Source.manual.rank > Badge.Source.barcode.rank,
+           "manual outranks barcode")
+expectTrue(Badge.Source.barcode.rank > Badge.Source.onDevice.rank,
+           "barcode outranks on-device OCR")
+expectTrue(Badge.Source.onDevice.rank > Badge.Source.assisted.rank,
+           "on-device OCR outranks assist")
+
+// MARK: - Decoding an encounters.json written before this change
+
+let legacyJSON = """
+{"rawLines":["Sarah Chen","RADIOLOGY"],"source":"onDevice","name":"Sarah Chen"}
+""".data(using: .utf8)!
+let legacy = try? JSONDecoder().decode(Badge.self, from: legacyJSON)
+expectEqual(legacy?.name, "Sarah Chen", "a pre-change badge still decodes")
+expectTrue(legacy?.kind == nil, "a pre-change badge has no kind")
+expectTrue(legacy?.badgeRect == nil, "a pre-change badge has no rect")
+expectTrue(legacy?.portraitFilename == nil, "a pre-change badge has no portrait")
+
+// MARK: - preservingLocalFields
+//
+// Badge assist replies with TEXT ONLY. It never sees the detector's box,
+// the badge kind or the portrait, so replacing a badge wholesale would
+// silently drop the things only the on-device pass can know.
+
+let onDeviceBadge = Badge(
+    name: nil, rawLines: [], source: .onDevice,
+    kind: .conferenceLanyard, barcodePayload: "ATT-4471",
+    portraitFilename: "abc-portrait-0.jpg",
+    badgeRect: CGRect(x: 0.3, y: 0.4, width: 0.2, height: 0.1)
+)
+let assistedBadge = Badge(
+    name: "Sarah Chen", rawLines: ["Sarah Chen"], source: .assisted
+)
+let carried = assistedBadge.preservingLocalFields(from: onDeviceBadge)
+expectEqual(carried.name, "Sarah Chen", "the assisted name wins")
+expectEqual(carried.source, .assisted, "the assisted source is kept")
+expectEqual(carried.kind, .conferenceLanyard, "the kind is carried forward")
+expectEqual(carried.barcodePayload, "ATT-4471", "the payload is carried forward")
+expectEqual(carried.portraitFilename, "abc-portrait-0.jpg",
+            "the portrait is carried forward")
+expectTrue(carried.badgeRect == onDeviceBadge.badgeRect, "the rect is carried forward")
+
+// A newer value must never be clobbered by an older one.
+let bothSet = Badge(
+    name: "A", rawLines: [], source: .barcode, kind: .clinicalID
+).preservingLocalFields(from: onDeviceBadge)
+expectEqual(bothSet.kind, .clinicalID, "an existing kind is not overwritten")
+
+// Nothing to carry from is a no-op, not a crash.
+expectEqual(assistedBadge.preservingLocalFields(from: nil).name, "Sarah Chen",
+            "preserving from nil returns self")
+
 print(failures == 0 ? "\nAll badge tests passed" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

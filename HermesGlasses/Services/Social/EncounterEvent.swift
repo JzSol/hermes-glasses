@@ -12,6 +12,7 @@
 //
 
 import Foundation
+import CoreGraphics
 
 /// A name tag, as read off someone. `rawLines` is always what OCR actually
 /// saw, so a bad parse stays recoverable.
@@ -19,13 +20,44 @@ struct Badge: Codable, Equatable {
     /// Where the text came from. Ranked, because merging two sightings of
     /// the same person has to pick one.
     enum Source: String, Codable {
-        case onDevice, assisted, manual
+        case onDevice, assisted, manual, barcode
 
         var rank: Int {
             switch self {
-            case .manual: return 2
+            case .manual: return 3
+            // A decoded barcode is not a reading of a badge, it IS the
+            // badge's own data. It loses only to a human correction.
+            case .barcode: return 2
             case .onDevice: return 1
             case .assisted: return 0
+            }
+        }
+    }
+
+    /// What kind of badge the detector saw. Display data ONLY - this must
+    /// never become a grouping key. Grouping is by badge text.
+    enum Kind: String, Codable {
+        case conferenceLanyard, corporateID, clinicalID, handheldID
+
+        /// The detector's class label, exactly as exported by ultralytics.
+        /// Unknown labels are not an error: a model retrained with extra
+        /// classes must degrade to "a badge, kind unknown".
+        init?(detectorLabel: String) {
+            switch detectorLabel {
+            case "conference_lanyard": self = .conferenceLanyard
+            case "corporate_id": self = .corporateID
+            case "clinical_id": self = .clinicalID
+            case "handheld_id": self = .handheldID
+            default: return nil
+            }
+        }
+
+        var displayName: String {
+            switch self {
+            case .conferenceLanyard: return "Conference badge"
+            case .corporateID: return "Staff ID"
+            case .clinicalID: return "Clinical ID"
+            case .handheldID: return "ID card"
             }
         }
     }
@@ -35,16 +67,36 @@ struct Badge: Codable, Equatable {
     var org: String?
     var rawLines: [String]
     var source: Source
+    /// Set when the detector localised the badge. All four are optional so
+    /// the synthesized decoder reads an encounters.json written before
+    /// badge detection existed - no migration shim needed.
+    var kind: Kind?
+    /// A QR/barcode's raw contents. Kept even when it parsed to nothing
+    /// useful: an opaque attendee id is still the thing printed on the tag.
+    var barcodePayload: String?
+    /// The portrait printed on an ID card, in the store's photos/ directory.
+    /// Never sent off the phone. Nil unless `badge_portraits_enabled`.
+    var portraitFilename: String?
+    /// Where the badge was, in unit coordinates of the person crop
+    /// (origin TOP-LEFT). Kept so a later pass can re-crop the badge
+    /// without re-running the detector.
+    var badgeRect: CGRect?
 
     init(
         name: String? = nil, title: String? = nil, org: String? = nil,
-        rawLines: [String] = [], source: Source = .onDevice
+        rawLines: [String] = [], source: Source = .onDevice,
+        kind: Kind? = nil, barcodePayload: String? = nil,
+        portraitFilename: String? = nil, badgeRect: CGRect? = nil
     ) {
         self.name = name
         self.title = title
         self.org = org
         self.rawLines = rawLines
         self.source = source
+        self.kind = kind
+        self.barcodePayload = barcodePayload
+        self.portraitFilename = portraitFilename
+        self.badgeRect = badgeRect
     }
 
     /// "Radiology · Auckland City Hospital". Nil when there is neither.
@@ -67,6 +119,21 @@ struct Badge: Codable, Equatable {
             .split(separator: " ")
             .joined(separator: " ")
         return collapsed.isEmpty ? nil : collapsed
+    }
+
+    /// This badge, carrying forward the fields only the on-device pass can
+    /// produce. Badge assist replies with TEXT; it never sees the detector's
+    /// box, the badge kind or the portrait, so writing its result over an
+    /// existing badge would silently drop them. Values already set on self
+    /// always win - this fills gaps, it does not overwrite.
+    func preservingLocalFields(from previous: Badge?) -> Badge {
+        guard let previous else { return self }
+        var merged = self
+        merged.kind = kind ?? previous.kind
+        merged.barcodePayload = barcodePayload ?? previous.barcodePayload
+        merged.portraitFilename = portraitFilename ?? previous.portraitFilename
+        merged.badgeRect = badgeRect ?? previous.badgeRect
+        return merged
     }
 }
 
