@@ -489,6 +489,10 @@ private struct SightingDetailView: View {
     /// every keystroke in the name field, and re-reading every JPEG in the
     /// row from disk per keystroke was a real, measured cost at 12 photos.
     @State private var images: [UIImage] = []
+    /// Same reasoning as `images`: `encounterPhotoData` bottoms out in a
+    /// synchronous disk-queue hop plus a JPEG decode, so it must not run on
+    /// every keystroke either.
+    @State private var portrait: UIImage?
 
     var body: some View {
         Form {
@@ -529,14 +533,12 @@ private struct SightingDetailView: View {
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(.secondary)
                     }
-                    if let portraitFilename = badge.portraitFilename,
-                       let data = hermesVM.encounterPhotoData(filename: portraitFilename),
-                       let image = UIImage(data: data) {
+                    if let portrait {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Photo on the badge")
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundStyle(.secondary)
-                            Image(uiImage: image)
+                            Image(uiImage: portrait)
                                 .resizable()
                                 .scaledToFit()
                                 .frame(maxWidth: 120)
@@ -569,6 +571,9 @@ private struct SightingDetailView: View {
             name = badge?.name ?? ""
             images = filenames.compactMap { hermesVM.encounterPhotoData(filename: $0) }
                 .compactMap(UIImage.init(data:))
+            portrait = badge?.portraitFilename
+                .flatMap { hermesVM.encounterPhotoData(filename: $0) }
+                .flatMap(UIImage.init(data:))
         }
         .onDisappear {
             // Swipe-back must not discard an edit (same contract as Settings).

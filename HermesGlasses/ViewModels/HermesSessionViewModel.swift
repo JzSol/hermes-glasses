@@ -1750,7 +1750,16 @@ final class HermesSessionViewModel {
         // sighting is already recorded, so a slow read costs nothing.
         Task { @MainActor [weak self] in
             let badge = await BadgeReader.readBadge(from: personImage)
-            guard let self, let badge, self.conversationCaptureActive else { return }
+            // conversationCaptureActive alone isn't enough: if this task is
+            // still in flight when one capture ends and a new one starts
+            // before it resumes, the flag is true again but eventID belongs
+            // to the OLD captureModel. Without the membership check the
+            // portrait would be appended to the NEW capture's array while
+            // updateBadge silently no-ops on the stale id - a photo written
+            // to disk that nothing ever references.
+            guard let self, let badge, self.conversationCaptureActive,
+                  self.captureModel.events.contains(where: { $0.id == eventID })
+            else { return }
 
             var portraitIndex: Int?
             if self.badgePortraitsEnabled, let rect = badge.badgeRect,

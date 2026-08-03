@@ -407,5 +407,66 @@ _ = EncounterStore(directory: untouchedRoot)  // waits again, if anything ran
 expectTrue(!FileManager.default.fileExists(atPath: untouchedIndex.path),
            "deleting an unknown id does not rewrite the index")
 
+// MARK: - Portraits (Task 8): distinct filenames, never in photoFilenames
+//
+// The privacy-load-bearing invariant: a portrait must be named apart from
+// sighting photos (so it can never appear in Encounter.photoFilenames or an
+// event's own photoFilenames - both of which feed the People row thumbnail,
+// the day grouping, the chat mirror, and the badge-assist payload).
+
+let portraitsRoot = root.appendingPathComponent("portraits")
+let portraitStore = EncounterStore(directory: portraitsRoot)
+let portraitJPEG = Data([0xFF, 0xD8, 0x0C])
+let portraitSightingID = UUID()
+let portraitCaptured: [CapturedEvent] = [
+    CapturedEvent(id: portraitSightingID, kind: .sighting, timestamp: at2(0),
+                  photoIndex: 0, portraitIndex: 0,
+                  badge: Badge(name: "Sarah Chen", rawLines: ["Sarah Chen"],
+                               source: .onDevice)),
+]
+let portraitSaved = portraitStore.save(
+    events: portraitCaptured, photos: [jpegA], portraits: [portraitJPEG],
+    timestamp: at2(0)
+)
+
+expectTrue(!portraitSaved.photoFilenames.contains { $0.contains("-portrait-") },
+           "encounter.photoFilenames has no portrait entries")
+expectEqual(portraitSaved.events[0].photoFilenames, portraitSaved.photoFilenames,
+            "the event's photoFilenames is exactly the sighting photo")
+expectEqual(portraitSaved.events[0].badge?.portraitFilename,
+            "\(portraitSaved.id.uuidString)-portrait-0.jpg",
+            "portrait filename follows the <id>-portrait-<n> pattern")
+expectEqual(portraitStore.photoData(filename: portraitSaved.events[0].badge!.portraitFilename!),
+            portraitJPEG, "portrait bytes read back under their own filename")
+
+// An out-of-range portraitIndex leaves portraitFilename nil - same contract
+// as an out-of-range photoIndex a few sections up.
+let oobPortraitCaptured: [CapturedEvent] = [
+    CapturedEvent(kind: .sighting, timestamp: at2(1), photoIndex: 0,
+                  portraitIndex: 5,
+                  badge: Badge(name: "Nobody", rawLines: ["Nobody"], source: .onDevice)),
+]
+let oobPortraitSaved = portraitStore.save(
+    events: oobPortraitCaptured, photos: [jpegA], portraits: [portraitJPEG],
+    timestamp: at2(1)
+)
+expectTrue(oobPortraitSaved.events[0].badge?.portraitFilename == nil,
+           "out-of-range portraitIndex leaves portraitFilename nil")
+
+// Deleting the encounter must take the portrait with it. Portraits are
+// deliberately absent from photoFilenames - that is what keeps them out of
+// the badge-assist payload - but that same absence means delete(id:) is the
+// ONLY thing that can find them; missing it leaves someone's ID photo on
+// disk forever, unreferenced by any index entry. This is the regression
+// test for that bug.
+let portraitFilename = portraitSaved.events[0].badge!.portraitFilename!
+let portraitPath = portraitsRoot.appendingPathComponent("photos")
+    .appendingPathComponent(portraitFilename)
+expectTrue(FileManager.default.fileExists(atPath: portraitPath.path),
+           "portrait file exists before delete")
+portraitStore.delete(id: portraitSaved.id)
+expectTrue(!FileManager.default.fileExists(atPath: portraitPath.path),
+           "portrait file deleted along with the encounter")
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

@@ -374,6 +374,16 @@ final class EncounterStore: @unchecked Sendable {
                     at: photosURL.appendingPathComponent(filename)
                 )
             }
+            // Portraits are deliberately absent from photoFilenames - that
+            // separation is what keeps them out of the badge-assist payload
+            // and every photo-strip reader - but they still live in
+            // photos/ and still need to go when the encounter does, or a
+            // deleted stranger's ID photo outlives the entry that named it.
+            for filename in removed.events.compactMap(\.badge?.portraitFilename) {
+                try? FileManager.default.removeItem(
+                    at: photosURL.appendingPathComponent(filename)
+                )
+            }
             if let audio = removed.audioFilename {
                 // Deleting an encounter must take its recording with it -
                 // leaving an orphaned hour of conversation on disk is the
