@@ -440,5 +440,57 @@ expectTrue(merged6.kind == nil, "6: an unknown kind still produces a badge, kind
 expectTrue(merged6.name == nil, "6: nothing was readable")
 expectTrue(merged6.badgeRect == rect6, "6: badgeRect is still set")
 
+// MARK: - BadgeParser.preferred - detected vs. the band fallback
+//
+// Once a model ships, a detected box that names nobody (a false positive,
+// or a real badge the crop couldn't read) must not shut the band out of a
+// region it might still read - see BadgeReader.readBadge. The choice
+// between the two already-computed results is pure and lives here; the
+// decision of whether to bother running the band pass at all is
+// BadgeReader's job and needs Vision, so it isn't tested in this suite.
+
+let detectedNamed = Badge(
+    name: "Dana Lee", source: .onDevice, kind: .corporateID, badgeRect: rect1)
+let fallbackNamed = Badge(name: "Priya Singh", source: .onDevice)
+
+// A: detected named, fallback named -> detected wins outright, untouched.
+let prefA = BadgeParser.preferred(detected: detectedNamed, fallback: fallbackNamed)
+expectEqual(prefA.name, "Dana Lee", "A: a named detection is never overridden")
+expectEqual(prefA.kind, .corporateID, "A: detected's own kind survives")
+expectTrue(prefA.badgeRect == rect1, "A: detected's own rect survives")
+
+let detectedNameless = Badge(
+    source: .onDevice, kind: .handheldID, barcodePayload: "XYZ-1", badgeRect: rect2)
+
+// B: detected nameless, fallback named -> the band's name wins, but the
+// detected badge's kind/badgeRect/barcodePayload are carried forward - the
+// band pass produces none of those itself.
+let fallbackWithTitle = Badge(name: "Priya Singh", title: "Engineer", source: .onDevice)
+let prefB = BadgeParser.preferred(detected: detectedNameless, fallback: fallbackWithTitle)
+expectEqual(prefB.name, "Priya Singh", "B: the band's name is used")
+expectEqual(prefB.title, "Engineer", "B: the band's own title is kept")
+expectEqual(prefB.kind, .handheldID, "B: detected's kind is carried forward")
+expectTrue(prefB.badgeRect == rect2, "B: detected's rect is carried forward")
+expectEqual(prefB.barcodePayload, "XYZ-1", "B: detected's barcode payload is carried forward")
+
+// C: detected nameless, fallback nil (band found nothing either) ->
+// detected is returned unchanged - still non-nil, name nil, kind/rect/
+// payload intact.
+let prefC = BadgeParser.preferred(detected: detectedNameless, fallback: nil)
+expectTrue(prefC.name == nil, "C: still nothing readable")
+expectEqual(prefC.kind, .handheldID, "C: detected's kind survives with no fallback")
+expectTrue(prefC.badgeRect == rect2, "C: detected's rect survives with no fallback")
+expectEqual(prefC.barcodePayload, "XYZ-1", "C: detected's payload survives with no fallback")
+
+// D: detected nameless, fallback non-nil but ALSO nameless -> detected is
+// still returned, because it carries kind/rect/payload the band's empty
+// result does not.
+let fallbackNameless = Badge(source: .onDevice)
+let prefD = BadgeParser.preferred(detected: detectedNameless, fallback: fallbackNameless)
+expectTrue(prefD.name == nil, "D: neither pass named anyone")
+expectEqual(prefD.kind, .handheldID, "D: detected (not the band) is returned")
+expectTrue(prefD.badgeRect == rect2, "D: detected's rect proves detected was kept")
+expectEqual(prefD.barcodePayload, "XYZ-1", "D: detected's payload proves detected was kept")
+
 print(failures == 0 ? "\nAll badge tests passed" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

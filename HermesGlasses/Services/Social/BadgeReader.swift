@@ -6,11 +6,15 @@
 // Vision text recognition, and - only when the user has opted in, and only
 // after the encounter is on disk - the configured AI provider.
 //
-// The badge is LOCATED first (BadgeDetector) and only guessed at
-// (BadgeRegion's band) when localisation is unavailable or found nothing.
-// The band is the floor: it is what shipped before detection existed, and
-// removing it would make a badge worn somewhere the model never saw worse
-// off than it was.
+// The badge is LOCATED first (BadgeDetector); the band (BadgeRegion) is the
+// fallback, run when localisation is unavailable, found nothing, OR found a
+// box that named nobody. That last case matters once a model ships: a
+// false-positive detection (a shirt pocket clearing the confidence floor)
+// must not strand OCR on a region with no text when the band would still
+// have found the name. The band is the floor: it is what shipped before
+// detection existed, and removing it - or letting a bad detection shut it
+// out - would make a badge worn somewhere the model got wrong worse off
+// than it was.
 //
 // Both paths are best-effort by contract. Every failure means "no badge",
 // never an error the wearer sees, and never a reason not to save an
@@ -158,25 +162,42 @@ enum BadgeReader {
 
     /// Read the badge worn by the person in this crop.
     ///
-    /// Two strategies, in order:
+    /// Two strategies, tried in order, with the band run as a fallback in
+    /// TWO cases rather than one:
     ///
     /// 1. **Detected.** `BadgeDetector` localises the badge; its box is
     ///    padded, magnified, and read for text, a barcode and a kind. A
     ///    barcode wins over text when both land, because it decoded rather
-    ///    than inferred.
-    /// 2. **The band.** No model, or no detection: `BadgeRegion`'s measured
-    ///    lanyard band, exactly as it worked before detection existed.
+    ///    than inferred. If this names someone, it is returned immediately -
+    ///    the band never runs, so a successful detection costs nothing
+    ///    extra.
+    /// 2. **The band.** Runs when there is no model or no detection - the
+    ///    pre-existing floor - AND ALSO when a detected box named nobody: a
+    ///    false-positive detection, or a real badge the crop couldn't read,
+    ///    must not shut the band out of a region it might still read.
+    ///    `BadgeParser.preferred` picks whichever of the two actually names
+    ///    someone, and when the band wins it still carries forward the
+    ///    detected badge's `kind`/`badgeRect`/`barcodePayload` - the band
+    ///    pass produces none of those itself.
     ///
-    /// Returns a badge whenever a badge was LOCATED, even when nothing on it
-    /// could be read - `name` is nil but `kind` and `badgeRect` are set. That
-    /// is deliberate: "there is a tag here I could not read" is worth
-    /// recording, and it is what badge assist selects on
+    /// Returns a badge whenever EITHER pass located one, even when nothing
+    /// on it could be read - `name` is nil but `kind` and `badgeRect` are
+    /// set. That is deliberate: "there is a tag here I could not read" is
+    /// worth recording, and it is what badge assist selects on
     /// (`badge?.name == nil`, not `badge == nil`).
     static func readBadge(from image: UIImage) async -> Badge? {
         guard let cgImage = image.cgImage else { return nil }
 
         if let box = BadgeCrop.best(await BadgeDetector.shared.detect(cgImage)) {
-            return await readDetected(box: box, in: cgImage)
+            let detected = await readDetected(box: box, in: cgImage)
+            guard detected.name == nil else { return detected }
+            // The detector found something but nothing on it was legible -
+            // run the band as insurance, strictly on this failure branch so
+            // a successful detection never pays for it.
+            let fallback = BadgeParser.parse(
+                await readLines(from: image), source: .onDevice
+            )
+            return BadgeParser.preferred(detected: detected, fallback: fallback)
         }
         return BadgeParser.parse(await readLines(from: image), source: .onDevice)
     }

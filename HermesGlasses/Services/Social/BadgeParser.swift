@@ -109,6 +109,29 @@ enum BadgeParser {
         return badge
     }
 
+    /// Choose between a detected-path badge and a band-path fallback.
+    /// Pure - the expensive part (whether to bother running the band pass
+    /// at all) is the caller's job; this only decides which of two already-
+    /// computed results to keep. See `BadgeReader.readBadge` for why the
+    /// band runs as a fallback for a detection that named nobody, not just
+    /// for a missing detection.
+    ///
+    /// `detected` always wins when it has a name - there is nothing to
+    /// fall back FROM. Otherwise the band's badge wins if and only if it
+    /// names someone, in which case it carries forward `detected`'s `kind`,
+    /// `badgeRect` and `barcodePayload` via `preservingLocalFields(from:)` -
+    /// the band pass produces none of those, and losing them would strand
+    /// a barcode-decoded payload or the detector's box just because the
+    /// band read a name off a different line. When neither names anyone,
+    /// `detected` is kept: it is still non-nil with `kind`/`badgeRect`
+    /// (and `barcodePayload`, if a barcode decoded) set, where the band's
+    /// result carries none of that.
+    static func preferred(detected: Badge, fallback: Badge?) -> Badge {
+        guard detected.name == nil else { return detected }
+        guard let fallback, fallback.name != nil else { return detected }
+        return fallback.preservingLocalFields(from: detected)
+    }
+
     // MARK: - Line predicates
 
     /// Real content: two or more characters, at least one of them a letter.
