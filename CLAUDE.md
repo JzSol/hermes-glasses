@@ -278,6 +278,26 @@ photo via the DAT camera API.
   `Row` carries `eventIDs` and why the write goes through
   `EncounterStore.updateBadgeName(encounterID:eventIDs:name:)`, which unifies
   the name while preserving each event's own `rawLines`.
+- **The badge is located, not assumed - but the locator doesn't ship yet.**
+  `BadgeDetector` wraps an OPTIONAL bundled `badge11n.mlpackage` (4 classes,
+  labels must equal `Badge.Kind(detectorLabel:)`'s switch exactly - see
+  `tools/train-badge.md`) and, when present, runs on the person crop at
+  snap time, never on the live stream. Its box, padded by `BadgeCrop.padding`
+  and magnified with `BadgeRegion`'s measured constants, is what OCR, the
+  barcode pass and the portrait pass read. No model is bundled today, so
+  `BadgeReader` always falls through to the `BadgeRegion` band below - that
+  fallback is not a degraded mode to apologise for, it is the floor the
+  whole feature stands on, and it stays even once a model ships: for no
+  model, no detection, or a detected box that named nobody, so a false
+  positive (a shirt pocket clearing `BadgeCrop.minimumConfidence`) can't
+  strand OCR on a region with no text when the band might still read it.
+  Training images MUST come from the glasses stream at `.low` and
+  conversational range - a set shot on crisp phone photos validates
+  beautifully and finds nothing on device, the same resolution cliff
+  `BadgeRegion.swift`'s header documents from the OCR side. Gate any model
+  add or swap on `tools/badge-probe.swift`, not on mAP: the question is
+  whether the detected path reads more names than the band on real crops,
+  and until it does, the band ships and the model waits.
 - **Badges need a REGION and a magnifier, not a bigger threshold.** OCR over
   the whole person crop returns nothing at the resolution the glasses stream:
   a lanyard's name line is under 1% of a head-to-knees crop's height.
