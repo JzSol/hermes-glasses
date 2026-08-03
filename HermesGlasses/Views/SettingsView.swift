@@ -883,7 +883,7 @@ private struct PeoplePage: View {
                 ))
                 .disabled(!hermesVM.socialNotesEnabled || !hermesVM.badgeOCREnabled)
             } footer: {
-                Text("When a badge has a photo printed on it, save that photo with the sighting. Stays on this iPhone and is never sent to your AI provider, even with the setting below turned on.")
+                Text("When someone's badge carries their photo, save that photo with the sighting. Stays on this iPhone, and is never sent to your AI provider, even with badge assist turned on below.")
             }
 
             Section {

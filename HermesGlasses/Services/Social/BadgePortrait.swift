@@ -64,9 +64,7 @@ enum BadgePortrait {
             label: "face", confidence: 1, visionRect: largest.boundingBox
         ) else { return nil }
 
-        let padded = box.rect.insetBy(
-            dx: -box.rect.width * padding, dy: -box.rect.height * padding
-        ).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let padded = BadgeCrop.padded(box.rect, by: padding)
 
         let size = CGSize(width: badgeCrop.width, height: badgeCrop.height)
         guard let pixels = BadgeCrop.pixelRect(for: padded, in: size),

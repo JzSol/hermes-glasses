@@ -61,10 +61,13 @@ enum BadgeCrop {
         boxes.max { $0.confidence < $1.confidence }
     }
 
-    /// The box grown by `padding` and clamped inside the unit square.
-    static func padded(_ rect: CGRect) -> CGRect {
+    /// The box grown by `fraction` (of its own size, default `padding`) and
+    /// clamped inside the unit square. Callers with a different padding
+    /// need (see `BadgePortrait`) pass their own `fraction` rather than
+    /// reimplementing this grow-and-clamp.
+    static func padded(_ rect: CGRect, by fraction: CGFloat = padding) -> CGRect {
         let grown = rect.insetBy(
-            dx: -rect.width * padding, dy: -rect.height * padding
+            dx: -rect.width * fraction, dy: -rect.height * fraction
         )
         return grown.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
     }

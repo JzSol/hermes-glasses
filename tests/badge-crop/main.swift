@@ -93,6 +93,19 @@ expectClose(atFarEdge.maxY, 1, "padding cannot push the box off the bottom edge"
 let wholeFrame = BadgeCrop.padded(CGRect(x: 0, y: 0, width: 1, height: 1))
 expectClose(wholeFrame.width, 1, "a full-frame box stays full-frame")
 
+// A caller can ask for a different padding fraction than the badge default
+// (BadgePortrait pads faces by 0.25, not BadgeCrop's 0.12) and still gets
+// the same grow-and-clamp behaviour.
+let widerPadded = BadgeCrop.padded(
+    CGRect(x: 0.4, y: 0.4, width: 0.2, height: 0.1), by: 0.25)
+expectClose(widerPadded.width, 0.3, "a custom fraction widens by that amount")
+expectClose(widerPadded.height, 0.15, "a custom fraction heightens by that amount")
+
+let widerAtEdge = BadgeCrop.padded(
+    CGRect(x: 0, y: 0, width: 0.2, height: 0.1), by: 0.25)
+expectClose(widerAtEdge.minX, 0, "a custom fraction still clamps at the left edge")
+expectClose(widerAtEdge.minY, 0, "a custom fraction still clamps at the top edge")
+
 // MARK: - Unit rect to pixels
 
 let pixels = BadgeCrop.pixelRect(
