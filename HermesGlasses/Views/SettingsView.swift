@@ -877,6 +877,16 @@ private struct PeoplePage: View {
             }
 
             Section {
+                Toggle("Keep ID photos", isOn: Binding(
+                    get: { hermesVM.badgePortraitsEnabled },
+                    set: { hermesVM.badgePortraitsEnabled = $0 }
+                ))
+                .disabled(!hermesVM.socialNotesEnabled || !hermesVM.badgeOCREnabled)
+            } footer: {
+                Text("When a badge has a photo printed on it, save that photo with the sighting. Stays on this iPhone and is never sent to your AI provider, even with the setting below turned on.")
+            }
+
+            Section {
                 Toggle("Ask AI to read hard badges", isOn: Binding(
                     get: { hermesVM.badgeAssistEnabled },
                     set: { hermesVM.badgeAssistEnabled = $0 }

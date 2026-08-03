@@ -181,6 +181,18 @@ final class HermesSessionViewModel {
             if !badgeOCREnabled { badgeAssistEnabled = false }
         }
     }
+    /// Keep the photograph printed on an ID card, cropped off the badge.
+    ///
+    /// Its own setting, and off by default, because it is the one payload
+    /// here a person would object to on sight. Everything else in badge
+    /// reading works without it, it never leaves the phone, and it is never
+    /// included in the badge-assist payload.
+    var badgePortraitsEnabled: Bool =
+        (UserDefaults.standard.object(forKey: "badge_portraits_enabled") as? Bool) ?? false {
+        didSet {
+            UserDefaults.standard.set(badgePortraitsEnabled, forKey: "badge_portraits_enabled")
+        }
+    }
     /// After a recording ends, ask the configured AI provider to read the
     /// badges Vision could not. This is the ONLY part of the People feature
     /// that leaves the phone, so it is off until the user turns it on.
