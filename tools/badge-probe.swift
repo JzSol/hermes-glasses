@@ -9,7 +9,10 @@
 // them - see EncounterStore's photos/ directory, which you can pull off
 // the device with the Files app). For each it prints one row:
 //
-//   A. the band path      - BadgeRegion's magnified band, then OCR
+//   A. the band path      - BadgeRegion's magnified band, then the whole
+//                           crop as a safety net, then OCR (mirrors
+//                           BadgeReader.readLines exactly - this is what
+//                           ships today, not a weaker stand-in for it)
 //   B. the detected path  - badge11n's box, padded and magnified, then OCR
 //
 // With no model argument, only column A runs - that is still the baseline
@@ -90,7 +93,8 @@ func makePersonCrop(width: Int, height: Int, badgeTextPoints: CGFloat) -> CGImag
 /// One OCR pass. Mirrors BadgeReader's `recognize`: `.accurate`,
 /// `usesLanguageCorrection = false` (correction mangles surnames - that is
 /// why the shipping code disables it), sorted top-of-badge first, filtered
-/// at the same confidence floor.
+/// at the same confidence floor, trimmed, with empties dropped - a
+/// whitespace-only candidate must not count as "named" in the tally.
 func recognizeText(_ image: CGImage) -> [String] {
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
@@ -102,7 +106,8 @@ func recognizeText(_ image: CGImage) -> [String] {
         .compactMap { obs in
             guard let c = obs.topCandidates(1).first, c.confidence >= 0.4
             else { return nil }
-            return c.string
+            let text = c.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
         }
 }
 
@@ -122,12 +127,12 @@ func upscale(_ image: CGImage, to target: CGSize) -> CGImage {
 
 // MARK: - A. The band path (BadgeRegion, real geometry)
 
-/// Mirrors BadgeReader's magnifiedBand + recognize: crop BadgeRegion.band,
-/// upscale via BadgeRegion.upscaledSize, then OCR. This is the baseline -
-/// what ships with no model bundled, today.
-func bandLines(from image: CGImage) -> [String] {
+/// The magnified band alone - crop BadgeRegion.band, upscale via
+/// BadgeRegion.upscaledSize. Nil when the crop is too small or degenerate
+/// to slice, exactly mirroring BadgeReader.magnifiedBand.
+func magnifiedBand(of image: CGImage) -> CGImage? {
     let w = CGFloat(image.width), h = CGFloat(image.height)
-    guard w > 0, h > 0 else { return [] }
+    guard w > 0, h > 0 else { return nil }
     let band = BadgeRegion.band
     let pixelRect = CGRect(
         x: band.minX * w, y: band.minY * h,
@@ -135,10 +140,30 @@ func bandLines(from image: CGImage) -> [String] {
     ).integral
     guard pixelRect.width >= 1, pixelRect.height >= 1,
           let cropped = image.cropping(to: pixelRect)
-    else { return [] }
+    else { return nil }
     let target = BadgeRegion.upscaledSize(
         for: CGSize(width: pixelRect.width, height: pixelRect.height))
-    return recognizeText(upscale(cropped, to: target))
+    return upscale(cropped, to: target)
+}
+
+/// Mirrors BadgeReader.readLines EXACTLY, not a weaker stand-in for it:
+/// TWO passes, merged in order - the magnified band first, then the whole
+/// crop as a safety net for "a tag worn high, clipped to a sleeve, or held
+/// up in a hand" (BadgeReader.swift's own words), deduplicated
+/// case-insensitively. This is the baseline that ships with no model
+/// bundled, today, and it must reflect production's real recall or the
+/// gate below is comparing the detector against a strawman.
+func bandLines(from image: CGImage) -> [String] {
+    var lines: [String] = []
+    var seen = Set<String>()
+    for candidate in [magnifiedBand(of: image), image] {
+        guard let candidate else { continue }
+        for line in recognizeText(candidate)
+        where seen.insert(line.lowercased()).inserted {
+            lines.append(line)
+        }
+    }
+    return lines
 }
 
 // MARK: - B. The detected path (badge11n + BadgeCrop, real geometry)
