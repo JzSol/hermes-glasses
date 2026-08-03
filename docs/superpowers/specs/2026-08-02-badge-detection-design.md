@@ -62,7 +62,13 @@ without a dataset, but fires on phone screens, book covers, pockets and the
 blank backs of badges, and cannot report badge type.
 
 The barcode half of this alternative is adopted regardless — it is free,
-on-device, and decodes exactly where OCR guesses.
+on-device, and decodes exactly where OCR guesses. **In this branch that
+adoption is model-gated, not unconditional**: `BarcodeReader.read` is only
+called from `readDetected`, which requires a localised box, so with no
+`badge11n.mlpackage` bundled the barcode pass never runs at all. It ships
+inert until a model lands - see "Open risks" - which is correct (without a
+box you cannot tell whose QR you decoded) but is a fact this section should
+not obscure.
 
 ## Architecture
 
@@ -180,12 +186,16 @@ payload here that someone would object to on sight, so:
   off**. With it off, the face pass simply does not run; detection, OCR,
   barcode and kind are unaffected. Every other part of the pipeline works
   without it.
-- It is **never** included in the `BadgeAssist` payload. The AI pass sends
-  the badge crop; the portrait stays on the phone with the rest of
-  `EncounterStore`.
-- `PeopleView`'s "Stored on this iPhone only" notice covers it under the
-  existing rule; the badge-assist wording change that notice already
-  requires is unaffected.
+- The **stored portrait file** is never included in the `BadgeAssist`
+  payload - it is written under its own filename and nothing on the assist
+  path reads it. But the AI pass sends the badge crop (`badgeRect`), and
+  `badgeRect` **is** the badge: on an ID card, the printed portrait is
+  inside that crop too. Once a model ships, turning badge assist on sends a
+  tight crop centred on the person's ID photograph - a *stronger*
+  disclosure than the pre-detection whole-person photo, not a weaker one.
+- `PeopleView`'s "Stored on this iPhone only" notice covers the stored file
+  under the existing rule. It does not describe what badge assist sends -
+  `SettingsView`'s "Keep ID photos" footer must say so explicitly, and does.
 
 ## Runtime
 

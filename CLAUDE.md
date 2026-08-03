@@ -266,6 +266,12 @@ photo via the DAT camera API.
   splice badge photos into the user's conversation memory. Capped at 6
   reads, 20 s each, abandoned on the first auth failure. When it is on,
   PeopleView's "Stored on this iPhone only" notice MUST change text.
+  There is a third source now too: `BarcodeReader` decodes a badge's own
+  QR/barcode (vCard, MECARD, opaque id), ranked above OCR because a decode
+  isn't a guess. It only ever runs from `BadgeReader.readDetected`, which
+  requires a localised badge box - so with no `badge11n.mlpackage` bundled
+  yet, the barcode pass is wired up but inert; nothing exercises it on
+  device today.
 - **Grouping is by badge text, never by face.** Two unbadged sightings never
   merge, no matter how close in time. There is no face recognition in this
   app and adding dwell-adjacency merging would silently claim two people

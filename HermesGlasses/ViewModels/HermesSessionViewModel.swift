@@ -1756,17 +1756,34 @@ final class HermesSessionViewModel {
             // to the OLD captureModel. Without the membership check the
             // portrait would be appended to the NEW capture's array while
             // updateBadge silently no-ops on the stale id - a photo written
-            // to disk that nothing ever references.
+            // to disk that nothing ever references. The check is repeated
+            // AGAIN below, not merged into this one: `BadgeReader.portrait`
+            // is its own suspension point, so a capture can just as well end
+            // and restart during that second await. Guard once per await,
+            // immediately before the state each one feeds - never "guard
+            // once at the top and trust it downstream" across a suspend.
             guard let self, let badge, self.conversationCaptureActive,
                   self.captureModel.events.contains(where: { $0.id == eventID })
             else { return }
 
+            var portraitData: Data?
+            if self.badgePortraitsEnabled, let rect = badge.badgeRect {
+                portraitData = await BadgeReader.portrait(
+                    from: personImage, badgeRect: rect
+                )
+            }
+
+            // Re-validated after the portrait await resumes - see the
+            // comment above. Everything from here on (the append and the
+            // updateBadge call) runs with no further suspension point, so
+            // this guard covers both.
+            guard self.conversationCaptureActive,
+                  self.captureModel.events.contains(where: { $0.id == eventID })
+            else { return }
+
             var portraitIndex: Int?
-            if self.badgePortraitsEnabled, let rect = badge.badgeRect,
-               let portrait = await BadgeReader.portrait(
-                   from: personImage, badgeRect: rect
-               ) {
-                self.capturePortraits.append(portrait)
+            if let portraitData {
+                self.capturePortraits.append(portraitData)
                 portraitIndex = self.capturePortraits.count - 1
             }
 

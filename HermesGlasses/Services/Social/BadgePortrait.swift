@@ -5,8 +5,12 @@
 //
 // This is the one payload in badge reading that a person would object to on
 // sight, so it is gated by its OWN setting (badge_portraits_enabled,
-// default off) rather than riding on badge OCR, it never leaves the phone,
-// and it is explicitly excluded from the BadgeAssist payload.
+// default off) rather than riding on badge OCR. The FILE this produces
+// never leaves the phone, and it is never itself handed to BadgeAssist -
+// but that is not the same as saying no portrait imagery reaches the AI
+// provider: badge assist (BadgeReader.assistCrop) sends a crop of the
+// badge itself, and on an ID card the printed portrait is part of that
+// crop. Don't let this comment, or SettingsView's footer, claim otherwise.
 //
 // It is NOT an identity key. Grouping is by badge text; there is no face
 // recognition in this app and this must not become the start of one.

@@ -526,7 +526,7 @@ private struct SightingDetailView: View {
                      : "Correct it if the badge was misread.")
             }
 
-            if let badge, badge.kind != nil || badge.portraitFilename != nil {
+            if let badge, badge.kind != nil || portrait != nil {
                 Section {
                     if let kind = badge.kind {
                         Text(kind.displayName)

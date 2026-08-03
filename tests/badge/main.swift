@@ -492,5 +492,32 @@ expectEqual(prefD.kind, .handheldID, "D: detected (not the band) is returned")
 expectTrue(prefD.badgeRect == rect2, "D: detected's rect proves detected was kept")
 expectEqual(prefD.barcodePayload, "XYZ-1", "D: detected's payload proves detected was kept")
 
+// MARK: - Codable round-trip: the four new persisted fields
+//
+// CGRect: Codable is the one new persistence dependency this branch adds.
+// A failure here takes down the whole encounters.json index, not one
+// badge, so a fully-populated Badge - kind, barcodePayload,
+// portraitFilename AND badgeRect all set at once - must survive an
+// encode/decode round trip intact.
+
+let fullyPopulated = Badge(
+    name: "Sarah Chen", title: "Radiology", org: "Auckland City Hospital",
+    rawLines: ["Dr. Sarah Chen", "RADIOLOGY", "Auckland City Hospital"],
+    source: .barcode, kind: .clinicalID, barcodePayload: "BEGIN:VCARD\nFN:Sarah Chen\nEND:VCARD",
+    portraitFilename: "abc-portrait-0.jpg",
+    badgeRect: CGRect(x: 0.125, y: 0.25, width: 0.375, height: 0.5)
+)
+let roundTrippedBadge = try! JSONDecoder().decode(
+    Badge.self, from: try! JSONEncoder().encode(fullyPopulated))
+expectEqual(roundTrippedBadge, fullyPopulated,
+            "a fully-populated badge round-trips through Codable unchanged")
+expectEqual(roundTrippedBadge.kind, .clinicalID, "kind survives encode/decode")
+expectEqual(roundTrippedBadge.barcodePayload, fullyPopulated.barcodePayload,
+            "barcodePayload survives encode/decode")
+expectEqual(roundTrippedBadge.portraitFilename, "abc-portrait-0.jpg",
+            "portraitFilename survives encode/decode")
+expectTrue(roundTrippedBadge.badgeRect == fullyPopulated.badgeRect,
+           "badgeRect survives encode/decode")
+
 print(failures == 0 ? "\nAll badge tests passed" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

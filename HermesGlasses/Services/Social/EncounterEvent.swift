@@ -82,6 +82,18 @@ struct Badge: Codable, Equatable {
     /// later pass can re-crop the badge without re-running the detector;
     /// use it as-is, do not pass it through `BadgeCrop.padded` again or the
     /// crop grows a second time.
+    ///
+    /// The coordinate space is specifically the person crop's `.cgImage` -
+    /// not the `UIImage` wrapping it. They agree today only because every
+    /// producer and consumer of this rect goes through `.cgImage` and
+    /// `jpegData` round-trips orientation via EXIF rather than baking a
+    /// rotation into the pixels. Any future re-crop (`BadgeReader.portrait`,
+    /// `BadgeReader.assistCrop`, or a new caller) MUST read the target image
+    /// back as a `.cgImage` and apply this rect directly - never draw
+    /// through a `UIImage`-orientation-aware path, which would silently
+    /// rotate the rect out from under the pixels. See CLAUDE.md's "Normalize
+    /// EXIF rotation of glasses photos" milestone: this rect is exactly the
+    /// seam that milestone would otherwise break.
     var badgeRect: CGRect?
 
     init(

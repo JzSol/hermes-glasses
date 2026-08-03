@@ -468,5 +468,64 @@ portraitStore.delete(id: portraitSaved.id)
 expectTrue(!FileManager.default.fileExists(atPath: portraitPath.path),
            "portrait file deleted along with the encounter")
 
+// MARK: - EncounterStore.update(encounterID:eventID:badge:) merge behaviour
+//
+// `preservingLocalFields` is well covered as a pure function above, but not
+// the store call it exists FOR: that writing an assisted badge over a
+// detected one keeps the detector-only fields, and that `badge: nil` now
+// PRESERVES the existing badge rather than clearing it (see the doc comment
+// on `update` in EncounterStore.swift).
+
+let mergeStore = EncounterStore(directory: root.appendingPathComponent("badge-merge"))
+let mergeSightingID = UUID()
+let detectedBadge = Badge(
+    name: nil, rawLines: [], source: .onDevice,
+    kind: .corporateID, barcodePayload: "ATT-9001",
+    portraitFilename: "will-be-overwritten-if-buggy.jpg",
+    badgeRect: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.4)
+)
+let mergeCaptured: [CapturedEvent] = [
+    CapturedEvent(id: mergeSightingID, kind: .sighting, timestamp: at2(0),
+                  photoIndex: 0, badge: detectedBadge),
+]
+let mergeSaved = mergeStore.save(
+    events: mergeCaptured, photos: [jpegA], timestamp: at2(0))
+
+// The deferred assist pass replies with text only - a badge with a name but
+// none of the detector-only fields.
+let assistReply = Badge(
+    name: "Sarah Chen", title: "Radiology", rawLines: ["Sarah Chen"],
+    source: .assisted)
+mergeStore.update(encounterID: mergeSaved.id, eventID: mergeSightingID, badge: assistReply)
+
+let mergeReloaded = EncounterStore(directory: root.appendingPathComponent("badge-merge"))
+let mergedBadge = mergeReloaded.all().first { $0.id == mergeSaved.id }?
+    .events.first { $0.id == mergeSightingID }?.badge
+
+expectEqual(mergedBadge?.name, "Sarah Chen", "assisted name wins over the detected badge's nil name")
+expectEqual(mergedBadge?.source, .assisted, "assisted source wins")
+expectEqual(mergedBadge?.kind, .corporateID, "detected kind survives the assisted write")
+expectTrue(mergedBadge?.badgeRect == detectedBadge.badgeRect,
+           "detected badgeRect survives the assisted write")
+expectEqual(mergedBadge?.portraitFilename, "will-be-overwritten-if-buggy.jpg",
+            "detected portraitFilename survives the assisted write")
+expectEqual(mergedBadge?.barcodePayload, "ATT-9001",
+            "detected barcodePayload survives the assisted write")
+
+// A nil badge (assist found nothing readable, or abandoned early) must
+// PRESERVE the existing badge, not clear it - losing a real detected badge
+// to an assist pass that came back empty would be worse than not running
+// assist at all.
+mergeStore.update(encounterID: mergeSaved.id, eventID: mergeSightingID, badge: nil)
+let afterNilUpdate = EncounterStore(directory: root.appendingPathComponent("badge-merge"))
+    .all().first { $0.id == mergeSaved.id }?
+    .events.first { $0.id == mergeSightingID }?.badge
+expectEqual(afterNilUpdate?.name, "Sarah Chen",
+            "a nil badge write preserves the existing badge's name")
+expectEqual(afterNilUpdate?.kind, .corporateID,
+            "a nil badge write preserves the existing badge's kind")
+expectTrue(afterNilUpdate?.badgeRect == detectedBadge.badgeRect,
+           "a nil badge write preserves the existing badge's rect")
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)
