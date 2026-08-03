@@ -294,5 +294,62 @@ expectTrue((BarcodeReader.parse(longPayload)?.barcodePayload?.count ?? 0)
              <= BarcodeReader.maxPayloadLength,
            "an over-long payload is truncated")
 
+// MARK: - Escaped delimiters vs. structural ones
+//
+// A structured value (vCard ORG, a MECARD field) uses the SAME character
+// for its structural separator and its escape-protected literal. Splitting
+// must happen on the raw text, before unescaping - unescaping first would
+// turn an escaped delimiter into a real one and shear the value at the
+// exact point the escape was protecting.
+
+let escapedOrg = BarcodeReader.parse(
+    "BEGIN:VCARD\nFN:Sarah Chen\nORG:Doctors\\; Associates\nEND:VCARD")
+expectEqual(escapedOrg?.org, "Doctors; Associates",
+            "an escaped semicolon in ORG is not treated as a field separator")
+
+let structuredOrg = BarcodeReader.parse(
+    "BEGIN:VCARD\nFN:Sarah Chen\nORG:Auckland City Hospital;Radiology\nEND:VCARD")
+expectEqual(structuredOrg?.org, "Auckland City Hospital",
+            "an unescaped semicolon in ORG is still a structural separator")
+
+let mecardEscaped = BarcodeReader.parse(
+    "MECARD:N:Chen,Sarah;ORG:Doctors\\; Associates;;")
+expectEqual(mecardEscaped?.name, "Sarah Chen", "the rest of the MECARD still parses")
+expectEqual(mecardEscaped?.org, "Doctors; Associates",
+            "an escaped semicolon inside a MECARD field survives, not sheared into two fields")
+
+// MARK: - Escape ordering: \\n is not \n
+//
+// A single left-to-right pass is required: reading "\n" as "space" before
+// reading "\\" as "backslash" would misinterpret an escaped backslash
+// followed by a literal "n" as an escaped newline.
+
+expectEqual(BarcodeReader.parse("BEGIN:VCARD\nFN:X\\\\nY\nEND:VCARD")?.name,
+            "X\\nY",
+            "an escaped backslash followed by a literal n is not an escaped newline")
+expectEqual(BarcodeReader.parse("BEGIN:VCARD\nFN:X\\nY\nEND:VCARD")?.name,
+            "X Y", "an escaped newline still becomes a space")
+
+// MARK: - Preferring a named badge over an opaque one
+//
+// A badge can carry two barcodes at once (a QR vCard next to a Code128
+// check-in id). Vision does not guarantee observation order, so `read`
+// must not just take the first parseable one. `preferred` is the pure
+// helper it uses; a CGImage carrying two real barcodes isn't practical to
+// construct in this standalone swiftc suite, so the helper is exercised
+// directly instead of `read` itself.
+
+let namedCandidate = BarcodeReader.parse(vcard)!
+let opaqueCandidate = BarcodeReader.parse("ATT-4471")!
+let urlCandidate = BarcodeReader.parse("https://conf.example/a/4471")!
+
+expectEqual(BarcodeReader.preferred([opaqueCandidate, namedCandidate])?.name,
+            "Sarah Chen", "a named badge is preferred over an opaque id")
+expectEqual(BarcodeReader.preferred([namedCandidate, opaqueCandidate])?.name,
+            "Sarah Chen", "order does not matter when one candidate has a name")
+expectEqual(BarcodeReader.preferred([opaqueCandidate, urlCandidate])?.barcodePayload,
+            "ATT-4471", "with no named candidate, the first parseable badge wins")
+expectTrue(BarcodeReader.preferred([]) == nil, "no candidates yields no badge")
+
 print(failures == 0 ? "\nAll badge tests passed" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

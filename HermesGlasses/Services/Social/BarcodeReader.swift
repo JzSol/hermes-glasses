@@ -44,12 +44,26 @@ enum BarcodeReader {
             return nil
         }
 
-        for observation in request.results ?? [] {
-            guard let payload = observation.payloadStringValue,
-                  let badge = parse(payload) else { continue }
-            return badge
+        // A badge can carry more than one barcode at once - a QR vCard
+        // next to a Code128 check-in id is common. Vision does not
+        // guarantee `results` order, so collect every candidate and let
+        // `preferred` pick, instead of returning whichever parsed first.
+        let candidates = (request.results ?? []).compactMap { observation in
+            observation.payloadStringValue.flatMap(parse)
         }
-        return nil
+        return preferred(candidates)
+    }
+
+    /// Among several decoded badges, prefer one that actually named
+    /// someone; fall back to the first parseable badge when none did.
+    /// `parse` returns SOME badge for almost any non-empty payload (an
+    /// opaque id still counts), so "first parseable" alone can't tell a
+    /// vCard from a check-in barcode when Vision lists the id first.
+    /// Not private: a CGImage carrying two real barcodes isn't practical
+    /// to construct in the standalone `swiftc` suite, so tests/badge
+    /// exercises this helper directly instead of `read`.
+    static func preferred(_ badges: [Badge]) -> Badge? {
+        badges.first(where: { $0.name != nil }) ?? badges.first
     }
 
     /// A decoded payload -> a badge. Returns a badge with no name for an
@@ -87,16 +101,26 @@ enum BarcodeReader {
             guard let colon = line.firstIndex(of: ":") else { continue }
             let property = line[line.startIndex..<colon]
                 .split(separator: ";").first.map(String.init)?.uppercased()
-            let value = unescape(String(line[line.index(after: colon)...]))
-                .trimmingCharacters(in: .whitespaces)
-            guard !value.isEmpty else { continue }
+            let rawValue = String(line[line.index(after: colon)...])
             switch property {
-            case "FN": card.name = value
-            case "TITLE": card.title = value
+            case "FN":
+                let value = unescape(rawValue).trimmingCharacters(in: .whitespaces)
+                guard !value.isEmpty else { continue }
+                card.name = value
+            case "TITLE":
+                let value = unescape(rawValue).trimmingCharacters(in: .whitespaces)
+                guard !value.isEmpty else { continue }
+                card.title = value
             case "ORG":
-                // ORG is structured: "Hospital;Radiology". The first
-                // component is the organisation.
-                card.org = value.split(separator: ";").first.map(String.init)
+                // ORG is structured: "Hospital;Radiology". Split on an
+                // UNESCAPED semicolon FIRST, then unescape the surviving
+                // component. Unescaping before splitting would turn an
+                // escaped "\;" into a real semicolon and shear the value
+                // right at the point the escape was protecting.
+                guard let first = splitUnescaped(rawValue, on: ";").first else { continue }
+                let value = unescape(first).trimmingCharacters(in: .whitespaces)
+                guard !value.isEmpty else { continue }
+                card.org = value
             default: continue
             }
         }
@@ -106,13 +130,17 @@ enum BarcodeReader {
     /// MECARD:N:Last,First;ORG:…;;
     private static func parseMECard(_ payload: String) -> Card? {
         guard payload.uppercased().hasPrefix("MECARD:") else { return nil }
-        let body = payload.dropFirst("MECARD:".count)
+        let body = String(payload.dropFirst("MECARD:".count))
         var card = Card()
-        for field in body.split(separator: ";") {
+        // Split the whole body on UNESCAPED semicolons first: a field
+        // whose value contains "\;" must stay one field, not get sheared
+        // into two fragments that both fail the colon check below and
+        // are silently dropped.
+        for field in splitUnescaped(body, on: ";") {
             guard let colon = field.firstIndex(of: ":") else { continue }
             let key = field[field.startIndex..<colon].uppercased()
-            let value = unescape(String(field[field.index(after: colon)...]))
-                .trimmingCharacters(in: .whitespaces)
+            let rawValue = String(field[field.index(after: colon)...])
+            let value = unescape(rawValue).trimmingCharacters(in: .whitespaces)
             guard !value.isEmpty else { continue }
             switch key {
             case "N":
@@ -130,12 +158,67 @@ enum BarcodeReader {
         return card.name == nil && card.org == nil ? nil : card
     }
 
-    /// vCard escapes commas, semicolons and newlines in values.
+    /// Splits `text` on `separator`, treating a separator preceded by an
+    /// unescaped backslash as literal - not a split point. Escapes are
+    /// left untouched in the returned pieces; callers run `unescape`
+    /// afterwards. This has to run BEFORE unescaping: unescaping first
+    /// would turn an escaped delimiter into a real one before the
+    /// splitter ever saw the difference.
+    private static func splitUnescaped(_ text: String, on separator: Character) -> [String] {
+        var parts: [String] = []
+        var current = ""
+        var escaped = false
+        for char in text {
+            if escaped {
+                current.append(char)
+                escaped = false
+            } else if char == "\\" {
+                current.append(char)
+                escaped = true
+            } else if char == separator {
+                parts.append(current)
+                current = ""
+            } else {
+                current.append(char)
+            }
+        }
+        parts.append(current)
+        return parts
+    }
+
+    /// vCard/MECARD escaping: `\,` `\;` `\\` unescape to their plain
+    /// character; `\n` / `\N` (a folded newline inside a value) unescapes
+    /// to a space. A single left-to-right pass over the characters -
+    /// rather than four chained global replacements - is required: doing
+    /// `\n` -> " " as its own pass would misread the "n" in an escaped
+    /// backslash ("\\n": a literal backslash followed by a literal "n")
+    /// as if it were an escaped newline.
     private static func unescape(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\\n", with: " ")
-            .replacingOccurrences(of: "\\,", with: ",")
-            .replacingOccurrences(of: "\\;", with: ";")
-            .replacingOccurrences(of: "\\\\", with: "\\")
+        var result = ""
+        result.reserveCapacity(value.count)
+        var chars = value.makeIterator()
+        while let char = chars.next() {
+            guard char == "\\" else {
+                result.append(char)
+                continue
+            }
+            guard let next = chars.next() else {
+                // A trailing lone backslash: nothing to escape, keep it.
+                result.append(char)
+                break
+            }
+            switch next {
+            case "n", "N": result.append(" ")
+            case ",": result.append(",")
+            case ";": result.append(";")
+            case "\\": result.append("\\")
+            default:
+                // An unrecognised escape: keep both characters verbatim
+                // rather than silently dropping the backslash.
+                result.append(char)
+                result.append(next)
+            }
+        }
+        return result
     }
 }
