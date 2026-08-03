@@ -49,7 +49,17 @@ import Vision
 /// Renders a synthetic person crop (torso block, white badge card, name +
 /// employer at a realistic scale). Mirrors tools/ocr-probe.swift's
 /// makePersonCrop so the self-test exercises the same shape of image.
-func makePersonCrop(width: Int, height: Int, badgeTextPoints: CGFloat) -> CGImage {
+///
+/// `badgeYFraction` places the badge's bottom edge in CoreGraphics'
+/// bottom-left, y-up coordinate system (what this function draws in) - NOT
+/// BadgeRegion's top-left unit convention. The default, 0.46, is the
+/// original hardcoded placement and lands well inside BadgeRegion.band, the
+/// common case. Callers that need a badge OUTSIDE the band (see
+/// `badgeAboveBandYFraction` below) pass a different fraction.
+func makePersonCrop(
+    width: Int, height: Int, badgeTextPoints: CGFloat,
+    badgeYFraction: CGFloat = 0.46
+) -> CGImage {
     let ctx = CGContext(
         data: nil, width: width, height: height, bitsPerComponent: 8,
         bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
@@ -61,11 +71,14 @@ func makePersonCrop(width: Int, height: Int, badgeTextPoints: CGFloat) -> CGImag
     ctx.fill(CGRect(x: Double(width) * 0.15, y: Double(height) * 0.25,
                     width: Double(width) * 0.70, height: Double(height) * 0.50))
 
-    // The badge card, in the upper-torso band where a lanyard hangs.
+    // The badge card. At the default badgeYFraction this sits in the
+    // upper-torso band where a lanyard hangs; a caller-supplied fraction can
+    // move it elsewhere (e.g. above the band, for the whole-crop-fallback
+    // regression case).
     let badgeW = Double(width) * 0.26
     let badgeH = badgeW * 0.62
     let badgeX = Double(width) * 0.40
-    let badgeY = Double(height) * 0.46
+    let badgeY = Double(height) * Double(badgeYFraction)
     ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
     ctx.fill(CGRect(x: badgeX, y: badgeY, width: badgeW, height: badgeH))
 
@@ -86,6 +99,20 @@ func makePersonCrop(width: Int, height: Int, badgeTextPoints: CGFloat) -> CGImag
     NSGraphicsContext.restoreGraphicsState()
 
     return ctx.makeImage()!
+}
+
+/// A `badgeYFraction` for `makePersonCrop` that places the WHOLE badge
+/// above `BadgeRegion.bandTop` - worn high near the collar, or held up to
+/// the camera - the case the whole-crop safety-net pass in
+/// `bandLines`/`BadgeReader.readLines` exists for. Derived from
+/// `BadgeRegion.bandTop` itself (not a hardcoded fraction) so this stays
+/// outside the band if that measured constant is ever retuned: the
+/// midpoint between "outside the band" (bottom-origin fraction
+/// `1 - bandTop`) and the very top of the crop (fraction `1`) leaves a
+/// comfortable margin on both sides.
+var badgeAboveBandYFraction: CGFloat {
+    let outsideBand = 1 - BadgeRegion.bandTop
+    return outsideBand + (1 - outsideBand) / 2
 }
 
 // MARK: - Shared Vision pass
@@ -277,20 +304,33 @@ func runSelfTest() {
     print("No arguments given - running the synthetic self-test (no photos, no model needed).")
     print("This proves the probe runs; it is not evidence for or against a real model.\n")
 
-    let crops: [(label: String, w: Int, h: Int, pts: CGFloat)] = [
-        ("synthetic-low-res.png (320x600, glasses .low scale)", 320, 600, 5.0),
-        ("synthetic-mid-res.png (640x1200, phone-photo scale)", 640, 1200, 10.0),
+    // The first two sit inside BadgeRegion.band and read via the band-crop
+    // pass alone. The third's badge is entirely OUTSIDE the band
+    // (badgeAboveBandYFraction, derived from BadgeRegion.bandTop) - it
+    // proves the whole-crop safety-net pass in bandLines is actually
+    // running: this row reads a name only because that second pass exists,
+    // and would go blank if bandLines were ever reduced back to the band
+    // alone (the exact regression this probe was fixed for once already).
+    let crops: [(label: String, w: Int, h: Int, pts: CGFloat, badgeYFraction: CGFloat)] = [
+        ("synthetic-low-res.png (320x600, glasses .low scale)", 320, 600, 5.0, 0.46),
+        ("synthetic-mid-res.png (640x1200, phone-photo scale)", 640, 1200, 10.0, 0.46),
+        ("synthetic-badge-above-band.png (640x1200, badge above BadgeRegion.bandTop)",
+         640, 1200, 10.0, badgeAboveBandYFraction),
     ]
 
     var tally = Tally()
     for crop in crops {
-        let image = makePersonCrop(width: crop.w, height: crop.h, badgeTextPoints: crop.pts)
+        let image = makePersonCrop(
+            width: crop.w, height: crop.h, badgeTextPoints: crop.pts,
+            badgeYFraction: crop.badgeYFraction)
         let band = bandLines(from: image).first
         printRow(name: crop.label, band: band, detected: nil)
         tally.record(band: band, detected: nil)
     }
     print("\nNo model argument given - the detected column needs a compiled badge11n.mlmodelc.")
     print("Self-test band results: \(tally.both + tally.bandOnly)/\(crops.count) crops named via the band path.")
+    print("The third row proves the whole-crop safety-net pass: its badge is outside BadgeRegion.band,")
+    print("so it only reads a name because bandLines runs both passes, not the band alone.")
 }
 
 func runDirectory(path: String, modelDirectory: String?) {
