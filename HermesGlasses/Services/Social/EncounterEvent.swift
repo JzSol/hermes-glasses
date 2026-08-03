@@ -78,8 +78,10 @@ struct Badge: Codable, Equatable {
     /// Never sent off the phone. Nil unless `badge_portraits_enabled`.
     var portraitFilename: String?
     /// Where the badge was, in unit coordinates of the person crop
-    /// (origin TOP-LEFT). Kept so a later pass can re-crop the badge
-    /// without re-running the detector.
+    /// (origin TOP-LEFT) - ALREADY PADDED by `BadgeCrop.padded`. Kept so a
+    /// later pass can re-crop the badge without re-running the detector;
+    /// use it as-is, do not pass it through `BadgeCrop.padded` again or the
+    /// crop grows a second time.
     var badgeRect: CGRect?
 
     init(

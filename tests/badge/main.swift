@@ -10,6 +10,7 @@
 //     HermesGlasses/Services/Social/BarcodeReader.swift \
 //     tests/badge/main.swift -o /tmp/badge-tests && /tmp/badge-tests
 //
+import CoreGraphics
 import Foundation
 
 var failures = 0
@@ -351,6 +352,93 @@ expectEqual(BarcodeReader.preferred([namedCandidate, opaqueCandidate])?.name,
 expectEqual(BarcodeReader.preferred([opaqueCandidate, urlCandidate])?.barcodePayload,
             "ATT-4471", "with no named candidate, the first parseable badge wins")
 expectTrue(BarcodeReader.preferred([]) == nil, "no candidates yields no badge")
+
+// MARK: - BadgeParser.merge - the detected-badge orchestration
+
+// Extracted out of BadgeReader.readDetected so this branching - the one
+// place a silent error puts a wrong name on a stranger's face - is
+// reachable from this standalone suite. BadgeReader.swift itself imports
+// UIKit and cannot compile here.
+
+let rect1 = CGRect(x: 0.1, y: 0.1, width: 0.3, height: 0.4)
+let rect2 = CGRect(x: 0.2, y: 0.2, width: 0.3, height: 0.4)
+let rect3 = CGRect(x: 0.3, y: 0.3, width: 0.3, height: 0.4)
+let rect4 = CGRect(x: 0.4, y: 0.4, width: 0.3, height: 0.4)
+let rect5 = CGRect(x: 0.5, y: 0.5, width: 0.3, height: 0.4)
+let rect6 = CGRect(x: 0.6, y: 0.6, width: 0.3, height: 0.4)
+
+// 1. Barcode named + OCR parsed: the barcode's name and .barcode source
+// win; title/org fall back to OCR only where the barcode itself lacks
+// them; rawLines are the OCR lines (OCR read something, so its lines beat
+// the barcode's own single-line payload).
+let nameOnlyBarcode = BarcodeReader.parse("MECARD:N:Chen,Sarah;;")!
+expectTrue(nameOnlyBarcode.title == nil && nameOnlyBarcode.org == nil,
+           "fixture: a bare MECARD name has no title or org")
+let ocrLines1 = ["Sarah Chen", "Radiology", "Auckland City Hospital"]
+let merged1 = BadgeParser.merge(
+    barcode: nameOnlyBarcode, lines: ocrLines1, kind: .conferenceLanyard, rect: rect1)
+expectEqual(merged1.name, "Sarah Chen", "1: barcode's name wins")
+expectEqual(merged1.source, .barcode, "1: barcode source wins")
+expectEqual(merged1.title, "Radiology", "1: title falls back to OCR")
+expectEqual(merged1.org, "Auckland City Hospital", "1: org falls back to OCR")
+expectEqual(merged1.rawLines, ocrLines1, "1: rawLines are the OCR lines")
+expectEqual(merged1.kind, .conferenceLanyard, "1: kind is carried from the detector")
+expectTrue(merged1.badgeRect == rect1, "1: badgeRect is carried from the detector")
+
+// 2. Barcode named + OCR parsed nothing (no lines recognised at all): a
+// named badge from the barcode alone, and rawLines fall back to the
+// barcode's own payload rather than an empty OCR list.
+let fullBarcode = BarcodeReader.parse(vcard)!
+let merged2 = BadgeParser.merge(barcode: fullBarcode, lines: [], kind: nil, rect: rect2)
+expectEqual(merged2.name, "Sarah Chen", "2: barcode's name wins")
+expectEqual(merged2.source, .barcode, "2: barcode source wins")
+expectEqual(merged2.title, "Radiologist", "2: barcode's own title is kept")
+expectEqual(merged2.org, "Auckland City Hospital", "2: barcode's own org is kept")
+expectEqual(merged2.rawLines, fullBarcode.rawLines,
+            "2: rawLines fall back to the barcode's own")
+expectTrue(merged2.kind == nil, "2: no kind was supplied")
+expectTrue(merged2.badgeRect == rect2, "2: badgeRect is still carried")
+
+// 3. No barcode + OCR parsed: an .onDevice badge from OCR alone.
+let merged3 = BadgeParser.merge(
+    barcode: nil, lines: ["Sarah Chen", "Radiology"], kind: nil, rect: rect3)
+expectEqual(merged3.name, "Sarah Chen", "3: OCR's name is used")
+expectEqual(merged3.source, .onDevice, "3: on-device source, no barcode")
+expectEqual(merged3.title, "Radiology", "3: OCR's leftover line is the title")
+expectTrue(merged3.barcodePayload == nil, "3: no barcode payload to carry")
+expectTrue(merged3.badgeRect == rect3, "3: badgeRect is still carried")
+
+// 4. Unnamed barcode + OCR parsed: the OCR badge wins the name, but the
+// unnamed barcode's payload rides along rather than being discarded.
+let opaqueBarcode = BarcodeReader.parse("ATT-4471")!
+expectTrue(opaqueBarcode.name == nil, "fixture: an opaque id names nobody")
+let merged4 = BadgeParser.merge(
+    barcode: opaqueBarcode, lines: ["Sarah Chen"], kind: nil, rect: rect4)
+expectEqual(merged4.name, "Sarah Chen", "4: OCR's name is used")
+expectEqual(merged4.source, .onDevice, "4: on-device source, the barcode named nobody")
+expectEqual(merged4.barcodePayload, "ATT-4471",
+            "4: the unnamed barcode's payload is carried forward")
+
+// 5. Nothing readable: still a non-nil badge - located but unreadable -
+// with kind and badgeRect set, and an opaque barcode payload retained.
+let merged5 = BadgeParser.merge(
+    barcode: opaqueBarcode, lines: [], kind: .handheldID, rect: rect5)
+expectTrue(merged5.name == nil, "5: nothing was readable")
+expectEqual(merged5.kind, .handheldID, "5: kind is still set")
+expectTrue(merged5.badgeRect == rect5, "5: badgeRect is still set")
+expectEqual(merged5.barcodePayload, "ATT-4471",
+            "5: the opaque barcode payload is still retained")
+expectEqual(merged5.rawLines, [], "5: no lines were read")
+
+// 6. An unknown detector label still yields a badge, never nil - `merge`'s
+// return type is non-optional, so the only way to honour that is for the
+// nil kind to flow through untouched instead of being special-cased away.
+let unknownKind = Badge.Kind(detectorLabel: "unknown_widget")
+expectTrue(unknownKind == nil, "fixture: an unrecognised label maps to no kind")
+let merged6 = BadgeParser.merge(barcode: nil, lines: [], kind: unknownKind, rect: rect6)
+expectTrue(merged6.kind == nil, "6: an unknown kind still produces a badge, kind nil")
+expectTrue(merged6.name == nil, "6: nothing was readable")
+expectTrue(merged6.badgeRect == rect6, "6: badgeRect is still set")
 
 print(failures == 0 ? "\nAll badge tests passed" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)

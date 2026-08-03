@@ -181,7 +181,9 @@ enum BadgeReader {
         return BadgeParser.parse(await readLines(from: image), source: .onDevice)
     }
 
-    /// The detected path: everything we can get off one located badge.
+    /// The detected path: everything we can get off one located badge. The
+    /// merge itself is pure and lives in `BadgeParser.merge` - see its doc
+    /// comment for the barcode/OCR precedence rules and why it moved there.
     private static func readDetected(
         box: BadgeBox, in cgImage: CGImage
     ) async -> Badge {
@@ -199,30 +201,9 @@ enum BadgeReader {
                     recognize(crop, confidence: minimumConfidence))
         }.value
 
-        // A decoded barcode is the badge's own data; OCR is a reading of
-        // it. Where they disagree the barcode wins, and where the barcode
-        // named nobody the text fills the gap.
-        let text = BadgeParser.parse(read.lines, source: .onDevice)
-        var badge: Badge
-        if let barcode = read.barcode, barcode.name != nil {
-            badge = barcode
-            badge.title = barcode.title ?? text?.title
-            badge.org = barcode.org ?? text?.org
-            badge.rawLines = read.lines.isEmpty ? barcode.rawLines : read.lines
-        } else if var text {
-            text.barcodePayload = read.barcode?.barcodePayload
-            badge = text
-        } else {
-            // Located but unreadable. Still a badge, still worth a record.
-            badge = Badge(
-                rawLines: read.lines, source: .onDevice,
-                barcodePayload: read.barcode?.barcodePayload
-            )
-        }
-
-        badge.kind = kind
-        badge.badgeRect = rect
-        return badge
+        return BadgeParser.merge(
+            barcode: read.barcode, lines: read.lines, kind: kind, rect: rect
+        )
     }
 }
 

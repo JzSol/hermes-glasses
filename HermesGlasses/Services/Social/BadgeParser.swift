@@ -9,7 +9,15 @@
 // is not, and there is no way for the wearer to notice the mistake in the
 // moment.
 //
+// Also home to `merge`, which combines a detected badge's barcode and OCR
+// passes into one `Badge` - it lives here rather than in BadgeReader.swift
+// because it touches nothing but Badge/BadgeParser/[String] and this file,
+// unlike BadgeReader.swift, compiles standalone (no UIKit/Vision) for
+// tests/badge/main.swift's plain-swiftc suite. That is the only reason it
+// is testable at all.
+//
 
+import CoreGraphics
 import Foundation
 
 enum BadgeParser {
@@ -57,6 +65,48 @@ enum BadgeParser {
         return Badge(
             name: name, title: title, org: org, rawLines: lines, source: source
         )
+    }
+
+    /// Merge one detected badge's barcode and OCR passes into a single
+    /// `Badge`, plus the kind and location the detector already determined.
+    /// Pure - no Vision, no image work - so this is the one piece of
+    /// `BadgeReader.readDetected`'s logic that can be exercised without a
+    /// device. See `BadgeReader.readDetected` for where `barcode`/`lines`
+    /// come from.
+    ///
+    /// A decoded barcode outranks OCR because it decoded rather than
+    /// inferred: where both name someone, the barcode wins and `title`/`org`
+    /// fall back to OCR only where the barcode itself lacks them. Where the
+    /// barcode named nobody (or there wasn't one), OCR fills the gap, and an
+    /// unnamed barcode's payload still rides along on the OCR badge. When
+    /// neither pass reads anything, the badge is still returned NON-NIL -
+    /// located but unreadable - so `kind`/`badgeRect` survive and badge
+    /// assist can still find it via `badge?.name == nil`, never `badge ==
+    /// nil`.
+    static func merge(
+        barcode: Badge?, lines: [String], kind: Badge.Kind?, rect: CGRect
+    ) -> Badge {
+        let text = parse(lines, source: .onDevice)
+        var badge: Badge
+        if let barcode, barcode.name != nil {
+            badge = barcode
+            badge.title = barcode.title ?? text?.title
+            badge.org = barcode.org ?? text?.org
+            badge.rawLines = lines.isEmpty ? barcode.rawLines : lines
+        } else if var text {
+            text.barcodePayload = barcode?.barcodePayload
+            badge = text
+        } else {
+            // Located but unreadable. Still a badge, still worth a record.
+            badge = Badge(
+                rawLines: lines, source: .onDevice,
+                barcodePayload: barcode?.barcodePayload
+            )
+        }
+
+        badge.kind = kind
+        badge.badgeRect = rect
+        return badge
     }
 
     // MARK: - Line predicates
