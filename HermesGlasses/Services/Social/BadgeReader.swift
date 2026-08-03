@@ -233,8 +233,10 @@ enum BadgeReader {
     /// it returns the original bytes unchanged, which is what assist sent
     /// before detection existed and is exactly the sighting assist is for.
     ///
-    /// The portrait is NEVER part of this. It is cropped from the same
-    /// badge, but it stays on the phone.
+    /// The saved portrait FILE is never attached here - this function only
+    /// ever crops the sighting photo. But the crop IS the badge, and on an
+    /// ID card the printed portrait is part of the badge, so when a badge
+    /// carries one, its pixels can be inside what this sends.
     static func assistCrop(photoJPEG: Data, badgeRect: CGRect?) async -> Data {
         guard let badgeRect, let image = UIImage(data: photoJPEG),
               let cgImage = image.cgImage else { return photoJPEG }

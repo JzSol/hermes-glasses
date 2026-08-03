@@ -185,8 +185,9 @@ final class HermesSessionViewModel {
     ///
     /// Its own setting, and off by default, because it is the one payload
     /// here a person would object to on sight. Everything else in badge
-    /// reading works without it, it never leaves the phone, and it is never
-    /// included in the badge-assist payload.
+    /// reading works without it, and the saved FILE never leaves the phone -
+    /// but badge assist sends a crop of the badge itself, and a printed
+    /// portrait is part of that badge, so its pixels are not exempt there.
     var badgePortraitsEnabled: Bool =
         (UserDefaults.standard.object(forKey: "badge_portraits_enabled") as? Bool) ?? false {
         didSet {
