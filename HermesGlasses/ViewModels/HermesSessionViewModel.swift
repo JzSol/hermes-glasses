@@ -1922,8 +1922,15 @@ final class HermesSessionViewModel {
         guard let encounter = encounterStore.all().first(where: { $0.id == encounterID })
         else { completion?(); return }
 
+        // `badge?.name == nil`, NOT `badge == nil`. Once the detector can
+        // localise a badge it could not read, that sighting has a badge
+        // object (kind, box, maybe a barcode) with no name - and it is
+        // precisely the sighting assist exists to rescue. Selecting on
+        // `badge == nil` would skip it. PeopleView's own "unnamed" filter
+        // already uses this predicate; this brings assist in line.
         let unnamed = encounter.events.filter {
-            $0.kind == .sighting && $0.badge == nil && !$0.photoFilenames.isEmpty
+            $0.kind == .sighting && $0.badge?.name == nil
+                && !$0.photoFilenames.isEmpty
         }
         guard !unnamed.isEmpty else { completion?(); return }
 

@@ -290,12 +290,21 @@ final class EncounterStore: @unchecked Sendable {
     /// this - it renames every event a timeline row was merged from and
     /// keeps their raw lines, which is `updateBadgeName` below.
     /// Unknown ids are a no-op.
+    /// The write MERGES: an assisted read replies with text only, so the
+    /// detector's box, badge kind, barcode payload and portrait filename
+    /// survive it. A nil badge leaves the existing one alone rather than
+    /// clearing it.
     func update(encounterID: UUID, eventID: UUID, badge: Badge?) {
         lock.withLock {
             guard let entry = encounters.firstIndex(where: { $0.id == encounterID }),
                   let event = encounters[entry].events.firstIndex(where: { $0.id == eventID })
             else { return }
-            encounters[entry].events[event].badge = badge
+            // Assist's reply is text. Merging rather than assigning keeps
+            // the detector's box, the badge kind and the portrait, none of
+            // which the assisted read can regenerate.
+            let existing = encounters[entry].events[event].badge
+            encounters[entry].events[event].badge =
+                badge?.preservingLocalFields(from: existing) ?? existing
         }
         writeIndex()
     }
