@@ -227,5 +227,72 @@ expectEqual(bothSet.kind, .clinicalID, "an existing kind is not overwritten")
 expectEqual(assistedBadge.preservingLocalFields(from: nil).name, "Sarah Chen",
             "preserving from nil returns self")
 
+// MARK: - Barcode payloads
+//
+// A conference QR usually carries a vCard. Unlike OCR this does not
+// guess - so it lands at .barcode rank and outranks the text pass.
+
+let vcard = """
+BEGIN:VCARD
+VERSION:3.0
+FN:Sarah Chen
+TITLE:Radiologist
+ORG:Auckland City Hospital
+END:VCARD
+"""
+let fromVCard = BarcodeReader.parse(vcard)
+expectEqual(fromVCard?.name, "Sarah Chen", "vCard FN becomes the name")
+expectEqual(fromVCard?.title, "Radiologist", "vCard TITLE becomes the title")
+expectEqual(fromVCard?.org, "Auckland City Hospital", "vCard ORG becomes the org")
+expectEqual(fromVCard?.source, .barcode, "a decoded vCard is barcode-sourced")
+expectEqual(fromVCard?.barcodePayload, vcard, "the raw payload is kept")
+
+// Folded lines are legal vCard and common in QR encoders.
+let folded = "BEGIN:VCARD\r\nFN:Sarah Chen\r\nORG:Auckland City Hospital\r\nEND:VCARD"
+expectEqual(BarcodeReader.parse(folded)?.name, "Sarah Chen",
+            "CRLF line endings parse")
+
+// Property parameters are legal too: FN;CHARSET=UTF-8:Sarah Chen
+expectEqual(BarcodeReader.parse("BEGIN:VCARD\nFN;CHARSET=UTF-8:Sarah Chen\nEND:VCARD")?.name,
+            "Sarah Chen", "a parameterised FN parses")
+
+// vCard escapes commas and semicolons in values.
+expectEqual(BarcodeReader.parse("BEGIN:VCARD\nFN:Chen\\, Sarah\nEND:VCARD")?.name,
+            "Chen, Sarah", "escaped punctuation is unescaped")
+
+// MECARD, the other common encoding.
+let mecard = "MECARD:N:Chen,Sarah;ORG:Auckland City Hospital;;"
+expectEqual(BarcodeReader.parse(mecard)?.name, "Sarah Chen",
+            "MECARD N: last,first becomes first last")
+expectEqual(BarcodeReader.parse(mecard)?.org, "Auckland City Hospital",
+            "MECARD ORG parses")
+
+// An opaque attendee id names nobody - but it is still what the tag says,
+// so it is kept rather than thrown away.
+let opaque = BarcodeReader.parse("ATT-4471")
+expectTrue(opaque?.name == nil, "an opaque id is not a name")
+expectEqual(opaque?.barcodePayload, "ATT-4471", "an opaque id is still kept")
+expectEqual(opaque?.source, .barcode, "an opaque id is barcode-sourced")
+
+// A URL is the same case.
+expectTrue(BarcodeReader.parse("https://conf.example/a/4471")?.name == nil,
+           "a URL is not a name")
+
+// Nothing in, nothing out.
+expectTrue(BarcodeReader.parse("")  == nil, "an empty payload yields no badge")
+expectTrue(BarcodeReader.parse("   \n  ") == nil,
+           "a whitespace payload yields no badge")
+
+// A vCard with no FN is not a person.
+expectTrue(BarcodeReader.parse("BEGIN:VCARD\nORG:Acme Ltd\nEND:VCARD")?.name == nil,
+           "a vCard without FN names nobody")
+
+// Bounded, for the same reason BadgeAssist is: rawLines is persisted and
+// rendered, and a QR can carry kilobytes.
+let longPayload = String(repeating: "A", count: 5000)
+expectTrue((BarcodeReader.parse(longPayload)?.barcodePayload?.count ?? 0)
+             <= BarcodeReader.maxPayloadLength,
+           "an over-long payload is truncated")
+
 print(failures == 0 ? "\nAll badge tests passed" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)
