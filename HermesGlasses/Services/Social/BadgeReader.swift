@@ -1,13 +1,20 @@
 //
 // BadgeReader.swift
 //
-// Getting name-tag text out of a person crop, two ways: on-device with
-// Vision (free, offline, the default), and - only when the user has opted
-// in - through the configured AI provider for the badges Vision could not
-// read.
+// Getting name-tag information out of a person crop. Three ways, in
+// descending order of trust: a barcode decoded off the badge, on-device
+// Vision text recognition, and - only when the user has opted in, and only
+// after the encounter is on disk - the configured AI provider.
 //
-// Both are best-effort by contract. Every failure means "no badge", never
-// an error the wearer sees, and never a reason not to save an encounter.
+// The badge is LOCATED first (BadgeDetector) and only guessed at
+// (BadgeRegion's band) when localisation is unavailable or found nothing.
+// The band is the floor: it is what shipped before detection existed, and
+// removing it would make a badge worn somewhere the model never saw worse
+// off than it was.
+//
+// Both paths are best-effort by contract. Every failure means "no badge",
+// never an error the wearer sees, and never a reason not to save an
+// encounter.
 //
 
 import Foundation
@@ -115,27 +122,107 @@ enum BadgeReader {
               let cropped = image.cropping(to: pixelRect)
         else { return nil }
 
-        let target = BadgeRegion.upscaledSize(
-            for: CGSize(width: pixelRect.width, height: pixelRect.height)
-        )
-        guard target.width > pixelRect.width else { return cropped }
+        return magnified(cropped)
+    }
+
+    /// A detected badge box as a magnified CGImage, ready for text and
+    /// barcode passes. Nil when the box does not survive conversion to
+    /// pixels - a detection at the very edge of a tiny crop.
+    private static func magnifiedBadge(
+        of image: CGImage, box: BadgeBox
+    ) -> CGImage? {
+        let size = CGSize(width: image.width, height: image.height)
+        guard let pixelRect = BadgeCrop.pixelRect(
+            for: BadgeCrop.padded(box.rect), in: size
+        ), let cropped = image.cropping(to: pixelRect) else { return nil }
+        return magnified(cropped)
+    }
+
+    /// Upscale a crop to the size BadgeRegion measured as readable. Returns
+    /// the input unchanged when it is already big enough.
+    private static func magnified(_ image: CGImage) -> CGImage {
+        let size = CGSize(width: image.width, height: image.height)
+        let target = BadgeCrop.upscaledSize(for: size)
+        guard target.width > size.width else { return image }
 
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         format.opaque = true
         let renderer = UIGraphicsImageRenderer(size: target, format: format)
-        let magnified = renderer.image { context in
+        let output = renderer.image { context in
             context.cgContext.interpolationQuality = .high
-            UIImage(cgImage: cropped).draw(
-                in: CGRect(origin: .zero, size: target)
-            )
+            UIImage(cgImage: image).draw(in: CGRect(origin: .zero, size: target))
         }
-        return magnified.cgImage ?? cropped
+        return output.cgImage ?? image
     }
 
-    /// Read and parse in one step. Nil when there is no legible badge.
+    /// Read the badge worn by the person in this crop.
+    ///
+    /// Two strategies, in order:
+    ///
+    /// 1. **Detected.** `BadgeDetector` localises the badge; its box is
+    ///    padded, magnified, and read for text, a barcode and a kind. A
+    ///    barcode wins over text when both land, because it decoded rather
+    ///    than inferred.
+    /// 2. **The band.** No model, or no detection: `BadgeRegion`'s measured
+    ///    lanyard band, exactly as it worked before detection existed.
+    ///
+    /// Returns a badge whenever a badge was LOCATED, even when nothing on it
+    /// could be read - `name` is nil but `kind` and `badgeRect` are set. That
+    /// is deliberate: "there is a tag here I could not read" is worth
+    /// recording, and it is what badge assist selects on
+    /// (`badge?.name == nil`, not `badge == nil`).
     static func readBadge(from image: UIImage) async -> Badge? {
-        BadgeParser.parse(await readLines(from: image), source: .onDevice)
+        guard let cgImage = image.cgImage else { return nil }
+
+        if let box = BadgeCrop.best(await BadgeDetector.shared.detect(cgImage)) {
+            return await readDetected(box: box, in: cgImage)
+        }
+        return BadgeParser.parse(await readLines(from: image), source: .onDevice)
+    }
+
+    /// The detected path: everything we can get off one located badge.
+    private static func readDetected(
+        box: BadgeBox, in cgImage: CGImage
+    ) async -> Badge {
+        let rect = BadgeCrop.padded(box.rect)
+        let kind = Badge.Kind(detectorLabel: box.label)
+
+        let read = await Task.detached(priority: .utility) {
+            () -> (barcode: Badge?, lines: [String]) in
+            guard let crop = magnifiedBadge(of: cgImage, box: box) else {
+                return (nil, [])
+            }
+            // Both passes run on the SAME magnified crop - the barcode
+            // needs the pixels as much as the text does.
+            return (BarcodeReader.read(crop),
+                    recognize(crop, confidence: minimumConfidence))
+        }.value
+
+        // A decoded barcode is the badge's own data; OCR is a reading of
+        // it. Where they disagree the barcode wins, and where the barcode
+        // named nobody the text fills the gap.
+        let text = BadgeParser.parse(read.lines, source: .onDevice)
+        var badge: Badge
+        if let barcode = read.barcode, barcode.name != nil {
+            badge = barcode
+            badge.title = barcode.title ?? text?.title
+            badge.org = barcode.org ?? text?.org
+            badge.rawLines = read.lines.isEmpty ? barcode.rawLines : read.lines
+        } else if var text {
+            text.barcodePayload = read.barcode?.barcodePayload
+            badge = text
+        } else {
+            // Located but unreadable. Still a badge, still worth a record.
+            badge = Badge(
+                rawLines: read.lines, source: .onDevice,
+                barcodePayload: read.barcode?.barcodePayload
+            )
+        }
+
+        badge.kind = kind
+        badge.badgeRect = rect
+        return badge
     }
 }
 
