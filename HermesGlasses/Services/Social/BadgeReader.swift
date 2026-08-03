@@ -227,6 +227,30 @@ enum BadgeReader {
         )
     }
 
+    /// The image to send to badge assist. When the detector localised a
+    /// badge, this is that badge magnified - far more legible per token
+    /// than a head-to-knees crop, within the same 6-read cap. With no box
+    /// it returns the original bytes unchanged, which is what assist sent
+    /// before detection existed and is exactly the sighting assist is for.
+    ///
+    /// The portrait is NEVER part of this. It is cropped from the same
+    /// badge, but it stays on the phone.
+    static func assistCrop(photoJPEG: Data, badgeRect: CGRect?) async -> Data {
+        guard let badgeRect, let image = UIImage(data: photoJPEG),
+              let cgImage = image.cgImage else { return photoJPEG }
+
+        return await Task.detached(priority: .utility) { () -> Data in
+            let size = CGSize(width: cgImage.width, height: cgImage.height)
+            guard let pixels = BadgeCrop.pixelRect(for: badgeRect, in: size),
+                  let crop = cgImage.cropping(to: pixels),
+                  let jpeg = UIImage(cgImage: magnified(crop)).jpegData(
+                      compressionQuality: HermesCameraManager.jpegQuality
+                  )
+            else { return photoJPEG }
+            return jpeg
+        }.value
+    }
+
     /// The portrait printed on a badge already located in this crop.
     /// Re-crops from `badgeRect` rather than re-running the detector -
     /// which is exactly what `Badge.badgeRect` is stored for.

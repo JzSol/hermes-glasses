@@ -1990,9 +1990,12 @@ final class HermesSessionViewModel {
                 guard let filename = event.photoFilenames.first,
                       let photo = self.encounterStore.photoData(filename: filename)
                 else { continue }
+                let toSend = await BadgeReader.assistCrop(
+                    photoJPEG: photo, badgeRect: event.badge?.badgeRect
+                )
                 do {
                     guard let badge = try await BadgeAssist.read(
-                        photoJPEG: photo, client: self.directClient
+                        photoJPEG: toSend, client: self.directClient
                     ) else { continue }
                     self.encounterStore.update(
                         encounterID: encounterID, eventID: event.id, badge: badge
