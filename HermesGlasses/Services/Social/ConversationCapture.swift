@@ -81,11 +81,15 @@ struct ConversationCaptureModel {
     }
 
     /// Attach a badge that arrived after its sighting was recorded - OCR
-    /// runs off the main actor and lands whenever it lands. Unknown ids are
-    /// a no-op.
-    mutating func updateBadge(eventID: UUID, badge: Badge?) {
+    /// runs off the main actor and lands whenever it lands. The portrait
+    /// arrives with it, since both come out of the same badge crop. Unknown
+    /// ids are a no-op.
+    mutating func updateBadge(
+        eventID: UUID, badge: Badge?, portraitIndex: Int? = nil
+    ) {
         guard let index = events.firstIndex(where: { $0.id == eventID }) else { return }
         events[index].badge = badge
+        if let portraitIndex { events[index].portraitIndex = portraitIndex }
     }
 
     /// Person-only filter, applied at the detection boundary so the dwell

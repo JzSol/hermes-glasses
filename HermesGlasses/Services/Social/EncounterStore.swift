@@ -169,7 +169,8 @@ final class EncounterStore: @unchecked Sendable {
     /// every reader that predates the timeline keeps working.
     @discardableResult
     func save(
-        events: [CapturedEvent], photos: [Data], timestamp: Date = Date()
+        events: [CapturedEvent], photos: [Data], portraits: [Data] = [],
+        timestamp: Date = Date()
     ) -> Encounter {
         let id = UUID()
 
@@ -185,14 +186,31 @@ final class EncounterStore: @unchecked Sendable {
         }
         writePhotos(pending)
 
+        // Portraits are named apart from sighting photos so nothing that
+        // walks photoFilenames ever picks one up: a crop of someone's ID
+        // photo must not turn up in a photo strip or a chat mirror.
+        var portraitNames: [String] = []
+        var pendingPortraits: [(name: String, data: Data)] = []
+        for (index, portrait) in portraits.enumerated() {
+            let name = "\(id.uuidString)-portrait-\(index).jpg"
+            portraitNames.append(name)
+            pendingPortraits.append((name, portrait))
+        }
+        writePhotos(pendingPortraits)
+
         let resolved: [EncounterEvent] = events.map { event in
             var files: [String] = []
             if let index = event.photoIndex, index >= 0, index < filenames.count {
                 files = [filenames[index]]
             }
+            var badge = event.badge
+            if let index = event.portraitIndex, index >= 0,
+               index < portraitNames.count {
+                badge?.portraitFilename = portraitNames[index]
+            }
             return EncounterEvent(
                 id: event.id, kind: event.kind, timestamp: event.timestamp,
-                text: event.text, photoFilenames: files, badge: event.badge
+                text: event.text, photoFilenames: files, badge: badge
             )
         }
 

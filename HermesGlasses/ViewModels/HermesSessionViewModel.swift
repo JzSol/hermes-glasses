@@ -360,6 +360,10 @@ final class HermesSessionViewModel {
     // feeds it. All torn down by `stopCaptureVision()`.
     @ObservationIgnored private var captureModel = ConversationCaptureModel()
     @ObservationIgnored private var capturePhotos: [Data] = []
+    /// Portraits cropped off badges during the running capture. Parallel to
+    /// capturePhotos and deliberately NOT merged into it - see
+    /// EncounterStore.save.
+    @ObservationIgnored private var capturePortraits: [Data] = []
     @ObservationIgnored private var captureDetector: ObjectDetector?
     @ObservationIgnored private var captureDwell: DwellTracker?
     @ObservationIgnored private var captureLatestFrame: UIImage?
@@ -1589,6 +1593,7 @@ final class HermesSessionViewModel {
         conversationCaptureActive = true
         captureModel = ConversationCaptureModel()
         capturePhotos = []
+        capturePortraits = []
         conversationCaptureSnapCount = 0
 
         // Audio first: everything below is best-effort decoration around the
@@ -1746,7 +1751,19 @@ final class HermesSessionViewModel {
         Task { @MainActor [weak self] in
             let badge = await BadgeReader.readBadge(from: personImage)
             guard let self, let badge, self.conversationCaptureActive else { return }
-            self.captureModel.updateBadge(eventID: eventID, badge: badge)
+
+            var portraitIndex: Int?
+            if self.badgePortraitsEnabled, let rect = badge.badgeRect,
+               let portrait = await BadgeReader.portrait(
+                   from: personImage, badgeRect: rect
+               ) {
+                self.capturePortraits.append(portrait)
+                portraitIndex = self.capturePortraits.count - 1
+            }
+
+            self.captureModel.updateBadge(
+                eventID: eventID, badge: badge, portraitIndex: portraitIndex
+            )
             self.displayManager.showPersonSighted(
                 name: badge.name, subtitle: badge.subtitle
             )
@@ -1769,6 +1786,8 @@ final class HermesSessionViewModel {
 
         let photos = capturePhotos
         capturePhotos = []
+        let portraits = capturePortraits
+        capturePortraits = []
         conversationCaptureSnapCount = 0
 
         // A recording on its own IS content: the live recogniser hearing
@@ -1783,7 +1802,9 @@ final class HermesSessionViewModel {
             return
         }
 
-        let saved = encounterStore.save(events: captureModel.events, photos: photos)
+        let saved = encounterStore.save(
+            events: captureModel.events, photos: photos, portraits: portraits
+        )
         encounterRevision &+= 1
 
         if let recording {
@@ -2160,7 +2181,8 @@ final class HermesSessionViewModel {
                 // cancelled a few lines below), so a network pass into a
                 // dying session would be wrong.
                 let saved = encounterStore.save(
-                    events: captureModel.events, photos: capturePhotos
+                    events: captureModel.events, photos: capturePhotos,
+                    portraits: capturePortraits
                 )
                 encounterRevision &+= 1
                 if let recording {
@@ -2175,6 +2197,7 @@ final class HermesSessionViewModel {
                 startTranscription(for: saved.id)
             }
             capturePhotos = []
+            capturePortraits = []
             conversationCaptureSnapCount = 0
         }
         recordingOnlySession = false

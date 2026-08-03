@@ -226,6 +226,21 @@ enum BadgeReader {
             barcode: read.barcode, lines: read.lines, kind: kind, rect: rect
         )
     }
+
+    /// The portrait printed on a badge already located in this crop.
+    /// Re-crops from `badgeRect` rather than re-running the detector -
+    /// which is exactly what `Badge.badgeRect` is stored for.
+    static func portrait(
+        from image: UIImage, badgeRect: CGRect
+    ) async -> Data? {
+        guard let cgImage = image.cgImage else { return nil }
+        return await Task.detached(priority: .utility) { () -> Data? in
+            let size = CGSize(width: cgImage.width, height: cgImage.height)
+            guard let pixels = BadgeCrop.pixelRect(for: badgeRect, in: size),
+                  let crop = cgImage.cropping(to: pixels) else { return nil }
+            return BadgePortrait.extract(from: magnified(crop))
+        }.value
+    }
 }
 
 extension BadgeAssist {

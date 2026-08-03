@@ -209,17 +209,23 @@ struct CapturedEvent: Equatable {
     var text: String
     /// Nil for speech, and for a sighting whose crop failed.
     var photoIndex: Int?
+    /// Points into the capture's portrait array, when the badge carried a
+    /// printed photo and `badge_portraits_enabled` was on. Same
+    /// index-not-filename reasoning as `photoIndex`.
+    var portraitIndex: Int?
     var badge: Badge?
 
     init(
         id: UUID = UUID(), kind: EncounterEvent.Kind, timestamp: Date,
-        text: String = "", photoIndex: Int? = nil, badge: Badge? = nil
+        text: String = "", photoIndex: Int? = nil, portraitIndex: Int? = nil,
+        badge: Badge? = nil
     ) {
         self.id = id
         self.kind = kind
         self.timestamp = timestamp
         self.text = text
         self.photoIndex = photoIndex
+        self.portraitIndex = portraitIndex
         self.badge = badge
     }
 }

@@ -522,6 +522,30 @@ private struct SightingDetailView: View {
                      : "Correct it if the badge was misread.")
             }
 
+            if let badge, badge.kind != nil || badge.portraitFilename != nil {
+                Section {
+                    if let kind = badge.kind {
+                        Text(kind.displayName)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    if let portraitFilename = badge.portraitFilename,
+                       let data = hermesVM.encounterPhotoData(filename: portraitFilename),
+                       let image = UIImage(data: data) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Photo on the badge")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxWidth: 120)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                }
+            }
+
             if let badge, !badge.rawLines.isEmpty {
                 Section {
                     ForEach(Array(badge.rawLines.enumerated()), id: \.offset) { _, line in

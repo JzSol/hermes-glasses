@@ -112,5 +112,37 @@ _ = gateAndEvents.addSighting(photoIndex: nil, at: at3(0))
 expectEqual(gateAndEvents.events.count, 1,
             "addSighting records regardless of the gate's refusal")
 
+// MARK: - Portraits ride along with the badge
+//
+// The badge and its portrait both arrive after the sighting is recorded -
+// OCR lands whenever it lands - so they are attached together.
+
+var portraitModel = ConversationCaptureModel()
+let portraitEvent = portraitModel.addSighting(photoIndex: 0)
+portraitModel.updateBadge(
+    eventID: portraitEvent,
+    badge: Badge(name: "Sarah Chen", rawLines: ["Sarah Chen"], source: .onDevice),
+    portraitIndex: 3
+)
+expectEqual(portraitModel.events.last?.badge?.name, "Sarah Chen",
+            "the badge is attached")
+expectEqual(portraitModel.events.last?.portraitIndex, 3,
+            "the portrait index is attached")
+
+// No portrait is the common case - a conference lanyard has no photo on it.
+var noPortrait = ConversationCaptureModel()
+let plainEvent = noPortrait.addSighting(photoIndex: 0)
+noPortrait.updateBadge(
+    eventID: plainEvent,
+    badge: Badge(name: "Sam", rawLines: ["Sam"], source: .onDevice),
+    portraitIndex: nil
+)
+expectTrue(noPortrait.events.last?.portraitIndex == nil,
+           "a badge with no portrait stores no index")
+
+// An unknown event id stays a no-op.
+noPortrait.updateBadge(eventID: UUID(), badge: nil, portraitIndex: 9)
+expectEqual(noPortrait.events.count, 1, "an unknown id changes nothing")
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)
