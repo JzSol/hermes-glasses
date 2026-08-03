@@ -7,6 +7,7 @@
 //     HermesGlasses/Services/Providers/OpenAICompatibleProvider.swift \
 //     HermesGlasses/Services/Providers/GeminiProvider.swift \
 //     HermesGlasses/Services/Social/BadgeParser.swift \
+//     HermesGlasses/Services/Social/BarcodeReader.swift \
 //     tests/badge/main.swift -o /tmp/badge-tests && /tmp/badge-tests
 //
 import Foundation
