@@ -8,7 +8,7 @@ API key for a zero-infrastructure setup, or point it at a Hermes Agent for
 full agentic, tool-using conversations. No glasses at hand? Phone mode runs
 every feature from the iPhone alone, with a simulated lens on screen.
 
-Part of the **Sidekick** project.
+A standalone, MIT-licensed project.
 
 ## Demo
 

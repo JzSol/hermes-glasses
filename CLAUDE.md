@@ -1,6 +1,6 @@
 # Hermes Glasses - notes for Claude
 
-Part of the Sidekick project. See README.md for architecture and setup.
+A standalone, MIT-licensed project. See README.md for architecture and setup.
 
 ## Current state (2026-07-10)
 
