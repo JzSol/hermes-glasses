@@ -177,7 +177,8 @@ final class DirectClient: @unchecked Sendable {
     /// face, not just read what is in front of them.
     func askOneShot(
         systemPrompt: String, userText: String, photoJPEG: Data,
-        webSearch: Bool = false, timeout: TimeInterval = 20
+        webSearch: Bool = false, webSearchMaxUses: Int = 3,
+        timeout: TimeInterval = 20
     ) async throws -> String {
         let provider = Self.provider
         guard provider.supportsVision else {
@@ -197,7 +198,8 @@ final class DirectClient: @unchecked Sendable {
             model: Self.model(for: provider),
             baseURL: Self.baseURL(for: provider),
             apiKey: key,
-            webSearch: webSearch)
+            webSearch: webSearch,
+            webSearchMaxUses: webSearchMaxUses)
 
         var urlRequest = try provider.buildRequest(request)
         urlRequest.timeoutInterval = timeout

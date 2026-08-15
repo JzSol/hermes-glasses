@@ -49,7 +49,8 @@ struct AnthropicProvider: AIProvider {
             // The server-side web search tool: the API searches and reads
             // results itself; the reply comes back as ordinary text blocks.
             body["tools"] = [
-                ["type": "web_search_20250305", "name": "web_search", "max_uses": 3]
+                ["type": "web_search_20250305", "name": "web_search",
+                 "max_uses": req.webSearchMaxUses]
             ]
         }
         guard let url = URL(string: req.baseURL + "/v1/messages") else {

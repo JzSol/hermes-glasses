@@ -26,6 +26,13 @@ enum PersonWebLookup {
     /// How long one lookup may take before the wearer stops caring.
     static let timeout: TimeInterval = 30
 
+    /// The face path is a deeper search than the badge path: more web
+    /// search invocations and a longer budget, because naming a stranger
+    /// from a photo has to disambiguate namesakes the badge name never
+    /// had to. Only Anthropic honours either knob.
+    static let faceWebSearchMaxUses = 10
+    static let faceTimeout: TimeInterval = 60
+
     static let systemPrompt = """
         You are a conference networking assistant on the user's smart \
         glasses. The user just met someone and read their name off the \
@@ -78,11 +85,11 @@ enum PersonWebLookup {
         return reply.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// One FACE lookup: the face crop goes out with web search on. Returns
-    /// name + summary, or nil when the provider cannot identify the person
-    /// (NO_MATCH) - the caller then falls back to the badge path. Throws
-    /// the provider's own errors so the caller can decide whether to fall
-    /// back as well.
+    /// One FACE lookup: the face crop goes out with a deep web search.
+    /// Returns name + summary, or nil when the provider cannot identify
+    /// the person (NO_MATCH) - the caller then falls back to the badge
+    /// path. Throws the provider's own errors so the caller can decide
+    /// whether to fall back as well.
     static func lookupByFace(
         photoJPEG: Data, client: DirectClient
     ) async throws -> (name: String, summary: String)? {
@@ -91,7 +98,8 @@ enum PersonWebLookup {
             userText: "Who is the person in this photo? (We're at \(eventContext).)",
             photoJPEG: photoJPEG,
             webSearch: true,
-            timeout: timeout
+            webSearchMaxUses: faceWebSearchMaxUses,
+            timeout: faceTimeout
         )
         return parse(reply)
     }

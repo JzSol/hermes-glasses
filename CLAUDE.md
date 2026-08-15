@@ -367,7 +367,10 @@ photo via the DAT camera API.
   face photo DOES leave the device on this path - the "no face recognition"
   stance elsewhere is about on-device grouping/matching (People, badge
   reading), not about Lookup. `webSearch` is only honoured by Anthropic;
-  other providers answer from model knowledge.
+  other providers answer from model knowledge. The face path is a DEEPER
+  search than the badge path: `PersonWebLookup.faceWebSearchMaxUses = 10`
+  (vs the default 3) and `faceTimeout = 60` (vs 30), threaded through
+  `AIRequest.webSearchMaxUses`.
 
 ## Build & run
 

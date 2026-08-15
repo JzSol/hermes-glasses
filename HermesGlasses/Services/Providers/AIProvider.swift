@@ -33,6 +33,11 @@ struct AIRequest {
     /// Only Anthropic honours this today; other providers ignore it and
     /// answer from model knowledge.
     var webSearch = false
+    /// How many web searches the provider may run before answering. Only
+    /// Anthropic honours this (it is the tool's `max_uses`). The Lookup
+    /// face path asks for more than the default so a person search has
+    /// room to disambiguate namesakes.
+    var webSearchMaxUses = 3
 }
 
 enum AIProviderError: LocalizedError, Equatable {
