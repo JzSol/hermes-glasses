@@ -83,11 +83,11 @@ struct HermesApp: Identifiable, Equatable {
 
 enum HermesAppRegistry {
     /// Every app the app knows about. Order is the order they appear.
-    static let all: [HermesApp] = [lens, people, map, log]
+    static let all: [HermesApp] = [lens, people, map, log, lookup]
 
     /// Shown as the quick-action row under the conversation. The rest live
-    /// in the drawer - the row is for reach, not for completeness.
-    static let pinnedCount = 4
+    /// in the drawer - the row scrolls horizontally, so it holds all five.
+    static let pinnedCount = 5
 
     static var pinned: [HermesApp] { Array(all.prefix(pinnedCount)) }
 
@@ -140,6 +140,20 @@ enum HermesAppRegistry {
         summary: "Every Lens session, with look-times and a PDF export.",
         capabilities: [.storage, .export],
         presentation: .sheet,
+        voiceGroupIDs: [],
+        requiresGlasses: false
+    )
+
+    /// Conference lookup: face someone close by, their badge names them,
+    /// the web says who they are. No face recognition - the badge text is
+    /// the only identity this app ever uses.
+    static let lookup = HermesApp(
+        id: "lookup",
+        title: "Lookup",
+        systemImage: "person.text.rectangle",
+        summary: "Snap a nearby person's badge and web-search who they are.",
+        capabilities: [.vision, .lens],
+        presentation: .fullScreen,
         voiceGroupIDs: [],
         requiresGlasses: false
     )

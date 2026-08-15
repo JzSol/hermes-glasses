@@ -136,9 +136,9 @@ let all: [LensContent] = [
     .reply(text: "c", speaking: true), .definition(text: "d", imageURL: nil),
     .navigation(title: "e", step: "f", eta: "g", mapURL: nil, mode: .walking),
     .encounterPrompt, .recording, .encounterSaved(note: "h"), .newConversation,
-    .personSighted(name: "i", subtitle: "j"),
+    .personSighted(name: "i", subtitle: "j"), .personLookup(name: "k", info: "l"),
 ]
-expect(all.count == 12, "all 12 cases covered")
+expect(all.count == 13, "all 13 cases covered")
 // No case may trap: exercising each accessor is the assertion.
 for content in all {
     _ = content.label
@@ -163,6 +163,21 @@ expect(!named.isBlank, "a sighting is not blank")
 let unnamed = LensContent.personSighted(name: nil, subtitle: nil)
 expectEqual(unnamed.body, "Photo captured", "unnamed sighting falls back to the flash text")
 expectEqual(unnamed.statusLine, nil, "no subtitle means no status line")
+
+// MARK: - personLookup
+
+let lookup = LensContent.personLookup(
+    name: "Sarah Chen", info: "Radiology lead at Mercy; spoke at RSNA 2025."
+)
+expectEqual(lookup.label, "SARAH CHEN", "the name is the label, uppercased")
+expectEqual(lookup.body, "Radiology lead at Mercy; spoke at RSNA 2025.",
+            "the web summary is the body")
+expectEqual(lookup.statusLine, "web lookup", "status line says where it came from")
+expectEqual(lookup.imageURL, nil, "a lookup card has no remote image")
+expect(!lookup.isLive, "a lookup result is a card, not a live state")
+expect(!lookup.isBlank, "a lookup result is not blank")
+expect(lookup != LensContent.personLookup(name: "Sarah Chen", info: "other"),
+       "the info participates in equality, so a refreshed card redraws")
 
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

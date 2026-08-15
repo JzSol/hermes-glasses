@@ -2319,6 +2319,36 @@ final class HermesSessionViewModel {
         session.stop()
     }
 
+    // MARK: - Lookup app lens surface
+
+    /// Attach the display HUD to a camera-only session, so Lookup can put
+    /// its result on the real lens without a voice session running. No-op
+    /// when a voice session exists (its display is already attached) or
+    /// the HUD is off. Best-effort like every display call.
+    func attachDisplayToCameraSession() {
+        guard displayHUDEnabled, deviceSession == nil,
+              let session = lensSession else { return }
+        displayManager.start(session: session)
+    }
+
+    /// Undo `attachDisplayToCameraSession()`. Call BEFORE
+    /// `releaseCameraSession()` - the capability dies with the session.
+    /// No-op when the display belongs to a voice session.
+    func detachDisplayFromCameraSession() {
+        guard deviceSession == nil else { return }
+        displayManager.stop()
+    }
+
+    /// Lookup is searching the web for a badge name - show it on the lens.
+    func showLookupSearchingOnLens(name: String) {
+        displayManager.showThinking(query: "Looking up \(name)…")
+    }
+
+    /// Lookup's finished card: name + web summary.
+    func showPersonLookupOnLens(name: String, info: String) {
+        displayManager.showPersonLookup(name: name, info: info)
+    }
+
     func setEndpoint(_ endpoint: String) {
         let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         UserDefaults.standard.set(trimmed, forKey: "hermes_endpoint")

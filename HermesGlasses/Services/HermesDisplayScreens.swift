@@ -47,6 +47,20 @@ enum HermesDisplayScreens {
         .padding(24)
     }
 
+    /// Lookup found someone: their badge name over what the web says about
+    /// them. A card, not a live state - it dwells away on its own.
+    static func personLookup(name: String, info: String) -> FlexBox {
+        FlexBox(direction: .column, spacing: 8) {
+            Text(name, style: .heading)
+            FlexBox(direction: .column) {
+                Text(info, style: .body)
+            }
+            .padding(16)
+            .background(.card)
+        }
+        .padding(24)
+    }
+
     /// The reply card. Stop appears only while TTS is playing.
     /// ComponentBuilder has no buildOptional, so conditional buttons are
     /// prebuilt as an array and emitted with a for-loop (buildArray).

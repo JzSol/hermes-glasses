@@ -20,6 +20,10 @@ enum LensContent: Equatable {
     /// A person was snapped during a conversation capture. `name` is nil
     /// when no badge could be read - most of the time, at glasses range.
     case personSighted(name: String?, subtitle: String?)
+    /// Lookup found someone online: their badge name and what the web says
+    /// about them. `info` is the searched summary, already trimmed to a
+    /// couple of sentences.
+    case personLookup(name: String, info: String)
     case reply(text: String, speaking: Bool, choices: [ReplyChoice] = [])
     case definition(text: String, imageURL: String?)
     case navigation(title: String, step: String, eta: String, mapURL: String?, mode: TransportMode)
@@ -40,6 +44,8 @@ enum LensContent: Equatable {
         case .thinking: return nil
         case .photoCaptured: return "PHOTO"
         case .personSighted: return "PERSON"
+        // The name is the label so the body is free for the summary.
+        case .personLookup(let name, _): return name.uppercased()
         case .reply: return nil
         case .definition: return nil
         case .navigation: return "NAVIGATION"
@@ -63,6 +69,8 @@ enum LensContent: Equatable {
             return "Photo captured"
         case .personSighted(let name, _):
             return name ?? "Photo captured"
+        case .personLookup(_, let info):
+            return info
         case .reply(let text, _, _):
             return text
         case .definition(let text, _):
@@ -88,6 +96,8 @@ enum LensContent: Equatable {
             return nil
         case .personSighted(_, let subtitle):
             return subtitle
+        case .personLookup:
+            return "web lookup"
         case .listening:
             return "listening"
         case .thinking:
@@ -121,7 +131,7 @@ enum LensContent: Equatable {
     var isLive: Bool {
         switch self {
         case .blank, .photoCaptured, .encounterSaved, .newConversation,
-             .personSighted:
+             .personSighted, .personLookup:
             return false
         case .listening, .thinking, .reply, .definition, .navigation,
              .encounterPrompt, .recording:

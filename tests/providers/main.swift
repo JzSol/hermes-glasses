@@ -73,6 +73,28 @@ do {
     do { _ = try p.parseReply(err, status: 401); expect(false, "anthropic 401 throws") }
     catch { expect(true, "anthropic 401 throws") }
 
+    // A web-search reply interleaves tool blocks with several text blocks;
+    // all the text must survive, and the tool blocks must not.
+    let multi = """
+        {"content":[{"type":"server_tool_use","id":"x","name":"web_search"},
+        {"type":"text","text":"Sarah Chen leads radiology "},
+        {"type":"web_search_tool_result","tool_use_id":"x","content":[]},
+        {"type":"text","text":"at Mercy Hospital."}]}
+        """.data(using: .utf8)!
+    expectEqual(try! p.parseReply(multi, status: 200),
+                "Sarah Chen leads radiology at Mercy Hospital.",
+                "anthropic joins every text block, skipping tool blocks")
+
+    // webSearch=false requests carry no tools; webSearch=true carries the
+    // server-side web_search tool.
+    expect(body["tools"] == nil, "anthropic sends no tools by default")
+    var searchReq = req
+    searchReq.webSearch = true
+    let searchBody = bodyJSON(try! p.buildRequest(searchReq))
+    let tools = searchBody["tools"] as? [[String: Any]] ?? []
+    expectEqual(tools.first?["type"] as? String, "web_search_20250305",
+                "webSearch adds the server web_search tool")
+
     // missing key
     let noKey = AIRequest(systemPrompt: "S", contextLine: nil, history: [], userText: "x",
                           imageJPEG: nil, model: "m", baseURL: p.defaultBaseURL, apiKey: nil)

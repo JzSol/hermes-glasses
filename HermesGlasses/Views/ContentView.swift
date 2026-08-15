@@ -60,6 +60,7 @@ struct ContentView: View {
     @State private var showLens: Bool = false
     @State private var showObjectLog: Bool = false
     @State private var showMap: Bool = false
+    @State private var showLookup: Bool = false
     /// In phone mode the 5b camera view is the session screen; this flips to
     /// the chat transcript so the conversation is never unreachable.
     @State private var showTranscript: Bool = false
@@ -126,6 +127,9 @@ struct ContentView: View {
         // tear down the live stream mid-use; Done is the exit.
         .fullScreenCover(isPresented: $showLens) {
             LensView(hermesVM: hermesVM)
+        }
+        .fullScreenCover(isPresented: $showLookup) {
+            LookupView(hermesVM: hermesVM)
         }
         .task {
             hermesVM.logVisionDiagnostics("app-launch")
@@ -683,22 +687,27 @@ struct ContentView: View {
                 .contentShape(Rectangle().inset(by: -12))
                 .onTapGesture { showAppDrawer = true }
 
-            HStack(spacing: 8) {
-                // Record is an action, not a screen, so it is deliberately
-                // NOT a HermesApp - it has no presentation and nothing to
-                // open. It sits here because this row is where people look
-                // for features, and recording a conversation used to be
-                // reachable only from a chip that appeared after a voice
-                // session was already running.
-                if hermesVM.socialNotesEnabled {
-                    recordQuickAction
+            // The row scrolls horizontally: five apps plus Record outgrew
+            // one screen width, and shrinking the tiles to fit would have
+            // made every target smaller to keep a rarely-used one visible.
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    // Record is an action, not a screen, so it is deliberately
+                    // NOT a HermesApp - it has no presentation and nothing to
+                    // open. It sits here because this row is where people look
+                    // for features, and recording a conversation used to be
+                    // reachable only from a chip that appeared after a voice
+                    // session was already running.
+                    if hermesVM.socialNotesEnabled {
+                        recordQuickAction
+                    }
+                    ForEach(HermesAppRegistry.pinned) { app in
+                        quickAction(app)
+                    }
                 }
-                ForEach(HermesAppRegistry.pinned) { app in
-                    quickAction(app)
-                }
+                .padding(.horizontal, 16)
             }
         }
-        .padding(.horizontal, 16)
         .padding(.bottom, 10)
         .gesture(
             DragGesture(minimumDistance: 12)
@@ -723,6 +732,7 @@ struct ContentView: View {
         case "people": showPeople = true
         case "map": showMap = true
         case "log": showObjectLog = true
+        case "lookup": showLookup = true
         default: break
         }
     }
@@ -748,7 +758,9 @@ struct ContentView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(HermesTheme.inkSoft)
             }
-            .frame(maxWidth: .infinity)
+            // Fixed width: inside the scrollable row, maxWidth .infinity
+            // would collapse each tile to its label's width.
+            .frame(width: quickActionTileWidth)
             .padding(.vertical, 10)
             .background(
                 hermesVM.conversationCaptureActive
@@ -759,6 +771,11 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
     }
+
+    /// Wide enough for the longest tile label ("Lookup") without shrinking
+    /// the tap target; five tiles at this width overflow the screen, which
+    /// is what the row's horizontal scroll is for.
+    private let quickActionTileWidth: CGFloat = 72
 
     private func quickAction(_ app: HermesApp) -> some View {
         let blocked = unavailableReason(app) != nil
@@ -782,7 +799,7 @@ struct ContentView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(HermesTheme.inkSoft)
             }
-            .frame(maxWidth: .infinity)
+            .frame(width: quickActionTileWidth)
             .padding(.vertical, 10)
             .background(
                 HermesTheme.card,

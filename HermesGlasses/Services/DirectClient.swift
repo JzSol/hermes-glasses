@@ -200,6 +200,38 @@ final class DirectClient: @unchecked Sendable {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         return try provider.parseReply(data, status: status)
     }
+
+    /// Text-only sibling of `askOneShot`, for questions that carry no photo
+    /// and must not touch conversation memory - the Lookup app sends a
+    /// badge NAME here, never the person's picture. `webSearch` asks the
+    /// provider to consult the web (Anthropic's server-side tool; other
+    /// providers ignore it and answer from model knowledge).
+    func askOneShotText(
+        systemPrompt: String, userText: String, webSearch: Bool = false,
+        timeout: TimeInterval = 30
+    ) async throws -> String {
+        let provider = Self.provider
+        let key = Self.loadKey(for: provider.id)
+        if provider.requiresKey, (key ?? "").isEmpty { throw AIProviderError.missingKey }
+
+        let request = AIRequest(
+            systemPrompt: systemPrompt,
+            contextLine: nil,
+            history: [],
+            userText: userText,
+            imageJPEG: nil,
+            model: Self.model(for: provider),
+            baseURL: Self.baseURL(for: provider),
+            apiKey: key,
+            webSearch: webSearch)
+
+        var urlRequest = try provider.buildRequest(request)
+        urlRequest.timeoutInterval = timeout
+        Self.logger.info("One-shot text request to \(provider.id, privacy: .public) (webSearch=\(webSearch))")
+        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        return try provider.parseReply(data, status: status)
+    }
 }
 
 // MARK: - Visual query detection (ported from the bridge)

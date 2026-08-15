@@ -177,6 +177,18 @@ final class HermesDisplayManager {
         send(HermesDisplayScreens.personSighted(name: name, subtitle: subtitle))
     }
 
+    /// Lookup's result card: name + web summary. Dwells away after long
+    /// enough to read a couple of sentences; scanning resumes underneath,
+    /// so the lens must not stay claimed forever.
+    func showPersonLookup(name: String, info: String) {
+        content = .personLookup(name: name, info: info)
+        cancelDwell()
+        lastReplyText = ""
+        lastDefinitionImageURL = nil
+        send(HermesDisplayScreens.personLookup(name: name, info: info))
+        scheduleDwell(seconds: 15)
+    }
+
     /// speaking=true keeps the card up (Stop button shown, no dwell);
     /// dwellSeconds non-nil blanks the lens after that many seconds.
     func showReply(text: String, speaking: Bool, dwellSeconds: Double?) {

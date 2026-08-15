@@ -29,6 +29,10 @@ struct AIRequest {
     let model: String
     let baseURL: String
     let apiKey: String?
+    /// Ask the provider to consult the web (a server-side search tool).
+    /// Only Anthropic honours this today; other providers ignore it and
+    /// answer from model knowledge.
+    var webSearch = false
 }
 
 enum AIProviderError: LocalizedError, Equatable {

@@ -42,9 +42,16 @@ struct AnthropicProvider: AIProvider {
             system.append(["type": "text", "text": "Current user context: \(ctx)"])
         }
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": req.model, "max_tokens": 1024, "system": system, "messages": messages,
         ]
+        if req.webSearch {
+            // The server-side web search tool: the API searches and reads
+            // results itself; the reply comes back as ordinary text blocks.
+            body["tools"] = [
+                ["type": "web_search_20250305", "name": "web_search", "max_uses": 3]
+            ]
+        }
         guard let url = URL(string: req.baseURL + "/v1/messages") else {
             throw AIProviderError.invalidURL(req.baseURL + "/v1/messages")
         }
@@ -67,10 +74,19 @@ struct AnthropicProvider: AIProvider {
             throw AIProviderError.http(status: status, message: msg ?? "API error \(status).")
         }
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let content = json["content"] as? [[String: Any]],
-              let reply = content.first(where: { $0["type"] as? String == "text" })?["text"] as? String
+              let content = json["content"] as? [[String: Any]]
         else { throw AIProviderError.badResponse("Unexpected response from the API.") }
-        return reply
+        // A web-search reply interleaves tool-use blocks with SEVERAL text
+        // blocks; taking only the first dropped everything after the first
+        // search. Joined bare - the blocks are contiguous prose.
+        let texts = content.compactMap { block -> String? in
+            guard block["type"] as? String == "text" else { return nil }
+            return block["text"] as? String
+        }
+        guard !texts.isEmpty else {
+            throw AIProviderError.badResponse("Unexpected response from the API.")
+        }
+        return texts.joined()
     }
 
     private func errorMessage(_ data: Data) -> String? {

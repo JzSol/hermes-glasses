@@ -57,7 +57,8 @@ expect(HermesAppRegistry.lens.capabilities.contains(.lens), "lens declares .lens
 
 // Anything holding a live camera goes full screen: a stray drag-dismiss
 // would tear the stream down mid-use.
-for app in all where app.capabilities.contains(.vision) && app.id == "lens" {
+for app in all where app.capabilities.contains(.vision)
+    && ["lens", "lookup"].contains(app.id) {
     expect(app.presentation == .fullScreen,
            "\(app.id) is full screen because it holds a live stream")
 }
@@ -101,6 +102,17 @@ for capability in HermesAppCapability.allCases {
     expect(!capability.label.isEmpty, "\(capability.rawValue) has a label")
     expect(!capability.systemImage.isEmpty, "\(capability.rawValue) has an icon")
 }
+
+// MARK: - Lookup app
+
+expect(HermesAppRegistry.lookup.capabilities.contains(.vision),
+       "lookup needs a camera and says so")
+expect(HermesAppRegistry.lookup.capabilities.contains(.lens),
+       "lookup draws on the glasses and says so")
+expect(!HermesAppRegistry.lookup.isVoiceLaunchable,
+       "lookup is button-only, no voice trigger")
+expect(HermesAppRegistry.pinned.contains(HermesAppRegistry.lookup),
+       "lookup sits in the (scrollable) quick-action row, next to Log")
 
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)
