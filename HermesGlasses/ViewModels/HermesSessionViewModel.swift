@@ -2344,6 +2344,11 @@ final class HermesSessionViewModel {
         displayManager.showThinking(query: "Looking up \(name)…")
     }
 
+    /// Lookup's face path is searching before a name exists yet.
+    func showLookupSearchingOnLens() {
+        displayManager.showThinking(query: "Looking them up…")
+    }
+
     /// Lookup's finished card: name + web summary.
     func showPersonLookupOnLens(name: String, info: String) {
         displayManager.showPersonLookup(name: name, info: info)

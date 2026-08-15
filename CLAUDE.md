@@ -355,6 +355,19 @@ photo via the DAT camera API.
   abandoned on the first auth failure. Without it an all-"Unnamed" capture
   had no route to a name - the only remedy was to flip a global setting and
   have the conversation again.
+- **Lookup identifies by FACE first, badge as fallback.** The Lookup app
+  (`LookupViewModel.processCandidate`) snaps a person, then sends the
+  frontal-face crop (Vision detection gives the rect; `frontalFace(in:)`
+  returns the largest frontal face, top-left origin) to the configured
+  vision provider with web search on via
+  `PersonWebLookup.lookupByFace` -> `DirectClient.askOneShot(webSearch:)`.
+  The reply is parsed by `PersonWebLookup.parse` (name on the first line,
+  summary after; `NO_MATCH` means nil) and only when that fails does it fall
+  back to `BadgeReader` + `PersonWebLookup.lookup` on the badge name. So a
+  face photo DOES leave the device on this path - the "no face recognition"
+  stance elsewhere is about on-device grouping/matching (People, badge
+  reading), not about Lookup. `webSearch` is only honoured by Anthropic;
+  other providers answer from model knowledge.
 
 ## Build & run
 

@@ -214,7 +214,7 @@ struct LookupView: View {
             if let latest = model.hits.first {
                 resultCard(latest)
             } else {
-                Text("Stand facing someone within a couple of meters. When the ring fills, their badge is read and the web searched for who they are.")
+                Text("Stand facing someone within a couple of meters. When the ring fills, the web is searched for who they are - face first, badge as fallback.")
                     .font(.system(size: 12))
                     .foregroundStyle(HermesTheme.cream.opacity(0.4))
                     .padding(.horizontal, 20)

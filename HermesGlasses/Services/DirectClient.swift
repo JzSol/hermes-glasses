@@ -171,9 +171,13 @@ final class DirectClient: @unchecked Sendable {
     /// One question that must NOT touch conversation memory. `ask` splices
     /// its query and reply into the stored same-day history; a badge photo
     /// has no business in the user's chat. Reads nothing, writes nothing.
+    /// `webSearch` asks the provider to consult the web (Anthropic's
+    /// server-side tool; other providers ignore it and answer from model
+    /// knowledge) - used by the Lookup app to identify a person from their
+    /// face, not just read what is in front of them.
     func askOneShot(
         systemPrompt: String, userText: String, photoJPEG: Data,
-        timeout: TimeInterval = 20
+        webSearch: Bool = false, timeout: TimeInterval = 20
     ) async throws -> String {
         let provider = Self.provider
         guard provider.supportsVision else {
@@ -192,7 +196,8 @@ final class DirectClient: @unchecked Sendable {
             imageJPEG: photoJPEG,
             model: Self.model(for: provider),
             baseURL: Self.baseURL(for: provider),
-            apiKey: key)
+            apiKey: key,
+            webSearch: webSearch)
 
         var urlRequest = try provider.buildRequest(request)
         urlRequest.timeoutInterval = timeout

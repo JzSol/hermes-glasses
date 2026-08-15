@@ -3,14 +3,16 @@
 //
 // Drives the Lookup app: live frames in, YOLO person boxes through
 // PersonLookupGate (close + centered + held), then a Vision face check
-// ("are they actually facing me?"), the badge OCR pipeline for a name,
-// and a web lookup on that name. The result lands on the lens and in the
-// session strip.
+// ("are they actually facing me?"). Identity is FACE FIRST: the frontal
+// face crop goes to the configured vision provider with web search on. If
+// that cannot name them, the badge OCR pipeline runs as a fallback and a
+// web lookup goes out on that name. The result lands on the lens and in
+// the session strip.
 //
-// Identity comes from the BADGE, never the face. The face check only
-// answers "is this person oriented towards the wearer" - no recognition,
-// no matching, and the photo never leaves the phone. Only the badge text
-// is sent out, to the user's own configured AI provider.
+// The face crop does leave the phone on the face path - the person may not
+// be wearing a badge at all. The on-device face pass is still DETECTION
+// only (it answers "are they facing me" and finds the face to crop), never
+// recognition; the provider is the one that identifies them.
 //
 // Camera plumbing mirrors LensViewModel: route decided at start, glasses
 // falling back to the phone, shared-stream observation in phone mode, and
@@ -41,7 +43,7 @@ final class LookupViewModel {
         case scanning
         /// Fired: checking the snap actually shows a face turned this way.
         case verifying
-        /// Reading the badge off the person crop.
+        /// Identifying them - face first, then badge.
         case reading
         case searching(name: String)
         case result
@@ -300,29 +302,53 @@ final class LookupViewModel {
 
         // Facing check: face DETECTION only, on-device, and only to answer
         // "are they turned towards the wearer". Someone showing their back
-        // or profile is not being faced, so no lookup.
-        guard await Self.hasFrontalFace(in: crop) else {
+        // or profile is not being faced, so no lookup. Also returns the face
+        // rect so the face path can crop tight to it.
+        guard let faceRect = await Self.frontalFace(in: crop) else {
             gate.rejected(at: CACurrentMediaTime())
             backToScanning("Waiting for them to face you…")
             return
         }
 
-        phase = .reading
-        statusText = "Reading their badge…"
-        let badge = await BadgeReader.readBadge(from: crop)
-        guard let name = badge?.name else {
-            gate.rejected(at: CACurrentMediaTime())
-            backToScanning("Couldn't read a badge name - get their badge in view")
-            return
-        }
-
-        // From here the snap is spent, whatever the web says.
+        // From here the snap is spent, whatever either lookup says.
         gate.fired(at: CACurrentMediaTime())
 
         guard DirectClient.hasKey(for: DirectClient.providerID)
                 || !DirectClient.provider.requiresKey else {
-            finish(crop: crop, name: name,
-                   summary: "Add an AI provider key in Settings to search the web for people.")
+            finish(crop: crop, name: "Unnamed",
+                   summary: "Add an AI provider key in Settings to look people up.")
+            return
+        }
+
+        // 1) Face first: crop tight to the face and send it out.
+        phase = .reading
+        statusText = "Looking them up…"
+        hermesVM.showLookupSearchingOnLens()
+
+        let faceCrop = LensViewModel.crop(crop, to: faceRect, padding: 0.35) ?? crop
+        if let photoJPEG = faceCrop.jpegData(
+            compressionQuality: HermesCameraManager.jpegQuality
+        ) {
+            do {
+                if let hit = try await PersonWebLookup.lookupByFace(
+                    photoJPEG: photoJPEG, client: client
+                ) {
+                    finish(crop: crop, name: hit.name,
+                           summary: hit.summary.isEmpty
+                               ? "Couldn't find anything solid online." : hit.summary)
+                    return
+                }
+            } catch {
+                NSLog("[Hermes] lookup: face lookup failed - \(error.localizedDescription)")
+            }
+            // Fall through to the badge.
+        }
+
+        // 2) Badge fallback: the face didn't name them, so read the tag.
+        statusText = "Reading their badge…"
+        let badge = await BadgeReader.readBadge(from: crop)
+        guard let name = badge?.name else {
+            backToScanning("Couldn't identify them - get their badge in view")
             return
         }
 
@@ -362,22 +388,24 @@ final class LookupViewModel {
     }
 
     /// Does this person crop contain a face turned roughly towards the
-    /// camera? Detection only - VNDetectFaceRectanglesRequest finds faces
-    /// and estimates yaw; nothing here identifies anyone. Detached for the
-    /// same reason BadgeReader's passes are: the Vision call is synchronous
-    /// and the caller is on the main actor.
-    static func hasFrontalFace(in image: UIImage) async -> Bool {
-        guard let cgImage = image.cgImage else { return false }
-        return await Task.detached(priority: .utility) { () -> Bool in
+    /// camera, and if so, where is it? Detection only -
+    /// VNDetectFaceRectanglesRequest finds faces and estimates yaw; nothing
+    /// here identifies anyone. Returns the LARGEST frontal face as a
+    /// normalized top-left-origin rect, nil when nobody is facing the
+    /// wearer. Detached for the same reason BadgeReader's passes are: the
+    /// Vision call is synchronous and the caller is on the main actor.
+    static func frontalFace(in image: UIImage) async -> CGRect? {
+        guard let cgImage = image.cgImage else { return nil }
+        return await Task.detached(priority: .utility) { () -> CGRect? in
             let request = VNDetectFaceRectanglesRequest()
             let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
             do {
                 try handler.perform([request])
             } catch {
                 NSLog("[Hermes] lookup: face request failed - \(error.localizedDescription)")
-                return false
+                return nil
             }
-            return (request.results ?? []).contains { face in
+            let frontal = (request.results ?? []).filter { face in
                 // A face at conversational range is a decent slice of the
                 // crop; tiny ones are bystanders in the background.
                 guard face.boundingBox.width >= 0.12 else { return false }
@@ -386,6 +414,17 @@ final class LookupViewModel {
                 guard let yaw = face.yaw?.doubleValue else { return true }
                 return abs(yaw) <= 0.62
             }
+            guard let largest = frontal.max(by: {
+                $0.boundingBox.width * $0.boundingBox.height
+                    < $1.boundingBox.width * $1.boundingBox.height
+            }) else { return nil }
+
+            // Vision is bottom-left origin; flip to the app-wide top-left.
+            let box = largest.boundingBox
+            return CGRect(
+                x: box.minX, y: 1 - box.maxY,
+                width: box.width, height: box.height
+            )
         }.value
     }
 }

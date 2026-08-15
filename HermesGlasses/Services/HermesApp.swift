@@ -144,14 +144,14 @@ enum HermesAppRegistry {
         requiresGlasses: false
     )
 
-    /// Conference lookup: face someone close by, their badge names them,
-    /// the web says who they are. No face recognition - the badge text is
-    /// the only identity this app ever uses.
+    /// Conference lookup: face someone close by, the web says who they are
+    /// from their face - with the badge read as a fallback when the face
+    /// doesn't name them.
     static let lookup = HermesApp(
         id: "lookup",
         title: "Lookup",
         systemImage: "person.text.rectangle",
-        summary: "Snap a nearby person's badge and web-search who they are.",
+        summary: "Face someone nearby and web-search who they are.",
         capabilities: [.vision, .lens],
         presentation: .fullScreen,
         voiceGroupIDs: [],
