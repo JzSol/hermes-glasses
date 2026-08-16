@@ -448,6 +448,33 @@ depth, `NO_MATCH` parsing) is deleted with the code it describes.
 
 ## Open risks
 
+### Roster coverage, measured 2026-08-16
+
+`face-probe coverage ~/Downloads/ice2026-people`, 45 images:
+
+- **45/45 have a findable face, and all 45 have eye landmarks.** Nobody in
+  the roster is unrecognisable for want of a detectable face, and every
+  portrait can be aligned. This was the question worth asking first, and the
+  answer is the good one.
+- **16 portraits have a face smaller than the recogniser's 112 px input.**
+  Face bounding-box width across the set: min 52 px, median 155 px, max 295
+  px (of a 512 px frame). The 16 below 112 px get *upsampled* into the model,
+  so they carry less detail than the model expects. The smallest —
+  `Demitha Manawadu` (52 px), `Vishwani Geeganage` (58 px), `Ryo Hajika`
+  (68 px), `Malsha de Zoysa` (69 px) — are the roster entries most likely to
+  fail to match, and the cheapest fix is a tighter crop or a better source
+  photo for those few.
+- **Three portraits are turned ~45° away** (Vision yaw −0.79 rad):
+  `Asitha Wickramarachchi`, `Senilka Madurapperumage`, `Thevindu Dilmith`.
+  The live probe is gated to near-frontal faces by `frontalFace`, so these
+  three will be compared frontal-against-profile — the worst case for an
+  embedding. They are the first candidates for a replacement photo.
+
+None of this blocks implementation; it sets expectations and names the ~19
+entries whose photos are worth improving before the event.
+
+### Other risks
+
 **The resolution cliff, again.** The roster is crisp 512×512 headshots; the
 probe is a face inside a person box inside a `.low` glasses frame at
 conversational range. This is the same asymmetry `BadgeRegion`'s header
