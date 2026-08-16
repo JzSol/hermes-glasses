@@ -57,6 +57,7 @@
 		AAAA00000000000000000871 /* PersonWebLookup.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000872 /* PersonWebLookup.swift */; };
 		AAAA00000000000000000877 /* RosterPerson.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000878 /* RosterPerson.swift */; };
 		AAAA00000000000000000879 /* RosterImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000880 /* RosterImporter.swift */; };
+		AAAA00000000000000000881 /* RosterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000882 /* RosterStore.swift */; };
 		AAAA00000000000000000873 /* LookupViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000874 /* LookupViewModel.swift */; };
 		AAAA00000000000000000875 /* LookupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000876 /* LookupView.swift */; };
 		AAAA00000000000000000843 /* HermesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000844 /* HermesApp.swift */; };
@@ -145,6 +146,7 @@
 		AAAA00000000000000000872 /* PersonWebLookup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonWebLookup.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000878 /* RosterPerson.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = People/RosterPerson.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000880 /* RosterImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = People/RosterImporter.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000882 /* RosterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = People/RosterStore.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000874 /* LookupViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LookupViewModel.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000876 /* LookupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LookupView.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000844 /* HermesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesApp.swift; sourceTree = "<group>"; };
@@ -291,6 +293,7 @@
 				AAAA00000000000000000872 /* PersonWebLookup.swift */,
 				AAAA00000000000000000878 /* RosterPerson.swift */,
 				AAAA00000000000000000880 /* RosterImporter.swift */,
+				AAAA00000000000000000882 /* RosterStore.swift */,
 				AAAA00000000000000000824 /* VisionSource.swift */,
 				AAAA00000000000000000836 /* VisionRouting.swift */,
 				AAAA00000000000000000838 /* Bearing.swift */,
@@ -451,6 +454,7 @@
 				AAAA00000000000000000871 /* PersonWebLookup.swift in Sources */,
 				AAAA00000000000000000877 /* RosterPerson.swift in Sources */,
 				AAAA00000000000000000879 /* RosterImporter.swift in Sources */,
+				AAAA00000000000000000881 /* RosterStore.swift in Sources */,
 				AAAA00000000000000000873 /* LookupViewModel.swift in Sources */,
 				AAAA00000000000000000875 /* LookupView.swift in Sources */,
 				AAAA00000000000000000845 /* AppDrawerView.swift in Sources */,
