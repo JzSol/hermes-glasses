@@ -22,6 +22,7 @@ import SwiftUI
 /// Sub-pages that can be opened directly from elsewhere in the app.
 enum SettingsRoute: Hashable {
     case devices
+    case roster
 }
 
 struct SettingsView: View {
@@ -35,6 +36,9 @@ struct SettingsView: View {
     @State private var endpoint: String = ""
     @State private var providerKey: String = ""
     @State private var showObjectLog: Bool = false
+    /// Held as state rather than built per render: the store reads its index
+    /// off disk on init, and the roster row asks for `count` every redraw.
+    @State private var rosterStore = RosterStore()
     /// Seeds `endpoint` exactly once. Without this, popping back from any
     /// sub-page re-runs the root's `onAppear` and overwrites whatever the
     /// Assistant page has in flight, discarding it before Done (or
@@ -101,6 +105,11 @@ struct SettingsView: View {
                         PeoplePage(hermesVM: hermesVM)
                     }
                     HermesDivider()
+                    navRow("People roster", icon: "person.text.rectangle",
+                           value: "\(rosterStore.count)") {
+                        RosterView(store: rosterStore)
+                    }
+                    HermesDivider()
                     // Object Log owns its own NavigationStack + Done button,
                     // so it's presented, not pushed.
                     Button {
@@ -164,6 +173,8 @@ struct SettingsView: View {
                 switch route {
                 case .devices:
                     DevicesPage(hermesVM: hermesVM, wearablesVM: wearablesVM)
+                case .roster:
+                    RosterView(store: rosterStore)
                 }
             }
             .onAppear {

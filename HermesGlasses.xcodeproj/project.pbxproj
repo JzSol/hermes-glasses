@@ -60,6 +60,9 @@
 		AAAA00000000000000000881 /* RosterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000882 /* RosterStore.swift */; };
 		AAAA00000000000000000883 /* FaceMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000884 /* FaceMatcher.swift */; };
 		AAAA00000000000000000885 /* FaceAlignment.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000886 /* FaceAlignment.swift */; };
+		AAAA0000000000000000887 /* FaceEmbedder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA0000000000000000888 /* FaceEmbedder.swift */; };
+		AAAA0000000000000000889 /* RosterImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA0000000000000000890 /* RosterImport.swift */; };
+		AAAA0000000000000000891 /* RosterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA0000000000000000892 /* RosterView.swift */; };
 		AAAA00000000000000000873 /* LookupViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000874 /* LookupViewModel.swift */; };
 		AAAA00000000000000000875 /* LookupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000876 /* LookupView.swift */; };
 		AAAA00000000000000000843 /* HermesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000844 /* HermesApp.swift */; };
@@ -151,6 +154,9 @@
 		AAAA00000000000000000882 /* RosterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = People/RosterStore.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000884 /* FaceMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = People/FaceMatcher.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000886 /* FaceAlignment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = People/FaceAlignment.swift; sourceTree = "<group>"; };
+		AAAA0000000000000000888 /* FaceEmbedder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = People/FaceEmbedder.swift; sourceTree = "<group>"; };
+		AAAA0000000000000000890 /* RosterImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = People/RosterImport.swift; sourceTree = "<group>"; };
+		AAAA0000000000000000892 /* RosterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RosterView.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000874 /* LookupViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LookupViewModel.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000876 /* LookupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LookupView.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000844 /* HermesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesApp.swift; sourceTree = "<group>"; };
@@ -235,6 +241,7 @@
 				AAAA00000000000000000834 /* PhoneModeSessionView.swift */,
 				AAAA00000000000000000846 /* AppDrawerView.swift */,
 				AAAA00000000000000000876 /* LookupView.swift */,
+				AAAA0000000000000000892 /* RosterView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -300,6 +307,8 @@
 				AAAA00000000000000000882 /* RosterStore.swift */,
 				AAAA00000000000000000884 /* FaceMatcher.swift */,
 				AAAA00000000000000000886 /* FaceAlignment.swift */,
+				AAAA0000000000000000888 /* FaceEmbedder.swift */,
+				AAAA0000000000000000890 /* RosterImport.swift */,
 				AAAA00000000000000000824 /* VisionSource.swift */,
 				AAAA00000000000000000836 /* VisionRouting.swift */,
 				AAAA00000000000000000838 /* Bearing.swift */,
@@ -463,6 +472,9 @@
 				AAAA00000000000000000881 /* RosterStore.swift in Sources */,
 				AAAA00000000000000000883 /* FaceMatcher.swift in Sources */,
 				AAAA00000000000000000885 /* FaceAlignment.swift in Sources */,
+				AAAA0000000000000000887 /* FaceEmbedder.swift in Sources */,
+				AAAA0000000000000000889 /* RosterImport.swift in Sources */,
+				AAAA0000000000000000891 /* RosterView.swift in Sources */,
 				AAAA00000000000000000873 /* LookupViewModel.swift in Sources */,
 				AAAA00000000000000000875 /* LookupView.swift in Sources */,
 				AAAA00000000000000000845 /* AppDrawerView.swift in Sources */,
