@@ -2340,16 +2340,13 @@ final class HermesSessionViewModel {
     }
 
     /// Lookup is searching the web for a badge name - show it on the lens.
-    func showLookupSearchingOnLens(name: String) {
-        displayManager.showThinking(query: "Looking up \(name)…")
-    }
-
-    /// Lookup's face path is searching before a name exists yet.
+    /// Lookup matches a face against the roster - there is no name to show
+    /// until it resolves, and nothing is being searched for.
     func showLookupSearchingOnLens() {
-        displayManager.showThinking(query: "Looking them up…")
+        displayManager.showThinking(query: "Matching…")
     }
 
-    /// Lookup's finished card: name + web summary.
+    /// Lookup's finished card: name + roster details.
     func showPersonLookupOnLens(name: String, info: String) {
         displayManager.showPersonLookup(name: name, info: info)
     }

@@ -113,6 +113,13 @@ expect(!HermesAppRegistry.lookup.isVoiceLaunchable,
        "lookup is button-only, no voice trigger")
 expect(HermesAppRegistry.pinned.contains(HermesAppRegistry.lookup),
        "lookup sits in the (scrollable) quick-action row, next to Log")
+// Lookup stopped searching the web when it started matching an imported
+// roster on-device. The summary is the one place a user is told which of
+// those it does, so it is pinned rather than left to drift back.
+expect(!HermesAppRegistry.lookup.summary.lowercased().contains("web"),
+       "lookup's summary no longer promises a web search")
+expect(HermesAppRegistry.lookup.summary.lowercased().contains("roster"),
+       "lookup's summary says where the answer comes from")
 
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

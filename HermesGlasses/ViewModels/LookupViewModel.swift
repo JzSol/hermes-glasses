@@ -3,16 +3,20 @@
 //
 // Drives the Lookup app: live frames in, YOLO person boxes through
 // PersonLookupGate (close + centered + held), then a Vision face check
-// ("are they actually facing me?"). Identity is FACE FIRST: the frontal
-// face crop goes to the configured vision provider with web search on. If
-// that cannot name them, the badge OCR pipeline runs as a fallback and a
-// web lookup goes out on that name. The result lands on the lens and in
-// the session strip.
+// ("are they actually facing me?"), then identification against the
+// IMPORTED ROSTER - entirely on-device.
 //
-// The face crop does leave the phone on the face path - the person may not
-// be wearing a badge at all. The on-device face pass is still DETECTION
-// only (it answers "are they facing me" and finds the face to crop), never
-// recognition; the provider is the one that identifies them.
+// Nothing leaves the phone here. No provider, no web search, no badge OCR.
+// The face crop is aligned by FaceAlignment (the same call the importer
+// makes), embedded by the bundled model, and compared against RosterStore
+// by FaceMatcher. A name appears only when the match clears a threshold AND
+// beats the runner-up by a margin; otherwise the wearer is told the person
+// is not in the roster, which is a real answer rather than a hedge.
+//
+// This IS face recognition, and it is the only place in the app that does
+// any. Encounter/People grouping is still by badge text and shares no
+// identity data with this path - a roster match is a momentary read on the
+// lens, never written into an encounter.
 //
 // Camera plumbing mirrors LensViewModel: route decided at start, glasses
 // falling back to the phone, shared-stream observation in phone mode, and
@@ -24,15 +28,26 @@ import Observation
 import CoreMedia
 import Vision
 
-/// One person looked up this session. Session-only, in memory - Lookup
-/// deliberately keeps no store: the web summary is a moment's context, not
-/// a record about a person worth persisting.
+/// One person recognised this session. Session-only, in memory - Lookup
+/// deliberately keeps no store: who you saw is a moment's context, and the
+/// roster already holds everything worth persisting about them.
 struct LookupHit: Identifiable {
     let id = UUID()
     let image: UIImage
     let name: String
     let summary: String
     let date: Date
+    /// The roster entry this came from, nil for the unavailable states.
+    let personID: UUID?
+
+    init(image: UIImage, name: String, summary: String,
+         date: Date = Date(), personID: UUID? = nil) {
+        self.image = image
+        self.name = name
+        self.summary = summary
+        self.date = date
+        self.personID = personID
+    }
 }
 
 @MainActor
@@ -43,9 +58,8 @@ final class LookupViewModel {
         case scanning
         /// Fired: checking the snap actually shows a face turned this way.
         case verifying
-        /// Identifying them - face first, then badge.
-        case reading
-        case searching(name: String)
+        /// Embedding the face and comparing it against the roster.
+        case matching
         case result
     }
 
@@ -68,8 +82,25 @@ final class LookupViewModel {
     @ObservationIgnored private var sharesSessionStream = false
     @ObservationIgnored private let detector = ObjectDetector()
     @ObservationIgnored private var gate = PersonLookupGate()
-    @ObservationIgnored private let client = DirectClient()
+    @ObservationIgnored private let roster = RosterStore()
+    @ObservationIgnored private let embedder = FaceEmbedder()
     @ObservationIgnored private var didStop = false
+
+    /// PROVISIONAL - not yet measured on this roster. `tools/face-probe.swift`
+    /// `separation` and `live` set these for real once a model is bundled;
+    /// see tools/export-face.md. Deliberately conservative: too high costs a
+    /// recognition the wearer retries, too low puts a real name on the wrong
+    /// face while that person is standing in front of them.
+    ///
+    /// They are inert until then - with no model, `embedder` is nil and the
+    /// matcher is never reached.
+    @ObservationIgnored private let matcher = FaceMatcher(
+        acceptThreshold: 0.55, margin: 0.10
+    )
+
+    /// True when the app cannot identify anyone at all, whatever it sees.
+    var faceModelMissing: Bool { embedder == nil }
+    var rosterIsEmpty: Bool { roster.matchableCount == 0 }
 
     private static let observerKey = "lookup"
 
@@ -229,7 +260,7 @@ final class LookupViewModel {
     private func streamStarted() {
         isStreaming = true
         phase = .scanning
-        statusText = "Face someone close by - hold steady to look them up"
+        statusText = "Face someone close by - hold steady to identify them"
     }
 
     /// Ask Meta AI for the glasses camera, then carry on where we left off.
@@ -310,72 +341,79 @@ final class LookupViewModel {
             return
         }
 
-        // From here the snap is spent, whatever either lookup says.
+        // From here the snap is spent, whatever the matcher says.
         gate.fired(at: CACurrentMediaTime())
 
-        guard DirectClient.hasKey(for: DirectClient.providerID)
-                || !DirectClient.provider.requiresKey else {
-            finish(crop: crop, name: "Unnamed",
-                   summary: "Add an AI provider key in Settings to look people up.")
+        guard let embedder else {
+            // Said plainly rather than degraded into a weaker matcher - see
+            // FaceEmbedder's header for why there is no fallback here.
+            finish(crop: crop, name: "Face model not installed",
+                   summary: "Lookup needs the face recognition model to identify anyone.")
             return
         }
 
-        // 1) Face first: crop tight to the face and send it out.
-        phase = .reading
-        statusText = "Looking them up…"
+        phase = .matching
+        statusText = "Matching…"
         hermesVM.showLookupSearchingOnLens()
 
+        // Same alignment the roster portraits went through at import - the
+        // one function, so the two sides cannot drift apart.
         let faceCrop = LensViewModel.crop(crop, to: faceRect, padding: 0.35) ?? crop
-        if let photoJPEG = faceCrop.jpegData(
-            compressionQuality: HermesCameraManager.jpegQuality
-        ) {
-            do {
-                if let hit = try await PersonWebLookup.lookupByFace(
-                    photoJPEG: photoJPEG, client: client
-                ) {
-                    finish(crop: crop, name: hit.name,
-                           summary: hit.summary.isEmpty
-                               ? "Couldn't find anything solid online." : hit.summary)
-                    return
-                }
-            } catch {
-                NSLog("[Hermes] lookup: face lookup failed - \(error.localizedDescription)")
-            }
-            // Fall through to the badge.
-        }
-
-        // 2) Badge fallback: the face didn't name them, so read the tag.
-        statusText = "Reading their badge…"
-        let badge = await BadgeReader.readBadge(from: crop)
-        guard let name = badge?.name else {
-            backToScanning("Couldn't identify them - get their badge in view")
+        guard let probe = await embedder.embed(faceCrop) else {
+            backToScanning("Couldn't read their face - hold steady")
             return
         }
 
-        phase = .searching(name: name)
-        statusText = "Searching the web for \(name)…"
-        hermesVM.showLookupSearchingOnLens(name: name)
+        let gallery = roster.all()
+        switch matcher.match(probe: probe, gallery: gallery) {
+        case .match(let personID, let score):
+            guard let person = gallery.first(where: { $0.id == personID }) else {
+                backToScanning("Not in the roster")
+                return
+            }
+            NSLog("[Hermes] lookup: matched \(person.name) at \(score)")
+            finish(crop: crop, person: person)
 
-        do {
-            let summary = try await PersonWebLookup.lookup(
-                name: name, org: badge?.org, title: badge?.title, client: client
-            )
-            finish(crop: crop, name: name,
-                   summary: summary.isEmpty ? "Couldn't find anything solid online." : summary)
-        } catch {
-            NSLog("[Hermes] lookup: web search failed - \(error.localizedDescription)")
-            finish(crop: crop, name: name,
-                   summary: "Web lookup failed: \(error.localizedDescription)")
+        case .unknown(let reason):
+            // The wearer sees a short message; the log keeps the numbers,
+            // because belowThreshold and ambiguous mean different things
+            // when the constants are being tuned.
+            switch reason {
+            case .emptyRoster:
+                backToScanning("No roster imported - add one in Settings")
+                hermesVM.showPersonLookupOnLens(
+                    name: "No roster", info: "Import one in Settings → People roster."
+                )
+            case .belowThreshold(let best):
+                NSLog("[Hermes] lookup: no match, best \(best)")
+                backToScanning("Not in the roster")
+                hermesVM.showPersonLookupOnLens(name: "Not in the roster", info: "")
+            case .ambiguous(let best, let runnerUp):
+                NSLog("[Hermes] lookup: ambiguous, \(best) vs \(runnerUp)")
+                backToScanning("Not sure — too close to call")
+                hermesVM.showPersonLookupOnLens(
+                    name: "Not sure", info: "Too close to call between two people."
+                )
+            }
         }
     }
 
-    private func finish(crop: UIImage, name: String, summary: String) {
+    /// A recognised roster member.
+    private func finish(crop: UIImage, person: RosterPerson) {
+        finish(crop: crop, name: person.name,
+               summary: person.detailLine, personID: person.id)
+    }
+
+    private func finish(
+        crop: UIImage, name: String, summary: String, personID: UUID? = nil
+    ) {
         hits.insert(
-            LookupHit(image: crop, name: name, summary: summary, date: Date()),
+            LookupHit(image: crop, name: name, summary: summary,
+                      personID: personID),
             at: 0
         )
         phase = .result
-        statusText = "Face someone close by - hold steady to look them up"
+        statusText = "Face someone close by - hold steady to identify them"
         hermesVM.showPersonLookupOnLens(name: name, info: summary)
         // Scanning resumes underneath the result card; the gate's fired
         // cooldown keeps the same person from immediately re-firing.

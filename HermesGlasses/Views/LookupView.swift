@@ -2,9 +2,13 @@
 // LookupView.swift
 //
 // The Lookup app's screen: live feed with person boxes, a hold ring on
-// whoever the wearer is facing, and a card per person looked up - badge
-// name plus what the web found. Styled like LensView (4c chrome): fixed
-// warm black, one terracotta accent.
+// whoever the wearer is facing, and a card per person recognised - their
+// name and details from the imported roster. Styled like LensView (4c
+// chrome): fixed warm black, one terracotta accent.
+//
+// Two states have to be said out loud rather than left as a feed that
+// never resolves: no face model bundled, and an empty roster. Both make
+// identification impossible, and neither is discoverable from the feed.
 //
 
 import SwiftUI
@@ -63,7 +67,7 @@ struct LookupView: View {
 
     private var isBusy: Bool {
         switch model.phase {
-        case .verifying, .reading, .searching: return true
+        case .verifying, .matching: return true
         default: return false
         }
     }
@@ -213,8 +217,20 @@ struct LookupView: View {
         VStack(alignment: .leading, spacing: 10) {
             if let latest = model.hits.first {
                 resultCard(latest)
+            } else if model.faceModelMissing {
+                notice(
+                    "Face model not installed",
+                    detail: "Lookup identifies people entirely on this phone, "
+                        + "and needs the face model bundled into the app to do it."
+                )
+            } else if model.rosterIsEmpty {
+                notice(
+                    "No roster imported",
+                    detail: "Settings → People roster → Import folder. "
+                        + "Lookup only recognises people who are in it."
+                )
             } else {
-                Text("Stand facing someone within a couple of meters. When the ring fills, the web is searched for who they are - face first, badge as fallback.")
+                Text("Stand facing someone within a couple of meters. When the ring fills, their face is matched against your roster - on this phone, nothing sent anywhere.")
                     .font(.system(size: 12))
                     .foregroundStyle(HermesTheme.cream.opacity(0.4))
                     .padding(.horizontal, 20)
@@ -237,6 +253,28 @@ struct LookupView: View {
         .animation(.snappy, value: model.hits.count)
     }
 
+    /// A blocking condition, said plainly. Both cases here make
+    /// identification impossible, and a feed that simply never resolves
+    /// would leave the wearer guessing why.
+    private func notice(_ title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(HermesTheme.cream)
+            Text(detail)
+                .font(.system(size: 12))
+                .foregroundStyle(HermesTheme.cream.opacity(0.55))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+            HermesTheme.cream.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .padding(.horizontal, 16)
+    }
+
     private func resultCard(_ hit: LookupHit) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(uiImage: hit.image)
@@ -249,10 +287,14 @@ struct LookupView: View {
                 Text(hit.name)
                     .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(HermesTheme.cream)
-                Text(hit.summary)
-                    .font(.system(size: 13))
-                    .foregroundStyle(HermesTheme.cream.opacity(0.75))
-                    .fixedSize(horizontal: false, vertical: true)
+                // Every entry in today's roster is a name and nothing else,
+                // so an empty detail line is the common case, not an edge one.
+                if !hit.summary.isEmpty {
+                    Text(hit.summary)
+                        .font(.system(size: 13))
+                        .foregroundStyle(HermesTheme.cream.opacity(0.75))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: 0)
         }

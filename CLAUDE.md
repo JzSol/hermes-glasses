@@ -273,9 +273,11 @@ photo via the DAT camera API.
   yet, the barcode pass is wired up but inert; nothing exercises it on
   device today.
 - **Grouping is by badge text, never by face.** Two unbadged sightings never
-  merge, no matter how close in time. There is no face recognition in this
-  app and adding dwell-adjacency merging would silently claim two people
-  are one.
+  merge, no matter how close in time. Adding dwell-adjacency merging would
+  silently claim two people are one. Face recognition DOES exist in this app
+  now, but in exactly one place - the Lookup app, matching an imported
+  roster - and the two systems share no identity data: a roster match is a
+  momentary read on the lens, never written into an encounter.
 - **Renaming a merged sighting must rename every event under it.** A timeline
   row can be several sightings folded together by badge name, but each is
   still its own stored `EncounterEvent`. Patching only the row's first event
@@ -355,22 +357,51 @@ photo via the DAT camera API.
   abandoned on the first auth failure. Without it an all-"Unnamed" capture
   had no route to a name - the only remedy was to flip a global setting and
   have the conversation again.
-- **Lookup identifies by FACE first, badge as fallback.** The Lookup app
-  (`LookupViewModel.processCandidate`) snaps a person, then sends the
-  frontal-face crop (Vision detection gives the rect; `frontalFace(in:)`
-  returns the largest frontal face, top-left origin) to the configured
-  vision provider with web search on via
-  `PersonWebLookup.lookupByFace` -> `DirectClient.askOneShot(webSearch:)`.
-  The reply is parsed by `PersonWebLookup.parse` (name on the first line,
-  summary after; `NO_MATCH` means nil) and only when that fails does it fall
-  back to `BadgeReader` + `PersonWebLookup.lookup` on the badge name. So a
-  face photo DOES leave the device on this path - the "no face recognition"
-  stance elsewhere is about on-device grouping/matching (People, badge
-  reading), not about Lookup. `webSearch` is only honoured by Anthropic;
-  other providers answer from model knowledge. The face path is a DEEPER
-  search than the badge path: `PersonWebLookup.faceWebSearchMaxUses = 10`
-  (vs the default 3) and `faceTimeout = 60` (vs 30), threaded through
-  `AIRequest.webSearchMaxUses`.
+- **Lookup identifies against an imported roster, on-device.** The Lookup app
+  (`LookupViewModel.processCandidate`) snaps a person, takes the frontal-face
+  crop (`frontalFace(in:)` - Vision DETECTION, largest frontal face, top-left
+  origin), aligns it on the eyes (`FaceAlignment`), embeds it with the
+  bundled `faceid.mlpackage` (`FaceEmbedder`) and matches against
+  `RosterStore` via `FaceMatcher`. Nothing leaves the phone: no provider, no
+  web search, no badge OCR on this path. The web path (`PersonWebLookup`) is
+  deleted; `DirectClient.askOneShot(webSearch:)` survives because it is
+  generic and `BadgeAssist` uses it.
+- **A match needs a threshold AND a runner-up margin.** Cosine similarity
+  always has a nearest neighbour, so a threshold alone names whoever a
+  stranger most resembles. `FaceMatcher` returns `.ambiguous` when the top
+  two are within `margin`, and the threshold is checked BEFORE the margin
+  (two equally distant strangers are `belowThreshold`, not "too close to
+  call"). A person's score is the MAX over their photos, never the mean, and
+  the runner-up is always a DIFFERENT person. All pure, all in
+  `tests/face-match/`.
+- **`FaceAlignment` is called by both sides and must never fork.** Import and
+  live snap run the identical two-point eye transform. If they drift apart,
+  every similarity in the app silently becomes meaningless - no crash, no
+  log, faces just stop matching. That is why the geometry is pure and pinned
+  in `tests/face-align/`, and why it takes no parameters.
+- **No model, no feature - deliberately not the badge ladder.**
+  `FaceEmbedder()` returns nil with no `faceid.mlpackage` bundled, and Lookup
+  says "Face model not installed" rather than falling back to
+  `VNGenerateImageFeaturePrintRequest` or anything else. `BadgeRegion`'s band
+  ships as a floor because its failure is SILENCE (no name read, try again);
+  a weak face matcher's failure is a confident WRONG name about someone
+  standing in front of you. Roster import still works without the model and
+  reports face coverage by detection alone.
+- **Roster thresholds are measured, never guessed.** `tools/face-probe.swift`
+  has `coverage` (runs with no model - which portraits have a findable face),
+  and `separation`/`live` for the constants. Measured 2026-08-16: all 45
+  portraits have a findable face with eye landmarks, but 16 have a face
+  smaller than the model's 112 px input and three are turned ~45°. The
+  `acceptThreshold`/`margin` in `LookupViewModel` are PROVISIONAL until
+  `live` runs on device crops - roster headshots are crisp 512×512 while the
+  probe is a face inside a person box inside a `.low` glasses frame, the same
+  resolution cliff `BadgeRegion` documents.
+- **Import replaces, never merges.** `RosterStore.replaceAll` is the only
+  write path, so an import is all-or-nothing and there is no merge logic to
+  get wrong. `RosterImporter.plan` is Foundation-only and testable without a
+  device (`tests/roster/`); the filesystem half is `RosterImport.swift`.
+  Filename stems are names VERBATIM - "Malsha de Zoysa", "Sahan H",
+  "anjana viduranga" are all real entries and any tidying would damage them.
 
 ## Build & run
 
