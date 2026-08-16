@@ -473,6 +473,43 @@ depth, `NO_MATCH` parsing) is deleted with the code it describes.
 None of this blocks implementation; it sets expectations and names the ~19
 entries whose photos are worth improving before the event.
 
+### Vision feature print, measured and rejected 2026-08-16
+
+The design rejected `VNGenerateImageFeaturePrintRequest` on reasoning. It was
+then built and measured, because "it needs no download" is a strong enough
+pull to deserve evidence rather than an argument.
+
+`face-probe separation` over the 45 portraits, 990 stranger pairs:
+
+| | cosine |
+| --- | --- |
+| median stranger pair | 0.571 |
+| p99 stranger pair | 0.804 |
+| **worst stranger pair** | **0.866** (Ovindu Atukorala ↔ Sashen Matheesha) |
+
+`face-probe simulate` — each portrait degraded the way the live path really
+degrades it, then scored against its own original (p10 = the weak end of
+same-person, which is what a threshold has to admit):
+
+| variant | p10 same-person | beats 0.866? |
+| --- | --- | --- |
+| glasses-res 96 px | 0.528 | no |
+| glasses-res 64 px | 0.492 | no (4 lost the face entirely) |
+| soft focus | 0.558 | no |
+| tilt 10° | 0.825 | no |
+| under-exposed | 0.940 | yes — sanity check only, near-identical image |
+
+**0 of 4 decisive variants separate.** At glasses resolution the same person
+scores ~0.53 against themselves while two different people reach 0.87: the
+distributions are not merely overlapping, they are inverted. A stranger
+resembles you more than a degraded photo of you does. No threshold exists,
+and an app built on this would name people confidently and wrongly.
+
+This is why `FaceEmbedder` has no fallback backend, and it is the standing
+answer to "why not just use the built-in one". `FaceEmbedding` keeps the
+`.visionFeaturePrint` backend so the probe can re-run this comparison
+against any future candidate; the app never selects it.
+
 ### Other risks
 
 **The resolution cliff, again.** The roster is crisp 512×512 headshots; the
