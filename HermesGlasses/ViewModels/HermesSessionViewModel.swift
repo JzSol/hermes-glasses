@@ -54,12 +54,15 @@ enum MicSource: String, CaseIterable {
     case phone
     case glasses
     case headset
+    /// The microphone on your AiSee glasses. Closed briefly around each photo.
+    case aiseeGlasses
 
     var label: String {
         switch self {
         case .phone: return "iPhone Mic"
         case .glasses: return "Glasses Mic (call screen)"
         case .headset: return "Headset Mic (AirPods etc.)"
+        case .aiseeGlasses: return "AiSee glasses"
         }
     }
 
@@ -70,6 +73,7 @@ enum MicSource: String, CaseIterable {
         case .phone: return "iPhone"
         case .glasses: return "Glasses"
         case .headset: return "Headset"
+        case .aiseeGlasses: return "AiSee"
         }
     }
 
@@ -78,6 +82,9 @@ enum MicSource: String, CaseIterable {
         case .phone: return .phoneMic
         case .glasses: return .glassesMic
         case .headset: return .headsetMic
+        // The AiSee mic arrives as PCM over the kit, not as an iOS input
+        // route, so the audio session stays on the phone's own route.
+        case .aiseeGlasses: return .phoneMic
         }
     }
 }
@@ -342,6 +349,14 @@ final class HermesSessionViewModel {
     @ObservationIgnored private var sessionObserverTask: Task<Void, Never>?
     @ObservationIgnored private let cameraManager = HermesCameraManager()
     @ObservationIgnored private let phoneCameraManager = PhoneCameraManager()
+    /// AiSee glasses (second vendor). Owned here like the Meta managers; the
+    /// Devices page reads `aisee` for connect/scan/battery.
+    let aisee: AiSeeConnectionService
+    @ObservationIgnored private let aiseeCoordinator: AiSeeDeviceCoordinator
+    @ObservationIgnored private let aiseeCamera: AiSeeCameraSource
+    /// True after `AiSeeError.deviceWedged` until the kit reconnects - only a
+    /// power cycle clears the camera wedge, so the route stays out of service.
+    var aiseeWedged = false
     @ObservationIgnored private let speechRecognizer = HermesSpeechRecognizer()
     @ObservationIgnored private let speechSynthesizer = HermesSpeechSynthesizer()
     @ObservationIgnored private let directClient = DirectClient()
@@ -405,7 +420,8 @@ final class HermesSessionViewModel {
     /// Whichever eye is active. Every camera feature goes through this, so
     /// phone mode reaches all of them without per-call-site branching.
     var vision: VisionSource {
-        visionRoute == .phone ? phoneCameraManager : cameraManager
+        if visionRoute == .phone { return phoneCameraManager }
+        return glassesVendor == .aisee ? aiseeCamera : cameraManager
     }
 
     /// Pinned once a session (or the Lens view) commits to an eye, so a
@@ -504,7 +520,11 @@ final class HermesSessionViewModel {
     /// satisfy it while `createSession` throws `noEligibleDevice`, which is
     /// why Auto never fell back.
     var glassesAvailable: Bool {
-        activeGlassesDevice != nil
+        GlassesVendor.glassesEligible(
+            vendor: glassesVendor,
+            metaDeviceActive: activeGlassesDevice != nil,
+            aiseeConnected: aisee.state.isConnected,
+            aiseeWedged: aiseeWedged)
     }
 
     /// Everything the SDK will tell us about eligibility, in one line, so a
@@ -581,10 +601,29 @@ final class HermesSessionViewModel {
         }
     }
 
+    /// Which glasses the glasses route means. Switching tears down any live
+    /// session - the two vendors have nothing in common below VisionSource.
+    var glassesVendor: GlassesVendor = GlassesVendor.load() {
+        didSet {
+            guard oldValue != glassesVendor else { return }
+            UserDefaults.standard.set(glassesVendor.rawValue, forKey: GlassesVendor.storageKey)
+            if isGlassesConnected || connectionState != .disconnected { endSession() }
+            if micSource == .aiseeGlasses && glassesVendor != .aisee { micSource = .phone }
+            if glassesVendor == .aisee { aisee.reconnectLastDevice() }
+        }
+    }
+
+    var glassesSupportsDisplay: Bool { glassesVendor.supportsDisplay }
+
     init(wearables: WearablesInterface) {
         self.wearables = wearables
         self.deviceSelector = AutoDeviceSelector(wearables: wearables)
         self.activeGlassesDevice = self.deviceSelector.activeDevice
+        let aiseeLog: AiSeeLog = { line in NSLog("[Hermes][AiSee] %@", line) }
+        let coordinator = AiSeeDeviceCoordinator(log: aiseeLog)
+        self.aisee = AiSeeConnectionService(log: aiseeLog)
+        self.aiseeCoordinator = coordinator
+        self.aiseeCamera = AiSeeCameraSource(coordinator: coordinator)
         reloadDirectProviderState()
         observeActiveDevice()
         // Wired at init, NOT at session start: the map screen can start a
@@ -592,6 +631,14 @@ final class HermesSessionViewModel {
         // computed fine but nothing received it - the banner just sat on
         // "No route running" and failures were silent.
         wireDisplayAndNavigation()
+        aiseeCamera.onWedged = { [weak self] in
+            Task { @MainActor in
+                self?.aiseeWedged = true
+                self?.show(AiSeeError.deviceWedged.localizedDescription)
+            }
+        }
+        observeAiSeeConnection()
+        if glassesVendor == .aisee { aisee.reconnectLastDevice() }
     }
 
     deinit {
@@ -618,6 +665,39 @@ final class HermesSessionViewModel {
                     }
                 }
             }
+        }
+    }
+
+    /// Keeps the coordinator attached to the live AiSee connection and mirrors
+    /// drops into session state. `withObservationTracking` fires once per
+    /// change, so it re-arms itself.
+    private func observeAiSeeConnection() {
+        withObservationTracking {
+            _ = aisee.state
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.handleAiSeeStateChange()
+                self.observeAiSeeConnection()
+            }
+        }
+    }
+
+    private func handleAiSeeStateChange() {
+        #if canImport(RTKAIDeviceConnection)
+        let connection = aisee.connection
+        #endif
+        switch aisee.state {
+        case .connected:
+            aiseeWedged = false
+            #if canImport(RTKAIDeviceConnection)
+            Task { await aiseeCoordinator.attach(connection) }
+            #endif
+        case .disconnected:
+            Task { await aiseeCoordinator.detach() }
+            if glassesVendor == .aisee && isGlassesConnected { endSession() }
+        case .scanning, .connecting:
+            break
         }
     }
 
@@ -819,7 +899,7 @@ final class HermesSessionViewModel {
         // (a headset's hands-free link does not). In phone mode there is no
         // DeviceSession to attach to; the simulated lens reads
         // `displayManager.content` instead, which updates either way.
-        if let session = deviceSession,
+        if glassesVendor.supportsDisplay, let session = deviceSession,
            displayHUDEnabled, !lensBlockedByCallScreen {
             // stop() first: a standalone Display test may still hold an
             // attachment to its temporary session
@@ -1228,6 +1308,17 @@ final class HermesSessionViewModel {
     /// camera its session, and surface camera permission. Returns false
     /// (having already shown the reason) if the glasses can't be reached.
     private func connectGlassesSession() async -> Bool {
+        // AiSee has no DeviceSession: the kit's own connection IS the session,
+        // so the glasses route is "connected" the moment the kit is.
+        if glassesVendor == .aisee {
+            guard aisee.state.isConnected, !aiseeWedged else { return false }
+            #if canImport(RTKAIDeviceConnection)
+            await aiseeCoordinator.attach(aisee.connection)
+            #endif
+            isGlassesConnected = true
+            return true
+        }
+
         // 1. Create and start a device session with the glasses
         let session: DeviceSession
         do {
@@ -2267,6 +2358,12 @@ final class HermesSessionViewModel {
         encounterPhotoTask = nil
         awaitingEncounterNote = false
         pendingPhoto = nil
+        if glassesVendor == .aisee {
+            // Via the adapter, so its own `isStreaming` latch clears too - an
+            // unclean drop would otherwise refuse the next stream as in-use.
+            aiseeCamera.stopLiveStream()
+            Task { await aiseeCoordinator.stopMicrophone() }
+        }
         deviceSession?.stop()
         deviceSession = nil
         isGlassesConnected = false
@@ -2281,6 +2378,11 @@ final class HermesSessionViewModel {
     /// it creates its own DeviceSession, torn down by
     /// `releaseCameraSession()` when the view closes.
     func ensureCameraSession() async throws {
+        // Nothing to create for AiSee - the kit's connection is the session.
+        if glassesVendor == .aisee {
+            guard aisee.state.isConnected, !aiseeWedged else { throw AiSeeError.notConnected }
+            return
+        }
         if deviceSession != nil || lensSession != nil { return }
 
         let session = try wearables.createSession(deviceSelector: deviceSelector)
@@ -2313,6 +2415,10 @@ final class HermesSessionViewModel {
     /// Tear down the Lens-owned camera session. No-op when the camera is
     /// riding on the voice session (or nothing is connected).
     func releaseCameraSession() {
+        // The kit owns AiSee stream teardown (via `stopLiveStream`); there is
+        // no per-view session to release. A DeviceSession left over from a
+        // vendor switch mid-Lens still has to be stopped, hence the nil check.
+        if glassesVendor == .aisee && lensSession == nil { return }
         guard let session = lensSession else { return }
         lensSession = nil
         if deviceSession == nil { cameraManager.reset() }
@@ -2461,10 +2567,14 @@ final class HermesSessionViewModel {
 
     /// Cheap check for "will the glasses camera work at all".
     func glassesCameraGranted() async -> Bool {
-        await ensureCameraPermission(interactive: false)
+        if glassesVendor == .aisee { return true }
+        return await ensureCameraPermission(interactive: false)
     }
 
     func ensureCameraPermission(interactive: Bool) async -> Bool {
+        // AiSee's camera is reached over the kit's own link - there is no
+        // companion-app grant to check or ask for.
+        if glassesVendor == .aisee { return true }
         do {
             let status = try await wearables.checkPermissionStatus(.camera)
             if status == .granted {
@@ -2536,6 +2646,9 @@ final class HermesSessionViewModel {
     /// for the test and tears it down after a few seconds.
     func testDisplay() async {
         await runTest("Display") { [self] in
+            guard glassesVendor.supportsDisplay else {
+                throw TestFailure("\(glassesVendor.label) glasses have no lens display.")
+            }
             if let session = deviceSession {
                 if displayManager.status != .connected {
                     displayManager.stop()
