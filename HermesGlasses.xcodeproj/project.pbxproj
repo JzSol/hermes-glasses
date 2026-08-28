@@ -79,6 +79,7 @@
 		AAAA00000000000000000033 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000136 /* SettingsView.swift */; };
 		AAAA00000000000000000034 /* DwellTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000137 /* DwellTracker.swift */; };
 		AAAA00000000000000000038 /* yolo11n.mlpackage in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000141 /* yolo11n.mlpackage */; };
+		AAAA0000000000000000895 /* faceid.mlpackage in Sources */ = {isa = PBXBuildFile; fileRef = AAAA0000000000000000896 /* faceid.mlpackage */; };
 		AAAA00000000000000000035 /* ObjectDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000138 /* ObjectDetector.swift */; };
 		AAAA00000000000000000036 /* LensViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000139 /* LensViewModel.swift */; };
 		AAAA00000000000000000037 /* LensView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000140 /* LensView.swift */; };
@@ -94,7 +95,56 @@
 		AAAA00000000000000000802 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = AAAA00000000000000000702 /* MWDATCamera */; };
 		AAAA00000000000000000803 /* MWDATMockDevice in Frameworks */ = {isa = PBXBuildFile; productRef = AAAA00000000000000000703 /* MWDATMockDevice */; };
 		AAAA00000000000000000804 /* MWDATDisplay in Frameworks */ = {isa = PBXBuildFile; productRef = AAAA00000000000000000704 /* MWDATDisplay */; };
+		AAAA00000000000000000A01 /* AiSeeConnectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A0A /* AiSeeConnectionService.swift */; };
+		AAAA00000000000000000A02 /* AiSeeDeviceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A0B /* AiSeeDeviceCoordinator.swift */; };
+		AAAA00000000000000000A03 /* AiSeeH264Decoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A0C /* AiSeeH264Decoder.swift */; };
+		AAAA00000000000000000A04 /* AiSeeLiveStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A0D /* AiSeeLiveStream.swift */; };
+		AAAA00000000000000000A05 /* AiSeeMicrophone.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A0E /* AiSeeMicrophone.swift */; };
+		AAAA00000000000000000A06 /* AiSeePCMAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A0F /* AiSeePCMAdapter.swift */; };
+		AAAA00000000000000000A07 /* AiSeePhotoCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A10 /* AiSeePhotoCapture.swift */; };
+		AAAA00000000000000000A08 /* AiSeeSequencing.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A11 /* AiSeeSequencing.swift */; };
+		AAAA00000000000000000A09 /* AiSeeTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A12 /* AiSeeTypes.swift */; };
+		AAAA00000000000000000A30 /* RTKAIDeviceConnection.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A20 /* RTKAIDeviceConnection.framework */; };
+		AAAA00000000000000000A31 /* RTKAudioConnectSDK.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A21 /* RTKAudioConnectSDK.framework */; };
+		AAAA00000000000000000A32 /* RTKAudioStreaming.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A22 /* RTKAudioStreaming.framework */; };
+		AAAA00000000000000000A33 /* RTKLEFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A23 /* RTKLEFoundation.framework */; };
+		AAAA00000000000000000A34 /* OpenAIRealtimeAccess.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A24 /* OpenAIRealtimeAccess.framework */; };
+		AAAA00000000000000000A35 /* libavcodec.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A25 /* libavcodec.framework */; };
+		AAAA00000000000000000A36 /* libavformat.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A26 /* libavformat.framework */; };
+		AAAA00000000000000000A37 /* libavutil.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A27 /* libavutil.framework */; };
+		AAAA00000000000000000A38 /* libswresample.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A28 /* libswresample.framework */; };
+		AAAA00000000000000000A40 /* RTKAIDeviceConnection.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A20 /* RTKAIDeviceConnection.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AAAA00000000000000000A41 /* RTKAudioConnectSDK.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A21 /* RTKAudioConnectSDK.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AAAA00000000000000000A42 /* RTKAudioStreaming.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A22 /* RTKAudioStreaming.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AAAA00000000000000000A43 /* RTKLEFoundation.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A23 /* RTKLEFoundation.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AAAA00000000000000000A44 /* OpenAIRealtimeAccess.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A24 /* OpenAIRealtimeAccess.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AAAA00000000000000000A45 /* libavcodec.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A25 /* libavcodec.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AAAA00000000000000000A46 /* libavformat.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A26 /* libavformat.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AAAA00000000000000000A47 /* libavutil.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A27 /* libavutil.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AAAA00000000000000000A48 /* libswresample.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A28 /* libswresample.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AAAA00000000000000000A49 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				AAAA00000000000000000A40 /* RTKAIDeviceConnection.framework in Embed Frameworks */,
+				AAAA00000000000000000A41 /* RTKAudioConnectSDK.framework in Embed Frameworks */,
+				AAAA00000000000000000A42 /* RTKAudioStreaming.framework in Embed Frameworks */,
+				AAAA00000000000000000A43 /* RTKLEFoundation.framework in Embed Frameworks */,
+				AAAA00000000000000000A44 /* OpenAIRealtimeAccess.framework in Embed Frameworks */,
+				AAAA00000000000000000A45 /* libavcodec.framework in Embed Frameworks */,
+				AAAA00000000000000000A46 /* libavformat.framework in Embed Frameworks */,
+				AAAA00000000000000000A47 /* libavutil.framework in Embed Frameworks */,
+				AAAA00000000000000000A48 /* libswresample.framework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		AAAA00000000000000000101 /* HermesGlassesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesGlassesApp.swift; sourceTree = "<group>"; };
@@ -173,6 +223,7 @@
 		AAAA00000000000000000136 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000137 /* DwellTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lens/DwellTracker.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000141 /* yolo11n.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = yolo11n.mlpackage; sourceTree = "<group>"; };
+		AAAA0000000000000000896 /* faceid.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; path = faceid.mlpackage; sourceTree = "<group>"; };
 		AAAA00000000000000000138 /* ObjectDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lens/ObjectDetector.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000139 /* LensViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LensViewModel.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000140 /* LensView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LensView.swift; sourceTree = "<group>"; };
@@ -184,6 +235,24 @@
 		AAAA00000000000000000814 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000818 /* HermesDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesDesign.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000820 /* NavigationMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationMapView.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000A0A /* AiSeeConnectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeConnectionService.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000A0B /* AiSeeDeviceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeDeviceCoordinator.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000A0C /* AiSeeH264Decoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeH264Decoder.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000A0D /* AiSeeLiveStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeLiveStream.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000A0E /* AiSeeMicrophone.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeMicrophone.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000A0F /* AiSeePCMAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeePCMAdapter.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000A10 /* AiSeePhotoCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeePhotoCapture.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000A11 /* AiSeeSequencing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeSequencing.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000A12 /* AiSeeTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeTypes.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000A20 /* RTKAIDeviceConnection.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = RTKAIDeviceConnection.framework; sourceTree = "<group>"; };
+		AAAA00000000000000000A21 /* RTKAudioConnectSDK.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = RTKAudioConnectSDK.framework; sourceTree = "<group>"; };
+		AAAA00000000000000000A22 /* RTKAudioStreaming.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = RTKAudioStreaming.framework; sourceTree = "<group>"; };
+		AAAA00000000000000000A23 /* RTKLEFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = RTKLEFoundation.framework; sourceTree = "<group>"; };
+		AAAA00000000000000000A24 /* OpenAIRealtimeAccess.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = OpenAIRealtimeAccess.framework; sourceTree = "<group>"; };
+		AAAA00000000000000000A25 /* libavcodec.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = libavcodec.framework; sourceTree = "<group>"; };
+		AAAA00000000000000000A26 /* libavformat.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = libavformat.framework; sourceTree = "<group>"; };
+		AAAA00000000000000000A27 /* libavutil.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = libavutil.framework; sourceTree = "<group>"; };
+		AAAA00000000000000000A28 /* libswresample.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = libswresample.framework; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -195,6 +264,15 @@
 				AAAA00000000000000000802 /* MWDATCamera in Frameworks */,
 				AAAA00000000000000000803 /* MWDATMockDevice in Frameworks */,
 				AAAA00000000000000000804 /* MWDATDisplay in Frameworks */,
+				AAAA00000000000000000A30 /* RTKAIDeviceConnection.framework in Frameworks */,
+				AAAA00000000000000000A31 /* RTKAudioConnectSDK.framework in Frameworks */,
+				AAAA00000000000000000A32 /* RTKAudioStreaming.framework in Frameworks */,
+				AAAA00000000000000000A33 /* RTKLEFoundation.framework in Frameworks */,
+				AAAA00000000000000000A34 /* OpenAIRealtimeAccess.framework in Frameworks */,
+				AAAA00000000000000000A35 /* libavcodec.framework in Frameworks */,
+				AAAA00000000000000000A36 /* libavformat.framework in Frameworks */,
+				AAAA00000000000000000A37 /* libavutil.framework in Frameworks */,
+				AAAA00000000000000000A38 /* libswresample.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -205,6 +283,7 @@
 			isa = PBXGroup;
 			children = (
 				AAAA0000000000000000001 /* HermesGlasses */,
+				AAAA00000000000000000A50 /* Vendor/RTK */,
 				AAAA0000000000000000005 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -321,6 +400,15 @@
 				AAAA00000000000000000806 /* LensLogAggregator.swift */,
 				AAAA00000000000000000808 /* LensSession.swift */,
 				AAAA00000000000000000810 /* LensSessionStore.swift */,
+				AAAA00000000000000000A0A /* AiSeeConnectionService.swift */,
+				AAAA00000000000000000A0B /* AiSeeDeviceCoordinator.swift */,
+				AAAA00000000000000000A0C /* AiSeeH264Decoder.swift */,
+				AAAA00000000000000000A0D /* AiSeeLiveStream.swift */,
+				AAAA00000000000000000A0E /* AiSeeMicrophone.swift */,
+				AAAA00000000000000000A0F /* AiSeePCMAdapter.swift */,
+				AAAA00000000000000000A10 /* AiSeePhotoCapture.swift */,
+				AAAA00000000000000000A11 /* AiSeeSequencing.swift */,
+				AAAA00000000000000000A12 /* AiSeeTypes.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -329,6 +417,7 @@
 			isa = PBXGroup;
 			children = (
 				AAAA00000000000000000141 /* yolo11n.mlpackage */,
+				AAAA0000000000000000896 /* faceid.mlpackage */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -341,6 +430,22 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		AAAA00000000000000000A50 /* Vendor/RTK */ = {
+			isa = PBXGroup;
+			children = (
+				AAAA00000000000000000A20 /* RTKAIDeviceConnection.framework */,
+				AAAA00000000000000000A21 /* RTKAudioConnectSDK.framework */,
+				AAAA00000000000000000A22 /* RTKAudioStreaming.framework */,
+				AAAA00000000000000000A23 /* RTKLEFoundation.framework */,
+				AAAA00000000000000000A24 /* OpenAIRealtimeAccess.framework */,
+				AAAA00000000000000000A25 /* libavcodec.framework */,
+				AAAA00000000000000000A26 /* libavformat.framework */,
+				AAAA00000000000000000A27 /* libavutil.framework */,
+				AAAA00000000000000000A28 /* libswresample.framework */,
+			);
+			path = Vendor/RTK;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -350,6 +455,7 @@
 			buildPhases = (
 				AAAA00000000000000000401 /* Sources */,
 				AAAA00000000000000000402 /* Frameworks */,
+				AAAA00000000000000000A49 /* Embed Frameworks */,
 				AAAA00000000000000000403 /* Resources */,
 			);
 			buildRules = (
@@ -490,6 +596,7 @@
 				AAAA00000000000000000033 /* SettingsView.swift in Sources */,
 				AAAA00000000000000000034 /* DwellTracker.swift in Sources */,
 				AAAA00000000000000000038 /* yolo11n.mlpackage in Sources */,
+				AAAA0000000000000000895 /* faceid.mlpackage in Sources */,
 				AAAA00000000000000000035 /* ObjectDetector.swift in Sources */,
 				AAAA00000000000000000036 /* LensViewModel.swift in Sources */,
 				AAAA00000000000000000037 /* LensView.swift in Sources */,
@@ -501,6 +608,15 @@
 				AAAA00000000000000000813 /* ShareSheet.swift in Sources */,
 				AAAA00000000000000000817 /* HermesDesign.swift in Sources */,
 				AAAA00000000000000000819 /* NavigationMapView.swift in Sources */,
+				AAAA00000000000000000A01 /* AiSeeConnectionService.swift in Sources */,
+				AAAA00000000000000000A02 /* AiSeeDeviceCoordinator.swift in Sources */,
+				AAAA00000000000000000A03 /* AiSeeH264Decoder.swift in Sources */,
+				AAAA00000000000000000A04 /* AiSeeLiveStream.swift in Sources */,
+				AAAA00000000000000000A05 /* AiSeeMicrophone.swift in Sources */,
+				AAAA00000000000000000A06 /* AiSeePCMAdapter.swift in Sources */,
+				AAAA00000000000000000A07 /* AiSeePhotoCapture.swift in Sources */,
+				AAAA00000000000000000A08 /* AiSeeSequencing.swift in Sources */,
+				AAAA00000000000000000A09 /* AiSeeTypes.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -517,6 +633,21 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]" = (
+					"RTKAIDeviceConnection.framework",
+					"RTKAudioConnectSDK.framework",
+					"RTKAudioStreaming.framework",
+					"RTKLEFoundation.framework",
+					"OpenAIRealtimeAccess.framework",
+					"libavcodec.framework",
+					"libavformat.framework",
+					"libavutil.framework",
+					"libswresample.framework",
+				);
+				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/Vendor/RTK",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = HermesGlasses/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -530,6 +661,10 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.flowsxr.hermesglasses;
 				PRODUCT_NAME = "Hermes Glasses";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				"SWIFT_INCLUDE_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/Vendor/RTK",
+				);
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
@@ -545,6 +680,21 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
+				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]" = (
+					"RTKAIDeviceConnection.framework",
+					"RTKAudioConnectSDK.framework",
+					"RTKAudioStreaming.framework",
+					"RTKLEFoundation.framework",
+					"OpenAIRealtimeAccess.framework",
+					"libavcodec.framework",
+					"libavformat.framework",
+					"libavutil.framework",
+					"libswresample.framework",
+				);
+				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/Vendor/RTK",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = HermesGlasses/Info.plist;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -560,6 +710,10 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				"SWIFT_INCLUDE_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(SRCROOT)/Vendor/RTK",
+				);
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
