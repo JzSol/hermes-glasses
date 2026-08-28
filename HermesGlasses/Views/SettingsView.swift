@@ -87,10 +87,14 @@ struct SettingsView: View {
                            value: hermesVM.micSource.shortLabel) {
                         VoicePage(hermesVM: hermesVM)
                     }
-                    HermesDivider()
-                    navRow("Glasses Display", icon: "eyeglasses",
-                           value: hermesVM.displayHUDEnabled ? "On" : "Off") {
-                        DisplayPage(hermesVM: hermesVM)
+                    // AiSee has no lens - the whole row (and the HUD
+                    // settings behind it) is meaningless for that vendor.
+                    if hermesVM.glassesSupportsDisplay {
+                        HermesDivider()
+                        navRow("Glasses Display", icon: "eyeglasses",
+                               value: hermesVM.displayHUDEnabled ? "On" : "Off") {
+                            DisplayPage(hermesVM: hermesVM)
+                        }
                     }
                     HermesDivider()
                     navRow("Appearance", icon: "circle.lefthalf.filled",
@@ -219,7 +223,7 @@ struct SettingsView: View {
     }
 
     private var deviceTitle: String {
-        wearablesVM.glasses.first?.name ?? "Ray-Ban Display"
+        hermesVM.glassesVendor.label
     }
 
     private var deviceStatus: String {
@@ -267,143 +271,328 @@ private struct DevicesPage: View {
 
     var body: some View {
         HermesScrollPage {
-            if let active = wearablesVM.glasses.first {
-                HermesDeviceCard(
-                    title: active.name,
-                    status: hermesVM.isGlassesConnected
-                        ? "In use" : "Paired · not connected",
-                    dot: hermesVM.isGlassesConnected
-                        ? HermesTheme.online : .gray,
-                    chips: active.capabilities
-                ) {
-                    NavigationLink {
-                        GlassesStatusPage(
-                            hermesVM: hermesVM, wearablesVM: wearablesVM
-                        )
-                    } label: {
-                        Text("Manage")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(HermesTheme.cream)
-                            .padding(.horizontal, 12)
-                            .frame(height: 28)
-                            .background(HermesTheme.cream.opacity(0.12), in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                }
+            vendorSection
+
+            if hermesVM.glassesVendor == .meta {
+                metaDeviceSection
+                cameraPermissionSection
             } else {
-                HermesSection(
-                    header: "No glasses paired",
-                    footer: "Pairing finishes in the Meta AI app."
-                ) {
-                    Button {
-                        wearablesVM.connectGlasses()
-                    } label: {
-                        HermesRow(
-                            "Connect glasses",
-                            icon: "eyeglasses",
-                            value: registrationText
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
+                aiseeCard
             }
 
-            HermesSection(
-                header: "Glasses camera",
-                footer: "Meta AI grants the glasses camera separately from iOS. Without it, Lens and \"remember this person\" get no picture - the most common reason a photo goes missing."
-            ) {
-                Button {
-                    Task { await hermesVM.requestGlassesCameraAccess() }
-                } label: {
-                    HermesRow(
-                        title: "Camera access",
-                        showsChevron: false
-                    ) {
-                        switch hermesVM.cameraPermissionGranted {
-                        case .some(true):
-                            HermesBadge(text: "Allowed", prominent: true)
-                        case .some(false), .none:
-                            Text("Allow")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(HermesTheme.accentOnCard)
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
+            phoneModeSection
+
+            if hermesVM.glassesVendor == .aisee {
+                aiseeConnectionSection
             }
 
-            HermesSection(
-                header: "No glasses on you?",
-                footer: hermesVM.phoneModePreference.explanation
-            ) {
-                VStack(alignment: .leading, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 8) {
-                            Text("Use this iPhone")
-                                .font(.system(size: 16, weight: .semibold))
-                            if hermesVM.visionRoute == .phone {
-                                HermesBadge(text: "Active", prominent: true)
-                            }
-                        }
-                        Text("Phone camera as the eye, simulated lens on screen")
-                            .font(.system(size: 13))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    Picker("Phone mode", selection: Binding(
-                        get: { hermesVM.phoneModePreference },
-                        set: { hermesVM.phoneModePreference = $0 }
-                    )) {
-                        ForEach(PhoneModePreference.allCases) { preference in
-                            Text(preference.label).tag(preference)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+            if hermesVM.glassesVendor == .meta {
+                if !wearablesVM.glasses.isEmpty {
+                    pairedSection
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-
-                HermesDivider()
-
-                HStack(spacing: 8) {
-                    HermesChip(text: "Camera")
-                    HermesChip(text: "Audio")
-                    HermesChip(text: "Simulated display", available: false)
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-            }
-
-            if !wearablesVM.glasses.isEmpty {
-                HermesSection(header: "Paired") {
-                    ForEach(Array(wearablesVM.glasses.enumerated()), id: \.element.id) { index, device in
-                        if index > 0 { HermesDivider() }
-                        pairedRow(device)
-                    }
-                }
-            }
-
-            HermesSection(
-                header: "Add glasses",
-                footer: "Hermes adapts to whatever the device can do - features switch off, screens don't disappear."
-            ) {
-                ForEach(Array(Self.upcoming.enumerated()), id: \.element.name) { index, model in
-                    if index > 0 { HermesDivider() }
-                    HermesRow(
-                        title: model.name,
-                        subtitle: model.detail,
-                        showsChevron: false
-                    ) {
-                        HermesBadge(text: "Soon")
-                    }
-                    .opacity(0.6)
-                }
+                upcomingSection
             }
         }
         .navigationTitle("Devices")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    // MARK: - Vendor
+
+    /// Which glasses "glasses" means, for both the camera route and the
+    /// mic-source list. Switching ends any live session (Hermes Session VM).
+    private var vendorSection: some View {
+        HermesSection(
+            header: "Glasses",
+            footer: "Switching brands ends any session in progress."
+        ) {
+            Picker("Glasses vendor", selection: Binding(
+                get: { hermesVM.glassesVendor },
+                set: { hermesVM.glassesVendor = $0 }
+            )) {
+                ForEach(GlassesVendor.allCases) { vendor in
+                    Text(vendor.label).tag(vendor)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+        }
+    }
+
+    // MARK: - Meta (unchanged from before the vendor picker)
+
+    @ViewBuilder
+    private var metaDeviceSection: some View {
+        if let active = wearablesVM.glasses.first {
+            HermesDeviceCard(
+                title: active.name,
+                status: hermesVM.isGlassesConnected
+                    ? "In use" : "Paired · not connected",
+                dot: hermesVM.isGlassesConnected
+                    ? HermesTheme.online : .gray,
+                chips: active.capabilities
+            ) {
+                NavigationLink {
+                    GlassesStatusPage(
+                        hermesVM: hermesVM, wearablesVM: wearablesVM
+                    )
+                } label: {
+                    Text("Manage")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(HermesTheme.cream)
+                        .padding(.horizontal, 12)
+                        .frame(height: 28)
+                        .background(HermesTheme.cream.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        } else {
+            HermesSection(
+                header: "No glasses paired",
+                footer: "Pairing finishes in the Meta AI app."
+            ) {
+                Button {
+                    wearablesVM.connectGlasses()
+                } label: {
+                    HermesRow(
+                        "Connect glasses",
+                        icon: "eyeglasses",
+                        value: registrationText
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var cameraPermissionSection: some View {
+        HermesSection(
+            header: "Glasses camera",
+            footer: "Meta AI grants the glasses camera separately from iOS. Without it, Lens and \"remember this person\" get no picture - the most common reason a photo goes missing."
+        ) {
+            Button {
+                Task { await hermesVM.requestGlassesCameraAccess() }
+            } label: {
+                HermesRow(
+                    title: "Camera access",
+                    showsChevron: false
+                ) {
+                    switch hermesVM.cameraPermissionGranted {
+                    case .some(true):
+                        HermesBadge(text: "Allowed", prominent: true)
+                    case .some(false), .none:
+                        Text("Allow")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(HermesTheme.accentOnCard)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var pairedSection: some View {
+        HermesSection(header: "Paired") {
+            ForEach(Array(wearablesVM.glasses.enumerated()), id: \.element.id) { index, device in
+                if index > 0 { HermesDivider() }
+                pairedRow(device)
+            }
+        }
+    }
+
+    private var upcomingSection: some View {
+        HermesSection(
+            header: "Add glasses",
+            footer: "Hermes adapts to whatever the device can do - features switch off, screens don't disappear."
+        ) {
+            ForEach(Array(Self.upcoming.enumerated()), id: \.element.name) { index, model in
+                if index > 0 { HermesDivider() }
+                HermesRow(
+                    title: model.name,
+                    subtitle: model.detail,
+                    showsChevron: false
+                ) {
+                    HermesBadge(text: "Soon")
+                }
+                .opacity(0.6)
+            }
+        }
+    }
+
+    // MARK: - AiSee
+
+    /// Warm-black hero card, matching the Meta paired-device card's visual
+    /// language: status dot, name once connected, capability chips. AiSee
+    /// has no lens, so "No display" is always the third chip.
+    private var aiseeCard: some View {
+        HermesDeviceCard(
+            title: aiseeTitle,
+            status: aiseeStatusText,
+            dot: aiseeDotColor,
+            chips: [
+                ("Camera", true),
+                ("Audio", true),
+                ("No display", false),
+            ]
+        )
+    }
+
+    private var aiseeTitle: String {
+        if case .connected(let name) = hermesVM.aisee.state { return name }
+        return "AiSee Glasses"
+    }
+
+    private var aiseeDotColor: Color {
+        switch hermesVM.aisee.state {
+        case .connected: return HermesTheme.online
+        case .scanning, .connecting: return .orange
+        case .disconnected: return .gray
+        }
+    }
+
+    private var aiseeStatusText: String {
+        switch hermesVM.aisee.state {
+        case .connected:
+            guard let battery = hermesVM.aisee.battery else { return "Connected" }
+            return "Connected · \(battery)%"
+        case .scanning: return "Scanning…"
+        case .connecting: return "Connecting…"
+        case .disconnected: return "Not connected"
+        }
+    }
+
+    /// Scan / discovered-device list while unpaired, refresh-battery /
+    /// disconnect once the link is up. AiSee has no Meta AI app step - this
+    /// card is the whole pairing flow.
+    private var aiseeConnectionSection: some View {
+        HermesSection(
+            header: "AiSee connection",
+            footer: "AiSee glasses pair directly over Bluetooth - no Meta AI app needed. Camera and audio work today; the lens has no display."
+        ) {
+            if hermesVM.aisee.state.isConnected {
+                HermesRow(
+                    "Battery",
+                    icon: "battery.100",
+                    value: hermesVM.aisee.battery.map { "\($0)%" } ?? "—",
+                    showsChevron: false
+                )
+                HermesDivider()
+                Button {
+                    Task { await hermesVM.aisee.refreshBattery() }
+                } label: {
+                    HermesRow(title: "Refresh battery", showsChevron: false) {
+                        Text("Refresh")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(HermesTheme.accentOnCard)
+                    }
+                }
+                .buttonStyle(.plain)
+                HermesDivider()
+                Button {
+                    hermesVM.aisee.disconnect()
+                } label: {
+                    HermesRow(title: "Disconnect", showsChevron: false) {
+                        Text("Disconnect")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(HermesTheme.destructive)
+                    }
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button {
+                    if case .scanning = hermesVM.aisee.state {
+                        hermesVM.aisee.stopScan()
+                    } else {
+                        hermesVM.aisee.startScan()
+                    }
+                } label: {
+                    HermesRow(title: aiseeScanButtonTitle, showsChevron: false) {
+                        if case .connecting = hermesVM.aisee.state {
+                            ProgressView().scaleEffect(0.7)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!hermesVM.aisee.bluetoothReady)
+                .opacity(hermesVM.aisee.bluetoothReady ? 1 : 0.5)
+
+                if !hermesVM.aisee.discovered.isEmpty {
+                    ForEach(hermesVM.aisee.discovered) { device in
+                        HermesDivider()
+                        Button {
+                            hermesVM.aisee.connect(device.id)
+                        } label: {
+                            HermesRow(
+                                title: device.name,
+                                subtitle: device.rssi == 0 ? "Paired" : "\(device.rssi) dBm",
+                                showsChevron: false
+                            ) {
+                                Text("Connect")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(HermesTheme.accentOnCard)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private var aiseeScanButtonTitle: String {
+        switch hermesVM.aisee.state {
+        case .scanning: return "Stop scan"
+        default: return "Scan for AiSee glasses"
+        }
+    }
+
+    // MARK: - Shared (both vendors)
+
+    private var phoneModeSection: some View {
+        HermesSection(
+            header: "No glasses on you?",
+            footer: hermesVM.phoneModePreference.explanation
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Text("Use this iPhone")
+                            .font(.system(size: 16, weight: .semibold))
+                        if hermesVM.visionRoute == .phone {
+                            HermesBadge(text: "Active", prominent: true)
+                        }
+                    }
+                    Text("Phone camera as the eye, simulated lens on screen")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Picker("Phone mode", selection: Binding(
+                    get: { hermesVM.phoneModePreference },
+                    set: { hermesVM.phoneModePreference = $0 }
+                )) {
+                    ForEach(PhoneModePreference.allCases) { preference in
+                        Text(preference.label).tag(preference)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            HermesDivider()
+
+            HStack(spacing: 8) {
+                HermesChip(text: "Camera")
+                HermesChip(text: "Audio")
+                HermesChip(text: "Simulated display", available: false)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
     }
 
     private func pairedRow(_ device: GlassesDevice) -> some View {

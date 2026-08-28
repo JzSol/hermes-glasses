@@ -2248,9 +2248,17 @@ final class HermesSessionViewModel {
     }
 
     /// Mic sources offerable right now. The AiSee entry is meaningless (and
-    /// unroutable) unless the AiSee glasses are the selected vendor.
+    /// unroutable) unless the AiSee glasses are the selected vendor, and
+    /// symmetrically the Meta HFP "call screen" entry only routes anywhere
+    /// when Meta Ray-Ban is the selected vendor.
     var availableMicSources: [MicSource] {
-        MicSource.allCases.filter { $0 != .aiseeGlasses || glassesVendor == .aisee }
+        MicSource.allCases.filter {
+            switch $0 {
+            case .aiseeGlasses: return glassesVendor == .aisee
+            case .glasses: return glassesVendor == .meta
+            default: return true
+            }
+        }
     }
 
     /// Banner chip: cycle iPhone → Glasses → Headset → iPhone.
