@@ -23,7 +23,7 @@ xcrun swiftc \
   tests/providers/main.swift -o /tmp/provider-tests && /tmp/provider-tests
 ```
 
-Other standalone suites live under `tests/` (`device-context`, `display-logic`)
+Other standalone suites live under `tests/` (`device-context`, `display-logic`, `glasses-vendor`)
 and follow the same `swiftc <source> tests/<x>/main.swift` pattern.
 
 **Bridge**

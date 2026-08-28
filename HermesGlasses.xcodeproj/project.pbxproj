@@ -122,6 +122,7 @@
 		AAAA00000000000000000A46 /* libavformat.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A26 /* libavformat.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AAAA00000000000000000A47 /* libavutil.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A27 /* libavutil.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AAAA00000000000000000A48 /* libswresample.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A28 /* libswresample.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		AAAA00000000000000000A52 /* GlassesVendor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A51 /* GlassesVendor.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -253,6 +254,7 @@
 		AAAA00000000000000000A26 /* libavformat.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = libavformat.framework; sourceTree = "<group>"; };
 		AAAA00000000000000000A27 /* libavutil.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = libavutil.framework; sourceTree = "<group>"; };
 		AAAA00000000000000000A28 /* libswresample.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = libswresample.framework; sourceTree = "<group>"; };
+		AAAA00000000000000000A51 /* GlassesVendor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassesVendor.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -409,6 +411,7 @@
 				AAAA00000000000000000A10 /* AiSeePhotoCapture.swift */,
 				AAAA00000000000000000A11 /* AiSeeSequencing.swift */,
 				AAAA00000000000000000A12 /* AiSeeTypes.swift */,
+				AAAA00000000000000000A51 /* GlassesVendor.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -617,6 +620,7 @@
 				AAAA00000000000000000A07 /* AiSeePhotoCapture.swift in Sources */,
 				AAAA00000000000000000A08 /* AiSeeSequencing.swift in Sources */,
 				AAAA00000000000000000A09 /* AiSeeTypes.swift in Sources */,
+				AAAA00000000000000000A52 /* GlassesVendor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
