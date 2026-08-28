@@ -37,6 +37,10 @@ final class AiSeeCameraSource: VisionSource, @unchecked Sendable {
                 self?.lock.withLock { self?._streaming = false }
                 if let text { onError(text) }
             })
+        // The coordinator can return without a stream (a stop or a detach
+        // arrived while `start` was in flight, and it tore the stream back
+        // down instead of installing it). Ask it, rather than assuming.
+        guard await coordinator.streaming else { throw HermesCameraError.streamUnavailable }
         lock.withLock { _streaming = true }
     }
 
