@@ -335,6 +335,10 @@ final class HermesSessionViewModel {
         "Glasses mic not available - using iPhone mic"
     private static let headsetMicFallbackNotice =
         "No headset mic found - using iPhone mic. Connect AirPods or another Bluetooth headset first."
+    /// Said from three places - session start, a mid-session switch, and the
+    /// kit failing to bring its mic back after a still - so it lives here too.
+    private static let aiseeMicFallbackNotice =
+        "AiSee glasses mic unavailable — using iPhone mic"
 
     private static let micSourceKey = "mic_source"
     private static let endpointPresetsKey = "endpoint_presets"
@@ -363,6 +367,14 @@ final class HermesSessionViewModel {
     /// True after `AiSeeError.deviceWedged` until the kit reconnects - only a
     /// power cycle clears the camera wedge, so the route stays out of service.
     var aiseeWedged = false
+    /// Whether the RUNNING session is actually listening through the kit's mic.
+    /// `usingAiSeeMic` describes what is selectable right now and reads
+    /// `aisee.state`, which is already `.disconnected` by the time a drop is
+    /// handled - so the teardown decision needs this remembered fact instead.
+    @ObservationIgnored private var sessionUsesAiSeeMic = false
+    /// Pending "did the kit's mic actually come back?" check. At most one:
+    /// a newer coordinator state supersedes whatever the last one queued.
+    @ObservationIgnored private var aiseeMicRecoveryTask: Task<Void, Never>?
     @ObservationIgnored private let speechRecognizer = HermesSpeechRecognizer()
     @ObservationIgnored private let speechSynthesizer = HermesSpeechSynthesizer()
     @ObservationIgnored private let directClient = DirectClient()
@@ -649,6 +661,21 @@ final class HermesSessionViewModel {
                 self?.show(AiSeeError.deviceWedged.localizedDescription)
             }
         }
+        // The kit is the only thing that knows whether its mic is really open:
+        // it closes and reopens it around every still, and that reopen can
+        // fail. Mirror the transitions so a mic that does not come back is
+        // noticed instead of leaving a session that listens to nothing.
+        // `coordinator` (not `self.aiseeCoordinator`) so the setup Task holds
+        // nothing; the observer itself is weak.
+        Task {
+            await coordinator.setStateObserver { [weak self] micOpen, streaming in
+                Task { @MainActor in
+                    self?.handleAiSeeCoordinatorState(
+                        micOpen: micOpen, streaming: streaming
+                    )
+                }
+            }
+        }
         observeAiSeeConnection()
         // The stored mic source outlives the app, the vendor setting can be
         // changed while it is closed, and `glassesVendor.didSet` only fires on
@@ -673,6 +700,7 @@ final class HermesSessionViewModel {
     deinit {
         sessionObserverTask?.cancel()
         activeDeviceTask?.cancel()
+        aiseeMicRecoveryTask?.cancel()
     }
 
     /// Keep `activeGlassesDevice` live. Eligibility changes whenever the
@@ -724,7 +752,56 @@ final class HermesSessionViewModel {
             #endif
         } else {
             Task { await aiseeCoordinator.detach() }
-            if glassesVendor == .aisee && isGlassesConnected { endSession() }
+            // The mic counts as much as the camera. On the phone-camera route
+            // (or after a wedge) `isGlassesConnected` is false while the kit's
+            // mic is still the session's ONLY input, so gating on the camera
+            // alone left `HermesAudioManager` in external mode with nothing
+            // feeding it: a "Listening" session that cannot hear.
+            if glassesVendor == .aisee && (isGlassesConnected || sessionUsesAiSeeMic) {
+                endSession()
+            }
+        }
+    }
+
+    /// The kit's own view of its mic and stream, including changes nobody
+    /// asked for. A `false` here is not automatically a fault: the still-photo
+    /// plan closes and reopens the mic around every shot, and the reopen path
+    /// is the kit's job, not ours. So wait out its reopen before concluding
+    /// the session has gone deaf - and re-check with the coordinator rather
+    /// than trusting the value this callback carried.
+    private func handleAiSeeCoordinatorState(micOpen: Bool, streaming: Bool) {
+        // Whatever the previous state queued is stale now.
+        aiseeMicRecoveryTask?.cancel()
+        aiseeMicRecoveryTask = nil
+        guard sessionUsesAiSeeMic, connectionState != .disconnected,
+              !micOpen else { return }
+        aiseeMicRecoveryTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.recoverAiSeeMicrophone()
+        }
+    }
+
+    /// The kit did not bring its mic back on its own. Try once more, and put
+    /// the session on the iPhone mic rather than leave it listening to
+    /// nothing. Idempotent: a mic that reopened meanwhile is left alone.
+    private func recoverAiSeeMicrophone() async {
+        aiseeMicRecoveryTask = nil
+        guard sessionUsesAiSeeMic, connectionState != .disconnected else { return }
+        if await aiseeCoordinator.micOpen { return }
+        do {
+            try await startAiSeeMicrophone()
+        } catch {
+            NSLog("[Hermes] AiSee mic did not reopen: \(error.localizedDescription)")
+            do {
+                try await fallBackToPhoneMic(
+                    notice: Self.aiseeMicFallbackNotice, stoppingCapture: true
+                )
+                speechRecognizer.restartCycle()
+            } catch {
+                show("Audio setup failed: \(error.localizedDescription)")
+                endSession()
+            }
         }
     }
 
@@ -903,13 +980,37 @@ final class HermesSessionViewModel {
         }
 
         do {
-            if usingAiSeeMic {
+            if micSource == .aiseeGlasses {
                 // The AiSee mic is not an iOS input route: the kit streams
                 // PCM over its own link. Open the audio session for
                 // playback+record (so TTS still plays), then let the kit push
                 // buffers into the same pipeline the engine tap feeds.
-                try await audioManager.startExternalCapture()
-                try await startAiSeeMicrophone()
+                //
+                // Glasses that are absent, wedged or busy demote the session
+                // to the iPhone mic - they NEVER take the voice loop down with
+                // them. Ending the session here made "AiSee mic selected, no
+                // glasses on the table" an app that refuses to listen at all.
+                if usingAiSeeMic {
+                    do {
+                        try await audioManager.startExternalCapture()
+                        try await startAiSeeMicrophone()
+                        sessionUsesAiSeeMic = true
+                    } catch {
+                        NSLog("[Hermes] AiSee mic unavailable: \(error.localizedDescription)")
+                        try await fallBackToPhoneMic(
+                            notice: Self.aiseeMicFallbackNotice,
+                            stoppingCapture: true
+                        )
+                    }
+                } else {
+                    // The glasses are simply not there. Take the phone route
+                    // up front - opening external capture first would only
+                    // arm `ingest` for a mic that is never going to send.
+                    try await fallBackToPhoneMic(
+                        notice: Self.aiseeMicFallbackNotice,
+                        stoppingCapture: false
+                    )
+                }
             } else {
                 let bluetoothActive = try await audioManager.startCapture(
                     route: micSource.captureRoute
@@ -2242,9 +2343,13 @@ final class HermesSessionViewModel {
     }
 
     /// The AiSee mic is only ever the live source when the AiSee glasses are
-    /// also the selected vendor - the setting can outlive a vendor switch.
+    /// also the selected vendor - the setting can outlive a vendor switch -
+    /// AND the glasses are actually reachable. Without the connection terms a
+    /// caller "chose" a mic that could only ever throw, so the phone route was
+    /// never picked up front and the session died on the throw instead.
     private var usingAiSeeMic: Bool {
         glassesVendor == .aisee && micSource == .aiseeGlasses
+            && aisee.state.isConnected && !aiseeWedged
     }
 
     /// Open the kit's microphone and pump its buffers into the audio manager.
@@ -2252,8 +2357,50 @@ final class HermesSessionViewModel {
     /// audio thread, and `ingest` is written for exactly that.
     private func startAiSeeMicrophone() async throws {
         let manager = audioManager
+        // `endSession()` stops the kit's mic from an unstructured `Task`, so a
+        // restart can arrive with that stop still queued on the actor - and
+        // `startMicrophone` honours a stop that lands mid-start by abandoning
+        // the mic it just opened. Draining it first (idempotent in the kit)
+        // orders the two, exactly as the mic-switch path already does.
+        await aiseeCoordinator.stopMicrophone()
         try await aiseeCoordinator.startMicrophone { buffer in
             manager.ingest(buffer)
+        }
+    }
+
+    /// Put a live session on the iPhone mic after the chosen source refused.
+    /// Persists the demotion - the chip must not keep claiming a mic that is
+    /// not there - and announces it as news. Throws only when the iPhone mic
+    /// itself cannot be opened, the one case with no session left to save.
+    private func fallBackToPhoneMic(notice: String?, stoppingCapture: Bool) async throws {
+        sessionUsesAiSeeMic = false
+        aiseeMicRecoveryTask?.cancel()
+        aiseeMicRecoveryTask = nil
+        await aiseeCoordinator.stopMicrophone()
+        if stoppingCapture {
+            // `startExternalCapture()` may already have flipped the manager
+            // into external mode before the kit refused; left set, `ingest`
+            // stays armed and `startCapture` would build an engine tap
+            // alongside it.
+            audioManager.stopCapture()
+        }
+        micSource = .phone
+        UserDefaults.standard.set(
+            MicSource.phone.rawValue, forKey: Self.micSourceKey
+        )
+        try await audioManager.startCapture(route: .phoneMic)
+        if let notice { show(notice: notice) }
+    }
+
+    /// What to say when a source did not happen and the iPhone mic is live.
+    /// `.phone` has none of its own: if it fails there is no session left to
+    /// notify about, and `switchMicSource` ends it instead.
+    private func fallbackNotice(for target: MicSource) -> String? {
+        switch target {
+        case .phone: return nil
+        case .glasses: return Self.glassesMicFallbackNotice
+        case .headset: return Self.headsetMicFallbackNotice
+        case .aiseeGlasses: return Self.aiseeMicFallbackNotice
         }
     }
 
@@ -2287,8 +2434,35 @@ final class HermesSessionViewModel {
         let start = all.firstIndex(of: micSource) ?? 0
         for step in 1...all.count {
             let candidate = all[(start + step) % all.count]
-            if await setMicSource(candidate, announceFallback: false) { return }
+            switch await switchMicSource(candidate, announceFallback: false) {
+            case .took:
+                return
+            case .failedOverToPhone, .sessionEnded:
+                // The source did not merely fail to materialise - it threw,
+                // and the state it left behind has already been reconciled.
+                // Walking on from here is how a later candidate came back
+                // "true" on a session that was no longer running.
+                return
+            case .routeUnavailable:
+                // The Bluetooth port never appeared. That is the case this
+                // walk exists for: silently try the next one.
+                continue
+            }
         }
+    }
+
+    /// What a mic switch actually did. `toggleMicSource` has to tell "that
+    /// route didn't materialise, try the next" from "that route failed and
+    /// the iPhone mic is now live" - only the first is worth walking past.
+    private enum MicSwitchOutcome {
+        /// The requested source is live.
+        case took
+        /// The Bluetooth route never appeared; the iPhone mic is live.
+        case routeUnavailable
+        /// Starting the source threw; the iPhone mic is live instead.
+        case failedOverToPhone
+        /// Not even the iPhone mic came up - the session was ended.
+        case sessionEnded
     }
 
     /// Select a mic source. Persists the preference and, when a session is
@@ -2298,26 +2472,51 @@ final class HermesSessionViewModel {
     ///   False means it didn't materialise and the iPhone mic is live.
     @discardableResult
     func setMicSource(_ target: MicSource, announceFallback: Bool = true) async -> Bool {
+        await switchMicSource(target, announceFallback: announceFallback) == .took
+    }
+
+    /// The body of `setMicSource`, reporting WHICH way a switch went rather
+    /// than just whether it took - see `MicSwitchOutcome`.
+    private func switchMicSource(
+        _ target: MicSource, announceFallback: Bool
+    ) async -> MicSwitchOutcome {
         micSource = target
         UserDefaults.standard.set(target.rawValue, forKey: Self.micSourceKey)
 
         // Nothing to route yet - the choice is remembered for next session.
-        guard connectionState != .disconnected else { return true }
+        guard connectionState != .disconnected else { return .took }
 
         audioManager.stopCapture()
+        // Set before the first await: whatever the session was listening
+        // through, it is not that any more, and the coordinator's own state
+        // observer must not read the stale value while this runs.
+        sessionUsesAiSeeMic = false
         do {
             // Whichever way this switch goes, the kit's mic must not stay
             // open: it is the source only on the AiSee branch below.
             await aiseeCoordinator.stopMicrophone()
             let bluetoothActive: Bool
-            if usingAiSeeMic {
+            let outcome: MicSwitchOutcome
+            if target == .aiseeGlasses {
+                // Absent or wedged glasses take the fallback path below rather
+                // than opening external capture for a mic that cannot answer.
+                guard usingAiSeeMic else { throw AiSeeError.notConnected }
                 try await audioManager.startExternalCapture()
                 try await startAiSeeMicrophone()
+                sessionUsesAiSeeMic = true
                 bluetoothActive = false
+                // The AiSee mic has no iOS route to report on - reaching here
+                // means `startMicrophone` didn't throw, which IS the requested
+                // source being live.
+                outcome = .took
             } else {
                 bluetoothActive = try await audioManager.startCapture(
                     route: target.captureRoute
                 )
+                // The route can differ from what was asked for; keep the label
+                // honest rather than claiming a device that didn't answer.
+                outcome = (bluetoothActive || target == .phone)
+                    ? .took : .routeUnavailable
             }
             speechRecognizer.restartCycle()
             if announceFallback, target == .glasses, !bluetoothActive {
@@ -2326,41 +2525,49 @@ final class HermesSessionViewModel {
             if announceFallback, target == .headset, !bluetoothActive {
                 show(notice: Self.headsetMicFallbackNotice)
             }
-            // The route can differ from what was asked for; keep the label
-            // honest rather than claiming a device that didn't answer.
-            // The AiSee mic has no iOS route to report on - reaching here
-            // means `startMicrophone` didn't throw, which IS the requested
-            // source being live.
-            let tookRequestedRoute =
-                bluetoothActive || target == .phone || usingAiSeeMic
-            if !tookRequestedRoute {
+            if outcome == .routeUnavailable {
                 micSource = .phone
                 UserDefaults.standard.set(
                     MicSource.phone.rawValue, forKey: Self.micSourceKey
                 )
             }
-            // HUD ⇄ GLASSES hands-free mic are mutually exclusive: the
-            // glasses show their call screen while their hands-free link
-            // is active. Headset mode leaves the lens free.
-            //
-            // This reconcile runs on BOTH exits, and reads `micSource`
-            // AFTER the fallback above - a failed switch away from the
-            // glasses mic leaves the iPhone mic live, and the HUD must
-            // come back with it. Skipping it here once stranded the lens
-            // off with no recovery but toggling the HUD setting.
-            if displayHUDEnabled, let session = deviceSession {
-                if lensBlockedByCallScreen {
-                    displayManager.stop()
-                    show(notice: "Lens HUD paused - the glasses show their call screen while their hands-free mic is on. The iPhone or a headset mic keeps the HUD visible.")
-                } else if displayManager.status == .off {
-                    displayManager.start(session: session)
-                }
-            }
-            return tookRequestedRoute
+            reconcileLensHUD()
+            return outcome
         } catch {
-            show("Mic switch failed: \(error.localizedDescription)")
-            endSession()
-            return false
+            // A mic that will not open is never a reason to kill a live
+            // session: drop to the iPhone mic and say so. Only the iPhone mic
+            // refusing as well leaves nothing to run on.
+            NSLog("[Hermes] mic switch to \(target.rawValue) failed: \(error.localizedDescription)")
+            do {
+                try await fallBackToPhoneMic(
+                    notice: fallbackNotice(for: target), stoppingCapture: true
+                )
+                speechRecognizer.restartCycle()
+                reconcileLensHUD()
+                return .failedOverToPhone
+            } catch {
+                show("Mic switch failed: \(error.localizedDescription)")
+                endSession()
+                return .sessionEnded
+            }
+        }
+    }
+
+    /// HUD ⇄ GLASSES hands-free mic are mutually exclusive: the glasses show
+    /// their call screen while their hands-free link is active. Headset mode
+    /// leaves the lens free.
+    ///
+    /// Runs on EVERY exit from a mic switch, and reads `micSource` AFTER any
+    /// fallback - a failed switch away from the glasses mic leaves the iPhone
+    /// mic live, and the HUD must come back with it. Skipping it once stranded
+    /// the lens off with no recovery but toggling the HUD setting.
+    private func reconcileLensHUD() {
+        guard displayHUDEnabled, let session = deviceSession else { return }
+        if lensBlockedByCallScreen {
+            displayManager.stop()
+            show(notice: "Lens HUD paused - the glasses show their call screen while their hands-free mic is on. The iPhone or a headset mic keeps the HUD visible.")
+        } else if displayManager.status == .off {
+            displayManager.start(session: session)
         }
     }
 
@@ -2449,6 +2656,12 @@ final class HermesSessionViewModel {
         // stopped explicitly, which also covers `stopCaptureVision()` having
         // resolved `vision` through the already-switched vendor.
         aiseeCamera.stopLiveStream()
+        // Cleared BEFORE the stop below: the coordinator's state observer hops
+        // to the main actor, so it must find "no session uses the kit's mic"
+        // already true and leave this deliberate close alone.
+        sessionUsesAiSeeMic = false
+        aiseeMicRecoveryTask?.cancel()
+        aiseeMicRecoveryTask = nil
         Task { await aiseeCoordinator.stopMicrophone() }
         deviceSession?.stop()
         deviceSession = nil
@@ -2467,6 +2680,14 @@ final class HermesSessionViewModel {
         // Nothing to create for AiSee - the kit's connection is the session.
         if glassesVendor == .aisee {
             guard aisee.state.isConnected, !aiseeWedged else { throw AiSeeError.notConnected }
+            #if canImport(RTKAIDeviceConnection)
+            // Lens can open without a voice session ever having run, and
+            // `connectGlassesSession()` is the only other place the coordinator
+            // is handed its connection - without this the camera source shot
+            // into a detached coordinator. Idempotent: `attach` resets state
+            // only when the connection identity actually changes.
+            await aiseeCoordinator.attach(aisee.connection)
+            #endif
             return
         }
         if deviceSession != nil || lensSession != nil { return }
