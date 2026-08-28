@@ -212,7 +212,13 @@ struct SettingsView: View {
     }
 
     private var deviceTitle: String {
-        hermesVM.glassesVendor.label
+        switch hermesVM.glassesVendor {
+        case .meta:
+            return wearablesVM.glasses.first?.name ?? "Ray-Ban Display"
+        case .aisee:
+            if case .connected(let name) = hermesVM.aisee.state { return name }
+            return hermesVM.glassesVendor.label
+        }
     }
 
     private var deviceStatus: String {
@@ -503,8 +509,8 @@ private struct DevicesPage: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .disabled(!hermesVM.aisee.bluetoothReady)
-                .opacity(hermesVM.aisee.bluetoothReady ? 1 : 0.5)
+                .disabled(aiseeScanDisabled)
+                .opacity(aiseeScanDisabled ? 0.5 : 1)
 
                 if !hermesVM.aisee.discovered.isEmpty {
                     ForEach(hermesVM.aisee.discovered) { device in
@@ -534,6 +540,14 @@ private struct DevicesPage: View {
         case .scanning: return "Stop scan"
         default: return "Scan for AiSee glasses"
         }
+    }
+
+    /// Bluetooth not ready can't scan at all; already `.connecting` shouldn't
+    /// be interrupted by a fresh `startScan()` from a stray tap.
+    private var aiseeScanDisabled: Bool {
+        guard hermesVM.aisee.bluetoothReady else { return true }
+        if case .connecting = hermesVM.aisee.state { return true }
+        return false
     }
 
     // MARK: - Shared (both vendors)

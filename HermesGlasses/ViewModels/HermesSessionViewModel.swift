@@ -617,6 +617,9 @@ final class HermesSessionViewModel {
             if micSource == .aiseeGlasses && glassesVendor != .aisee {
                 Task { await setMicSource(.phone) }
             }
+            if micSource == .glasses && glassesVendor == .aisee {
+                Task { await setMicSource(.phone) }
+            }
             if glassesVendor == .aisee { aisee.reconnectLastDevice() }
         }
     }
@@ -649,9 +652,16 @@ final class HermesSessionViewModel {
         observeAiSeeConnection()
         // The stored mic source outlives the app, the vendor setting can be
         // changed while it is closed, and `glassesVendor.didSet` only fires on
-        // a live switch - so a Meta launch can come up with the (unroutable)
-        // AiSee mic selected. Reconcile it here, once, at load.
+        // a live switch - so a launch can come up with a mic source that's
+        // unroutable under the loaded vendor (AiSee mic under Meta, or Meta's
+        // HFP call screen under AiSee). Reconcile both here, once, at load.
         if micSource == .aiseeGlasses && glassesVendor != .aisee {
+            micSource = .phone
+            UserDefaults.standard.set(
+                MicSource.phone.rawValue, forKey: Self.micSourceKey
+            )
+        }
+        if micSource == .glasses && glassesVendor == .aisee {
             micSource = .phone
             UserDefaults.standard.set(
                 MicSource.phone.rawValue, forKey: Self.micSourceKey
