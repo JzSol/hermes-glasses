@@ -625,14 +625,31 @@ final class HermesSessionViewModel {
         didSet {
             guard oldValue != glassesVendor else { return }
             UserDefaults.standard.set(glassesVendor.rawValue, forKey: GlassesVendor.storageKey)
-            if isGlassesConnected || connectionState != .disconnected { endSession() }
-            if micSource == .aiseeGlasses && glassesVendor != .aisee {
-                Task { await setMicSource(.phone) }
+            // All of it off the SwiftUI setter: this runs inside the
+            // observation transaction that the picker's write opened, and
+            // `endSession()` mutates a dozen observed properties (plus the two
+            // mic hops below already needed a Task). One hop keeps the order
+            // deterministic instead of interleaving a synchronous teardown
+            // with two async mic switches.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if self.isGlassesConnected || self.connectionState != .disconnected {
+                    self.endSession()
+                }
+                // Lens can be streaming with no session at all, and
+                // `endSession()` is where that stream is normally stopped -
+                // so a Lens-only stream survives a vendor switch unless it is
+                // stopped here too. It belongs to the vendor just left either
+                // way, and it is a no-op under Meta.
+                self.aiseeCamera.stopLiveStream()
+                if self.micSource == .aiseeGlasses && self.glassesVendor != .aisee {
+                    await self.setMicSource(.phone)
+                }
+                if self.micSource == .glasses && self.glassesVendor == .aisee {
+                    await self.setMicSource(.phone)
+                }
+                if self.glassesVendor == .aisee { self.aisee.reconnectLastDevice() }
             }
-            if micSource == .glasses && glassesVendor == .aisee {
-                Task { await setMicSource(.phone) }
-            }
-            if glassesVendor == .aisee { aisee.reconnectLastDevice() }
         }
     }
 

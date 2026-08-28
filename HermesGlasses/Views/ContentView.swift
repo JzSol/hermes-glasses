@@ -301,10 +301,14 @@ struct ContentView: View {
                     .buttonStyle(.plain)
                 }
 
-                HermesStatusPill(
-                    text: hermesVM.displayHUDEnabled ? "HUD on" : "HUD off",
-                    tinted: hermesVM.displayHUDEnabled
-                )
+                // AiSee has no lens: a HUD chip there reports a setting that
+                // cannot do anything, next to glasses that have no display.
+                if hermesVM.glassesSupportsDisplay {
+                    HermesStatusPill(
+                        text: hermesVM.displayHUDEnabled ? "HUD on" : "HUD off",
+                        tinted: hermesVM.displayHUDEnabled
+                    )
+                }
 
                 // Live capture indicator. The entry point is the Record quick
                 // action below - this only earns its place while a capture is

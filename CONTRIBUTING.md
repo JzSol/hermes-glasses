@@ -33,9 +33,7 @@ xcrun swiftc \
 **Glasses vendor tests** (pure logic: vendor eligibility, routing)
 
 ```bash
-xcrun swiftc \
-  HermesGlasses/ViewModels/VisionRouting.swift \
-  HermesGlasses/Models/GlassesVendor.swift \
+xcrun swiftc HermesGlasses/Services/GlassesVendor.swift \
   tests/glasses-vendor/main.swift -o /tmp/glasses-vendor-tests && /tmp/glasses-vendor-tests
 ```
 
