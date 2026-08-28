@@ -261,3 +261,28 @@ settle; where `glasses_vendor` lives.
   without a wedge across 10 repetitions.
 - With vendor = Meta: no behaviour change (regression pass of the existing
   photo test, Lens, voice loop).
+
+## Part A outcome (2026-08-28)
+
+Sample app + `AiSeeGlassKit` built at `~/Documents/GitHub/aisee-glass-sample` (main @ `b56e582`).
+No hardware was available during implementation; the README's Scenario matrix (A control, D mic,
+E stream, Both, Reconnect) is the acceptance gate and must be run before Part B starts.
+
+Kit surface grew beyond the original contracts, all in Part B's favour:
+`AiSeeDeviceCoordinator.setStateObserver(_:)` (micOpen/streaming changes), public `onTerminate`
+on `startLiveStream`, `unavailableUntilReconnect` wedge latch (cleared by `attach`), `detach()`,
+`#else` stub parity; `AiSeeFrame.image` is rendered lazily from the pixel buffer.
+
+Deferred to Part B (from final review; see git history of the sample repo for context):
+- `capturePhoto()` returns JPEG `Data`; an `AiSeeFrame`-returning sibling would avoid a JPEG
+  round-trip on the serve-from-live-frame path for YOLO.
+- Service→coordinator wiring (`attach` on every connection change) is the host's job; nothing in
+  the kit enforces it.
+- `attach(newConnection)` mid-mic/stream drops the old objects without local release
+  (`resetDeviceState()` should call `releaseAfterTermination()` / invalidate the decoder).
+- Reopen-after-capture under real `Task` cancellation may itself throw; Hermes should run the
+  reopen in a detached task.
+- `unavailableUntilReconnect` is not part of the state-observer signature; hosts learn of a
+  wedge from the thrown `capturePhoto`.
+- Unverified offline: `PCMResampler(audioFrom:)` self-registration and Int16 `outDataFormat`
+  (disassembly suggests both hold); the SDK's `stop()` as a barrier for `didGenerate`.
