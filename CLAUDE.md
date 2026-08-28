@@ -223,6 +223,29 @@ photo via the DAT camera API.
   calls `pinVisionRoute`. Without this, a momentary SDK flap redirected a
   capture to a camera that wasn't running (a "remember this person" note
   saved with no photo).
+- **Two glasses vendors.** `GlassesVendor` (`glasses_vendor`: `meta` | `aisee`)
+  decides what the glasses route means; `VisionRoute` is still `{glasses, phone}`.
+  `HermesSessionViewModel.glassesAvailable`, `vision`, `connectGlassesSession`,
+  `ensureCameraSession`, permission and display calls branch on it. Switching
+  vendor ends the session.
+- **AiSee = `Services/AiSee/` (AiSeeGlassKit, copied verbatim from
+  `~/Documents/GitHub/aisee-glass-sample`).** Fix kit bugs there first, then
+  re-copy. `AiSeeDeviceCoordinator` is the only thing that starts/stops the SDK;
+  `AiSeeSequencing` encodes the hardware rules: mic and camera never open
+  together (mic closes 400 ms + 300 ms before a still and reopens after),
+  stills served from the live frame while streaming, 1 s settle after a stream
+  stops. Breaking these wedges the glasses (`device status 4`) until a power
+  cycle — `aiseeWedged` takes the route out of service until reconnect.
+- **RTK frameworks are device-only.** Linked/embedded via `[sdk=iphoneos*]`
+  settings; excluded on the simulator; all kit SDK code is behind
+  `#if canImport(RTKAIDeviceConnection)` with stubs. Never add an unconditional
+  `import RTK…`.
+- **AiSee mic bypasses AVAudioEngine.** `HermesAudioManager.startExternalCapture()`
+  + `ingest(_:)` push the kit's 16 kHz Int16 buffers through `processInputBuffer`,
+  so recognizer, VAD, recording and level work unchanged. Never toggle
+  `AVAudioSession` around a capture (FINDINGS §F).
+- **Livestream needs the HotspotConfiguration entitlement** (already present)
+  and an iOS local-network/Wi-Fi join prompt on first use.
 - **The visual language lives in `Views/HermesDesign.swift`** (imported
   from the "Hermes Glasses UI" design doc, turns 4 + 5). ONE accent -
   terracotta `#C4622D` and its shades; warm neutrals (cream `#F7F5F2`

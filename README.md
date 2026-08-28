@@ -72,6 +72,10 @@ A standalone, MIT-licensed project.
   on the lens, and a full map screen (with place search) in the app
 - 📖 **Definitions** - "what is a quokka?" answers as usual and puts a
   Wikipedia image next to the text on the lens
+- 👓 **AiSee glasses** (camera, live feed, mic; no HUD) - a second glasses
+  vendor alongside Meta Ray-Ban, selectable in Settings › Devices › Glasses
+  picker. Camera and live feed work the same as Ray-Ban; external mic captures
+  audio from the AiSee glasses instead of the iPhone
 
 ### Remember
 
@@ -260,6 +264,18 @@ Bridge-side unit tests:
 
 ```bash
 cd bridge && python -m unittest test_hermes_bridge -v
+```
+
+### Build for device and simulator
+
+```bash
+# iOS device
+xcodebuild -project HermesGlasses.xcodeproj -scheme HermesGlasses \
+  -destination 'generic/platform=iOS' build
+
+# iOS simulator
+xcodebuild -project HermesGlasses.xcodeproj -scheme HermesGlasses \
+  -destination 'generic/platform=iOS Simulator' build
 ```
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the standalone Swift provider

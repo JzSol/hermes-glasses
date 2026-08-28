@@ -5,11 +5,18 @@ Thanks for your interest! This project has two parts: a SwiftUI iOS app
 
 ## Build & test
 
-**iOS app**
+**iOS app - device**
 
 ```bash
 xcodebuild -project HermesGlasses.xcodeproj -scheme HermesGlasses \
   -destination 'generic/platform=iOS' build
+```
+
+**iOS app - simulator**
+
+```bash
+xcodebuild -project HermesGlasses.xcodeproj -scheme HermesGlasses \
+  -destination 'generic/platform=iOS Simulator' build
 ```
 
 **Provider unit tests** (standalone, no XCTest target)
@@ -23,7 +30,16 @@ xcrun swiftc \
   tests/providers/main.swift -o /tmp/provider-tests && /tmp/provider-tests
 ```
 
-Other standalone suites live under `tests/` (`device-context`, `display-logic`, `glasses-vendor`)
+**Glasses vendor tests** (pure logic: vendor eligibility, routing)
+
+```bash
+xcrun swiftc \
+  HermesGlasses/ViewModels/VisionRouting.swift \
+  HermesGlasses/Models/GlassesVendor.swift \
+  tests/glasses-vendor/main.swift -o /tmp/glasses-vendor-tests && /tmp/glasses-vendor-tests
+```
+
+Other standalone suites live under `tests/` (`device-context`, `display-logic`)
 and follow the same `swiftc <source> tests/<x>/main.swift` pattern.
 
 **Bridge**
