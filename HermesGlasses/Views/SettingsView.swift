@@ -781,7 +781,9 @@ private struct VoicePage: View {
                         }
                     }
                 )) {
-                    ForEach(MicSource.allCases, id: \.self) { source in
+                    // Not `MicSource.allCases`: the AiSee mic only exists
+                    // when the AiSee glasses are the selected vendor.
+                    ForEach(hermesVM.availableMicSources, id: \.self) { source in
                         Text(source.label).tag(source)
                     }
                 }

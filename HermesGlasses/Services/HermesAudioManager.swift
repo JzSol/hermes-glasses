@@ -122,6 +122,17 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     private var isCapturing: Bool = false
     private var configChangeObserver: NSObjectProtocol?
 
+    /// External-capture mode: no AVAudioEngine, no tap - buffers are pushed
+    /// in through `ingest` by whoever owns the microphone (the AiSee kit).
+    ///
+    /// Written from the session actor and read on the SDK's audio thread at
+    /// ~50 buffers a second, so it lives behind the same lock as the rest of
+    /// the tap state rather than as a bare `Bool`.
+    private var externalCapture: Bool {
+        get { tapLock.withLockUnchecked { $0.externalCapture } }
+        set { tapLock.withLockUnchecked { $0.externalCapture = newValue } }
+    }
+
     /// Everything the tap block touches. `startCapture`/`rebuildEngine`/
     /// `stopCapture` run off the main actor (they are `async` on a
     /// non-isolated class) while the tap is live on the audio-render thread,
@@ -136,6 +147,8 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         // VAD
         var isSpeechActive: Bool = false
         var silenceCounter: Int = 0
+        // True while buffers arrive via `ingest` instead of an engine tap
+        var externalCapture: Bool = false
     }
 
     private let tapLock = OSAllocatedUnfairLock(uncheckedState: TapState())
@@ -304,6 +317,55 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         return isUsingBluetoothInput
     }
 
+    /// Start a capture that is fed from OUTSIDE - the AiSee kit delivers its
+    /// own 16 kHz PCM over Bluetooth, so there is no iOS input route to open.
+    ///
+    /// The audio session is configured exactly like the phone route
+    /// (`.playAndRecord`, so TTS still plays), but no AVAudioEngine is built,
+    /// no tap is installed and no configuration-change observer is registered:
+    /// there is no engine whose graph a route change could invalidate. Buffers
+    /// arrive through `ingest`.
+    func startExternalCapture() async throws {
+        guard await requestMicrophonePermission() else {
+            logger.error("Microphone permission denied")
+            throw HermesAudioError.microphonePermissionDenied
+        }
+
+        let session = AVAudioSession.sharedInstance()
+        // .allowBluetoothA2DP (not HFP): the glasses' mic is NOT an iOS input
+        // here, so nothing wants a hands-free link - but TTS should still be
+        // able to land on A2DP glasses/earbuds when a pair is connected.
+        try session.setCategory(
+            .playAndRecord,
+            mode: .default,
+            options: [.defaultToSpeaker, .allowBluetoothA2DP]
+        )
+        try session.setActive(true)
+
+        // The incoming format belongs to the kit, not to the last iOS route -
+        // drop any converter cached for that route.
+        clearConverter()
+        tapLock.withLockUnchecked { state in
+            state.bufferCount = 0
+            state.externalCapture = true
+        }
+        isCapturing = true
+
+        logger.info("External capture active (buffers arrive via ingest). Output route: \(session.currentRoute.outputs.first?.portName ?? "none", privacy: .public)")
+        sendDebug("external capture started")
+    }
+
+    /// Feed one buffer into the same pipeline the engine tap uses.
+    ///
+    /// Called on the provider's audio thread (~50 buffers/s). Everything
+    /// downstream is already written for the audio-render thread, so this is
+    /// safe from any thread; it must never be called on the main actor's
+    /// behalf expecting main-actor isolation.
+    func ingest(_ buffer: AVAudioPCMBuffer) {
+        guard externalCapture else { return }
+        processInputBuffer(buffer)
+    }
+
     /// Replace the engine with a fresh instance, discarding all cached
     /// graph state. The old engine (and its attached player) is released.
     private func rebuildEngine() {
@@ -326,15 +388,22 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     }
 
     func stopCapture() {
+        let wasExternal = externalCapture
         isCapturing = false
+        externalCapture = false
         clipPlayer?.stop()
         clipPlayer = nil
         if let observer = configChangeObserver {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil
         }
-        inputNode.removeTap(onBus: 0)
-        audioEngine.stop()
+        // External capture never built an engine or installed a tap.
+        // `inputNode` is lazy - touching it here would instantiate the input
+        // hardware unit for no reason.
+        if !wasExternal {
+            inputNode.removeTap(onBus: 0)
+            audioEngine.stop()
+        }
         clearConverter()
         try? AVAudioSession.sharedInstance().setActive(false)
     }
@@ -506,9 +575,11 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
 
         // (Re)build the converter whenever the incoming format changes -
         // route switches change the sample rate under our feet. Building one
-        // allocates, so it happens outside the critical section.
+        // allocates, so it happens outside the critical section. A buffer
+        // that already IS the capture format skips the converter entirely.
+        let passthrough = isPassthrough(buffer.format)
         var converter = entry.converter
-        if converter == nil {
+        if !passthrough, converter == nil {
             converter = AVAudioConverter(from: buffer.format, to: captureFormat)
             let format = buffer.format
             tapLock.withLockUnchecked { state in
@@ -516,7 +587,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
                 state.converterInputFormat = format
             }
         }
-        guard let converter else { return }
+        if !passthrough, converter == nil { return }
 
         let count = entry.count
         if count == 1 || count % 100 == 0 {
@@ -534,7 +605,14 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             DispatchQueue.main.async { onLevel(max(0, level)) }
         }
 
-        let outputBuffer = convertBuffer(buffer, using: converter)
+        let outputBuffer: AVAudioPCMBuffer?
+        if passthrough {
+            outputBuffer = buffer
+        } else if let converter {
+            outputBuffer = convertBuffer(buffer, using: converter)
+        } else {
+            outputBuffer = nil
+        }
         guard let outputBuffer else { return }
 
         guard let channelData = outputBuffer.int16ChannelData else { return }
@@ -616,6 +694,24 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         case silenceStarted
     }
 
+    /// True when `buffer`'s format can go downstream untouched.
+    ///
+    /// Everything after conversion reads `int16ChannelData[0]` and
+    /// `frameLength`, and for a MONO Int16 buffer that is the same memory
+    /// whether the format calls itself interleaved or not - so an exact
+    /// format match is not required, only Int16 / same rate / one channel.
+    /// That matters for the AiSee kit, whose sink emits 16 kHz Int16 mono
+    /// marked `interleaved: true` while `captureFormat` is the same thing
+    /// marked non-interleaved: without this the hot path (~50 buffers/s)
+    /// would run an AVAudioConverter that does nothing.
+    private func isPassthrough(_ format: AVAudioFormat) -> Bool {
+        if format == captureFormat { return true }
+        return format.commonFormat == captureFormat.commonFormat
+            && format.sampleRate == captureFormat.sampleRate
+            && format.channelCount == 1
+            && captureFormat.channelCount == 1
+    }
+
     private func convertBuffer(
         _ buffer: AVAudioPCMBuffer,
         using converter: AVAudioConverter
@@ -657,16 +753,32 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         DispatchQueue.main.async { handler(message) }
     }
 
-    /// RMS of the untouched float buffer straight from the input tap
+    /// RMS of the untouched buffer straight off the input, before conversion.
+    ///
+    /// An engine tap hands over float buffers; the AiSee kit hands over Int16
+    /// ones, and an Int16 buffer's `floatChannelData` is nil. Without the
+    /// second branch this returned -1 for every AiSee buffer, so the UI level
+    /// meter (which clamps at 0) sat dead flat for the whole session and the
+    /// periodic "levels raw=..." diagnostic was meaningless.
     private func rawFloatRMS(_ buffer: AVAudioPCMBuffer) -> Float {
-        guard let channels = buffer.floatChannelData, buffer.frameLength > 0 else {
-            return -1
-        }
+        guard buffer.frameLength > 0 else { return -1 }
         let n = Int(buffer.frameLength)
         var sum: Float = 0
-        for i in 0..<n {
-            let s = channels[0][i]
-            sum += s * s
+        if let channels = buffer.floatChannelData {
+            for i in 0..<n {
+                let s = channels[0][i]
+                sum += s * s
+            }
+        } else if let channels = buffer.int16ChannelData {
+            // `stride` is 1 for non-interleaved and the channel count for
+            // interleaved, so this reads channel 0 either way.
+            let step = buffer.stride
+            for i in 0..<n {
+                let s = Float(channels[0][i * step]) / 32768.0
+                sum += s * s
+            }
+        } else {
+            return -1
         }
         return sqrt(sum / Float(n))
     }
