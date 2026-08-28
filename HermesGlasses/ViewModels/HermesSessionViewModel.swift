@@ -354,6 +354,12 @@ final class HermesSessionViewModel {
     let aisee: AiSeeConnectionService
     @ObservationIgnored private let aiseeCoordinator: AiSeeDeviceCoordinator
     @ObservationIgnored private let aiseeCamera: AiSeeCameraSource
+    /// Last seen "is the kit connected" - the handler must react to the
+    /// TRANSITION, not to the state it finds. A real link drop runs
+    /// `.disconnected` -> `startScan()` -> `.scanning` synchronously inside
+    /// the kit, so by the time the observer's main-actor hop runs, the
+    /// absolute state is `.scanning` and the drop would go unnoticed.
+    @ObservationIgnored private var aiseeWasConnected = false
     /// True after `AiSeeError.deviceWedged` until the kit reconnects - only a
     /// power cycle clears the camera wedge, so the route stays out of service.
     var aiseeWedged = false
@@ -608,7 +614,9 @@ final class HermesSessionViewModel {
             guard oldValue != glassesVendor else { return }
             UserDefaults.standard.set(glassesVendor.rawValue, forKey: GlassesVendor.storageKey)
             if isGlassesConnected || connectionState != .disconnected { endSession() }
-            if micSource == .aiseeGlasses && glassesVendor != .aisee { micSource = .phone }
+            if micSource == .aiseeGlasses && glassesVendor != .aisee {
+                Task { await setMicSource(.phone) }
+            }
             if glassesVendor == .aisee { aisee.reconnectLastDevice() }
         }
     }
@@ -624,6 +632,7 @@ final class HermesSessionViewModel {
         self.aisee = AiSeeConnectionService(log: aiseeLog)
         self.aiseeCoordinator = coordinator
         self.aiseeCamera = AiSeeCameraSource(coordinator: coordinator)
+        self.aiseeWasConnected = self.aisee.state.isConnected
         reloadDirectProviderState()
         observeActiveDevice()
         // Wired at init, NOT at session start: the map screen can start a
@@ -684,20 +693,18 @@ final class HermesSessionViewModel {
     }
 
     private func handleAiSeeStateChange() {
-        #if canImport(RTKAIDeviceConnection)
-        let connection = aisee.connection
-        #endif
-        switch aisee.state {
-        case .connected:
+        let nowConnected = aisee.state.isConnected
+        defer { aiseeWasConnected = nowConnected }
+        guard nowConnected != aiseeWasConnected else { return }
+        if nowConnected {
             aiseeWedged = false
             #if canImport(RTKAIDeviceConnection)
+            let connection = aisee.connection
             Task { await aiseeCoordinator.attach(connection) }
             #endif
-        case .disconnected:
+        } else {
             Task { await aiseeCoordinator.detach() }
             if glassesVendor == .aisee && isGlassesConnected { endSession() }
-        case .scanning, .connecting:
-            break
         }
     }
 
@@ -2358,12 +2365,17 @@ final class HermesSessionViewModel {
         encounterPhotoTask = nil
         awaitingEncounterNote = false
         pendingPhoto = nil
-        if glassesVendor == .aisee {
-            // Via the adapter, so its own `isStreaming` latch clears too - an
-            // unclean drop would otherwise refuse the next stream as in-use.
-            aiseeCamera.stopLiveStream()
-            Task { await aiseeCoordinator.stopMicrophone() }
-        }
+        // Deliberately NOT gated on the vendor: `glassesVendor.didSet` calls
+        // endSession() AFTER storing the new vendor, so a switch away from
+        // AiSee would leave its stream and mic running. Both are no-ops on the
+        // Meta path. Via the adapter, so its own `isStreaming` latch clears
+        // too - otherwise the next stream is refused as already in use.
+        // Together with `cameraManager.reset()` and
+        // `phoneCameraManager.stopLiveStream()` above, all three sources are
+        // stopped explicitly, which also covers `stopCaptureVision()` having
+        // resolved `vision` through the already-switched vendor.
+        aiseeCamera.stopLiveStream()
+        Task { await aiseeCoordinator.stopMicrophone() }
         deviceSession?.stop()
         deviceSession = nil
         isGlassesConnected = false
