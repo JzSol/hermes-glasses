@@ -61,15 +61,15 @@
 		<true/>
 	</dict>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Hermes Glasses needs Bluetooth to connect to your Meta Ray-Ban glasses for voice conversations.</string>
+	<string>Hermes connects to your smart glasses (Meta Ray-Ban or AiSee) over Bluetooth.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Hermes Glasses uses this iPhone's camera as the eye in phone mode, when you have no glasses on: the live view stays on your phone and a frame is sent to the assistant only when you ask about what you're looking at.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Hermes Glasses connects to the Hermes bridge running on your Mac over the local network.</string>
+	<string>Hermes Glasses connects to the Hermes bridge running on your Mac over the local network and receives AiSee glasses video over a local Wi-Fi hotspot.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Hermes Glasses shares your approximate location with the assistant so it can answer questions about where you are, nearby places, and the weather.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Hermes Glasses uses the microphone on your glasses to capture your voice for the AI assistant.</string>
+	<string>Hermes listens through your iPhone or your glasses&apos; microphone so you can talk to your assistant.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>Hermes Glasses tells the assistant whether you're walking, driving, or still, so answers fit what you're doing.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
@@ -80,6 +80,7 @@
 	<array>
 		<string>audio</string>
 		<string>bluetooth-peripheral</string>
+		<string>bluetooth-central</string>
 		<string>external-accessory</string>
 	</array>
 	<key>UIBackgroundTaskIdentifier</key>
