@@ -298,7 +298,14 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         }
 
         isCapturing = true
-        tapLock.withLockUnchecked { $0.bufferCount = 0 }
+        tapLock.withLockUnchecked { state in
+            state.bufferCount = 0
+            // Defensive: an engine tap and `ingest` must never both feed the
+            // pipeline. `stopCapture()` clears this, but a caller that switched
+            // routes without one would otherwise leave `ingest` armed alongside
+            // the tap installed below.
+            state.externalCapture = false
+        }
         observeConfigurationChanges()
         installTap()
         do {
@@ -320,8 +327,9 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     /// Start a capture that is fed from OUTSIDE - the AiSee kit delivers its
     /// own 16 kHz PCM over Bluetooth, so there is no iOS input route to open.
     ///
-    /// The audio session is configured exactly like the phone route
-    /// (`.playAndRecord`, so TTS still plays), but no AVAudioEngine is built,
+    /// The audio session is configured like the phone route (`.playAndRecord`,
+    /// so TTS still plays), plus `.allowBluetoothA2DP` so TTS can reach A2DP
+    /// glasses/earbuds. No AVAudioEngine is built,
     /// no tap is installed and no configuration-change observer is registered:
     /// there is no engine whose graph a route change could invalidate. Buffers
     /// arrive through `ingest`.
@@ -340,6 +348,10 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             mode: .default,
             options: [.defaultToSpeaker, .allowBluetoothA2DP]
         )
+        // Parity with the phone route's fallback: a preferred input left over
+        // from a Bluetooth route would keep pointing the session at a mic this
+        // capture does not use.
+        try? session.setPreferredInput(nil)
         try session.setActive(true)
 
         // The incoming format belongs to the kit, not to the last iOS route -

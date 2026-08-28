@@ -60,8 +60,7 @@ struct SettingsView: View {
                     HermesDeviceCard(
                         title: deviceTitle,
                         status: deviceStatus,
-                        dot: hermesVM.isGlassesConnected
-                            ? HermesTheme.online : .gray
+                        dot: deviceDotConnected ? HermesTheme.online : .gray
                     ) {
                         Image(systemName: "chevron.right")
                             .font(.system(size: 13, weight: .semibold))
@@ -221,10 +220,37 @@ struct SettingsView: View {
         }
     }
 
+    /// The dot must answer the same question `deviceStatus` does. Under AiSee
+    /// that is the kit's own link, not `isGlassesConnected` - which only goes
+    /// true once a session has claimed the glasses, so connected AiSee glasses
+    /// with no session running showed "Connected" beside a grey dot.
+    private var deviceDotConnected: Bool {
+        switch hermesVM.glassesVendor {
+        case .meta: return hermesVM.isGlassesConnected
+        case .aisee: return hermesVM.aisee.state.isConnected
+        }
+    }
+
     private var deviceStatus: String {
-        let connection = hermesVM.isGlassesConnected ? "Connected" : "Not connected"
-        let count = wearablesVM.devices.count
-        return "\(connection) · \(count) device\(count == 1 ? "" : "s")"
+        switch hermesVM.glassesVendor {
+        case .meta:
+            let connection = hermesVM.isGlassesConnected ? "Connected" : "Not connected"
+            let count = wearablesVM.devices.count
+            return "\(connection) · \(count) device\(count == 1 ? "" : "s")"
+        case .aisee:
+            // The Meta device list says nothing about AiSee - it pairs over
+            // its own Bluetooth link, so its own state is the status. Reading
+            // `wearablesVM.devices.count` here reported "0 devices" beside a
+            // connected pair of AiSee glasses.
+            switch hermesVM.aisee.state {
+            case .connected:
+                guard let battery = hermesVM.aisee.battery else { return "Connected" }
+                return "Connected · \(battery)%"
+            case .connecting: return "Connecting…"
+            case .scanning: return "Scanning…"
+            case .disconnected: return "Not connected"
+            }
+        }
     }
 
     private var assistantValue: String {
@@ -502,7 +528,14 @@ private struct DevicesPage: View {
                         hermesVM.aisee.startScan()
                     }
                 } label: {
-                    HermesRow(title: aiseeScanButtonTitle, showsChevron: false) {
+                    HermesRow(
+                        title: aiseeScanButtonTitle,
+                        // The row is disabled without Bluetooth (see
+                        // `aiseeScanDisabled`); say why, or it reads as broken.
+                        subtitle: hermesVM.aisee.bluetoothReady
+                            ? nil : "Bluetooth unavailable",
+                        showsChevron: false
+                    ) {
                         if case .connecting = hermesVM.aisee.state {
                             ProgressView().scaleEffect(0.7)
                         }
