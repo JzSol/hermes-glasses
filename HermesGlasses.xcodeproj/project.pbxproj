@@ -97,6 +97,7 @@
 		AAAA00000000000000000804 /* MWDATDisplay in Frameworks */ = {isa = PBXBuildFile; productRef = AAAA00000000000000000704 /* MWDATDisplay */; };
 		AAAA00000000000000000A01 /* AiSeeConnectionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A0A /* AiSeeConnectionService.swift */; };
 		AAAA00000000000000000A02 /* AiSeeDeviceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A0B /* AiSeeDeviceCoordinator.swift */; };
+		AAAA00000000000000000A54 /* AiSeeCameraSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A53 /* AiSeeCameraSource.swift */; };
 		AAAA00000000000000000A03 /* AiSeeH264Decoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A0C /* AiSeeH264Decoder.swift */; };
 		AAAA00000000000000000A04 /* AiSeeLiveStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A0D /* AiSeeLiveStream.swift */; };
 		AAAA00000000000000000A05 /* AiSeeMicrophone.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A0E /* AiSeeMicrophone.swift */; };
@@ -236,6 +237,7 @@
 		AAAA00000000000000000814 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000818 /* HermesDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesDesign.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000820 /* NavigationMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationMapView.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000A53 /* AiSeeCameraSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeCameraSource.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000A0A /* AiSeeConnectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeConnectionService.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000A0B /* AiSeeDeviceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeDeviceCoordinator.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000A0C /* AiSeeH264Decoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeH264Decoder.swift; sourceTree = "<group>"; };
@@ -402,6 +404,7 @@
 				AAAA00000000000000000806 /* LensLogAggregator.swift */,
 				AAAA00000000000000000808 /* LensSession.swift */,
 				AAAA00000000000000000810 /* LensSessionStore.swift */,
+				AAAA00000000000000000A53 /* AiSeeCameraSource.swift */,
 				AAAA00000000000000000A0A /* AiSeeConnectionService.swift */,
 				AAAA00000000000000000A0B /* AiSeeDeviceCoordinator.swift */,
 				AAAA00000000000000000A0C /* AiSeeH264Decoder.swift */,
@@ -611,6 +614,7 @@
 				AAAA00000000000000000813 /* ShareSheet.swift in Sources */,
 				AAAA00000000000000000817 /* HermesDesign.swift in Sources */,
 				AAAA00000000000000000819 /* NavigationMapView.swift in Sources */,
+				AAAA00000000000000000A54 /* AiSeeCameraSource.swift in Sources */,
 				AAAA00000000000000000A01 /* AiSeeConnectionService.swift in Sources */,
 				AAAA00000000000000000A02 /* AiSeeDeviceCoordinator.swift in Sources */,
 				AAAA00000000000000000A03 /* AiSeeH264Decoder.swift in Sources */,
