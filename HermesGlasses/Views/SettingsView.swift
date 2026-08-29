@@ -1329,6 +1329,11 @@ private struct DeveloperPage: View {
 
     private static let tests = ["Bridge", "Sound", "Photo", "Query", "Visual", "Display"]
 
+    /// Display is a Ray-Ban Display feature; AiSee has no lens.
+    private var tests: [String] {
+        Self.tests.filter { $0 != "Display" || hermesVM.glassesSupportsDisplay }
+    }
+
     var body: some View {
         HermesScrollPage {
             HermesNotice(
@@ -1344,7 +1349,7 @@ private struct DeveloperPage: View {
                         ),
                         spacing: 8
                     ) {
-                        ForEach(Self.tests, id: \.self) { name in
+                        ForEach(tests, id: \.self) { name in
                             testButton(name)
                         }
                     }
@@ -1359,6 +1364,21 @@ private struct DeveloperPage: View {
                             .foregroundStyle(HermesTheme.destructive)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .lineLimit(3)
+                    }
+                    if let photo = hermesVM.lastTestPhoto {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Image(uiImage: photo)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxHeight: 180)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            if let source = hermesVM.lastTestPhotoSource {
+                                Text(source)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 .padding(16)
@@ -1377,13 +1397,19 @@ private struct DeveloperPage: View {
                 HermesDivider()
                 HermesRow("Bridge", value: bridgeText, showsChevron: false)
                 HermesDivider()
-                HermesRow("Glasses display", value: displayText, showsChevron: false)
+                HermesRow("Vision route", value: visionRouteText, showsChevron: false)
                 HermesDivider()
-                HermesRow(
-                    "Camera permission",
-                    value: cameraText,
-                    showsChevron: false
-                )
+                HermesRow("Audio output", value: hermesVM.lastTestAudioRoute ?? "Run the Sound test", showsChevron: false)
+                if hermesVM.glassesVendor == .meta {
+                    HermesDivider()
+                    HermesRow("Glasses display", value: displayText, showsChevron: false)
+                    HermesDivider()
+                    HermesRow(
+                        "Camera permission",
+                        value: cameraText,
+                        showsChevron: false
+                    )
+                }
             }
         }
         .navigationTitle("Developer")
@@ -1428,6 +1454,13 @@ private struct DeveloperPage: View {
         case "Visual": await hermesVM.testVisualQuery()
         case "Display": await hermesVM.testDisplay()
         default: break
+        }
+    }
+
+    private var visionRouteText: String {
+        switch hermesVM.visionRoute {
+        case .glasses: return hermesVM.glassesVendor.cameraLabel
+        case .phone: return "iPhone camera"
         }
     }
 
