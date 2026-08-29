@@ -110,6 +110,11 @@ final class HermesSessionViewModel {
     /// this is set explicitly by `runTest` so the Developer panel always
     /// shows the outcome of the test that was just run.
     var lastTestFailure: String? = nil
+    /// Outputs of the last Developer-panel Photo / Sound tests, so the panel
+    /// can show what actually happened instead of burying it in the chat.
+    var lastTestPhoto: UIImage? = nil
+    var lastTestPhotoSource: String? = nil
+    var lastTestAudioRoute: String? = nil
     /// Glasses camera permission (granted in the Meta AI app); nil = unknown
     var cameraPermissionGranted: Bool? = nil
     /// Preferred microphone source; the banner chip shows the ACTUAL route
@@ -270,7 +275,7 @@ final class HermesSessionViewModel {
         let raw = UserDefaults.standard.string(forKey: "assistant_backend") ?? ""
         // Migrate the old "claudeDirect" raw value to "direct".
         if raw == "claudeDirect" { return .direct }
-        return AssistantBackend(rawValue: raw) ?? .bridge
+        return AssistantBackend(rawValue: raw) ?? .direct
     }() {
         didSet { UserDefaults.standard.set(backend.rawValue, forKey: "assistant_backend") }
     }
@@ -2909,13 +2914,27 @@ final class HermesSessionViewModel {
                     throw TestFailure("Camera permission denied in Meta AI app")
                 }
             }
+            if glassesVendor == .aisee && visionRoute == .phone {
+                let reason: String
+                if !aisee.state.isConnected {
+                    reason = "AiSee glasses are not connected"
+                } else if aiseeWedged {
+                    reason = "AiSee camera is wedged - restart the glasses"
+                } else {
+                    reason = "phone mode is set to Always (Settings > Devices)"
+                }
+                throw TestFailure("Glasses camera not in use: \(reason)")
+            }
+            let source = vision.sourceLabel
             let photo = try await withCameraSession {
                 try await captureVisionPhoto()
             }
             pendingPhoto = photo
+            lastTestPhoto = UIImage(data: photo)
+            lastTestPhotoSource = "\(photo.count / 1024) KB from the \(source)"
             addTurn(
                 userText: "[Test Photo]",
-                agentText: "Captured \(photo.count / 1024) KB from the \(vision.sourceLabel)"
+                agentText: "Captured \(photo.count / 1024) KB from the \(source)"
             )
         }
     }
@@ -3006,6 +3025,10 @@ final class HermesSessionViewModel {
                 connectionState = .speaking
             }
             await audioManager.playResponse(HermesAudioManager.makeTestTone())
+            lastTestAudioRoute = audioManager.currentOutputName
+            if glassesVendor == .aisee, !audioManager.outputIsBluetooth {
+                throw TestFailure("Played on \(audioManager.currentOutputName). To hear replies on the AiSee glasses, pair them as a Bluetooth audio device in iOS Settings.")
+            }
         }
     }
 
@@ -3169,7 +3192,8 @@ final class HermesSessionViewModel {
             userText: userText,
             agentText: agentText,
             timestamp: Date(),
-            photo: pendingPhoto
+            photo: pendingPhoto,
+            photoSource: pendingPhoto == nil ? nil : vision.sourceLabel
         )
         pendingPhoto = nil
         conversationHistory.append(turn)
@@ -3201,4 +3225,6 @@ struct ConversationTurn: Identifiable {
     let agentText: String
     let timestamp: Date
     var photo: Data? = nil
+    /// Which camera took `photo` ("AiSee camera", "Ray-Ban camera", "iPhone camera").
+    var photoSource: String? = nil
 }

@@ -152,7 +152,8 @@ struct ContentView: View {
     private var glassesWarning: String? {
         guard hermesVM.phoneModePreference != .always else { return nil }
         if !hermesVM.glassesAvailable { return "Glasses aren't reachable" }
-        if hermesVM.cameraPermissionGranted == false {
+        // The Meta AI camera grant is a Ray-Ban thing; AiSee needs none.
+        if hermesVM.glassesVendor == .meta, hermesVM.cameraPermissionGranted == false {
             return "Glasses camera isn't allowed - tap to fix"
         }
         return nil
@@ -597,7 +598,7 @@ struct ContentView: View {
                    let image = UIImage(data: photoData) {
                     HStack {
                         Spacer()
-                        PhotoCard(image: image)
+                        PhotoCard(image: image, source: turn.photoSource ?? GlassesVendor.meta.cameraLabel)
                     }
                 }
 
@@ -607,9 +608,10 @@ struct ContentView: View {
         }
     }
 
-    /// Captured glasses photo with a "Ray-Ban camera" caption bar
+    /// Captured photo with a caption bar naming the camera that took it
     struct PhotoCard: View {
         let image: UIImage
+        var source: String = GlassesVendor.meta.cameraLabel
 
         var body: some View {
             VStack(spacing: 0) {
@@ -622,7 +624,7 @@ struct ContentView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "camera")
                         .font(.system(size: 10, weight: .semibold))
-                    Text("Ray-Ban camera")
+                    Text(source)
                         .font(.system(size: 11, weight: .semibold))
                     Spacer()
                 }

@@ -181,6 +181,19 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         return session.currentRoute.inputs.first?.portName ?? "Unknown"
     }
 
+    /// Where playback is going right now ("Speaker", "AiSee-G1", AirPods…).
+    var currentOutputName: String {
+        let outs = AVAudioSession.sharedInstance().currentRoute.outputs
+        return outs.map(\.portName).joined(separator: ", ").isEmpty ? "Unknown" : outs.map(\.portName).joined(separator: ", ")
+    }
+
+    /// True when playback is on a Bluetooth output (A2DP/HFP/LE).
+    var outputIsBluetooth: Bool {
+        AVAudioSession.sharedInstance().currentRoute.outputs.contains {
+            [.bluetoothA2DP, .bluetoothHFP, .bluetoothLE].contains($0.portType)
+        }
+    }
+
     var isUsingBluetoothInput: Bool {
         AVAudioSession.sharedInstance().currentRoute.inputs.contains {
             $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP
