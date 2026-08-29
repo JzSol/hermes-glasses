@@ -243,7 +243,7 @@ photo via the DAT camera API.
 - **AiSee mic bypasses AVAudioEngine.** `HermesAudioManager.startExternalCapture()`
   + `ingest(_:)` push the kit's 16 kHz Int16 buffers through `processInputBuffer`,
   so recognizer, VAD, recording and level work unchanged. Never toggle
-  `AVAudioSession` around a capture (FINDINGS §F).
+  `AVAudioSession` around a capture (FINDINGS §F). The device streams Opus (16 kHz mono) - the kit decodes with the SDK's `OpusDecoder`/`SBCDecoder` before `PCMResampler`; wiring the resampler to the raw connection fails with `unacceptableData`. Device log: `idevicesyslog -p "Hermes Glasses"` shows `Logger` lines (not `NSLog`).
 - **Livestream needs the HotspotConfiguration entitlement** (already present)
   and an iOS local-network/Wi-Fi join prompt on first use.
 - **The visual language lives in `Views/HermesDesign.swift`** (imported
