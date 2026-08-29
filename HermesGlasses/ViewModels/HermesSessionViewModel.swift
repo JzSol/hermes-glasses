@@ -118,6 +118,12 @@ final class HermesSessionViewModel {
     var lastTestMicSummary: String? = nil
     /// Last physical key press on the AiSee glasses ("Key 1 · 10:07:32"); nil until one arrives.
     var lastAiSeeKeyPress: String? = nil
+    /// Button → action mapping for the AiSee glasses (Settings › Devices › Buttons).
+    var glassesKeyMap: GlassesKeyMap = GlassesKeyMap.load() {
+        didSet { glassesKeyMap.save() }
+    }
+    @ObservationIgnored private var keyGestures = GlassesKeyGestureDetector()
+    @ObservationIgnored private var keyFlushTask: Task<Void, Never>?
     /// Glasses camera permission (granted in the Meta AI app); nil = unknown
     var cameraPermissionGranted: Bool? = nil
     /// Preferred microphone source; the banner chip shows the ACTUAL route
@@ -716,10 +722,7 @@ final class HermesSessionViewModel {
         observeAiSeeConnection()
         Task { [weak self] in
             await self?.aiseeCoordinator.setKeyPressObserver { index in
-                Task { @MainActor [weak self] in
-                    let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
-                    self?.lastAiSeeKeyPress = "Key \(index) · \(f.string(from: Date()))"
-                }
+                Task { @MainActor [weak self] in self?.handleGlassesKeyPress(index) }
             }
         }
         // The stored mic source outlives the app, the vendor setting can be
@@ -2648,6 +2651,60 @@ final class HermesSessionViewModel {
         } else if displayManager.status == .off {
             displayManager.start(session: session)
         }
+    }
+
+    // MARK: - Glasses buttons
+
+    /// Raw press from the kit → single/double gesture → mapped action. The
+    /// single-tap decision waits out the double-tap window (400 ms).
+    private func handleGlassesKeyPress(_ index: Int) {
+        let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
+        lastAiSeeKeyPress = "Key \(index) · \(f.string(from: Date()))"
+        let now = Date()
+        if let gesture = keyGestures.press(key: index, at: now) {
+            keyFlushTask?.cancel(); keyFlushTask = nil
+            performGlassesKeyGesture(gesture)
+            return
+        }
+        keyFlushTask?.cancel()
+        let deadline = keyGestures.nextFlushAt ?? now
+        keyFlushTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
+            guard !Task.isCancelled, let self else { return }
+            if let gesture = self.keyGestures.flush(now: Date()) { self.performGlassesKeyGesture(gesture) }
+        }
+    }
+
+    private func performGlassesKeyGesture(_ g: (key: Int, gesture: GlassesKeyGesture)) {
+        let slot = GlassesKeySlot(key: g.key, gesture: g.gesture)
+        let action = glassesKeyMap.action(for: slot)
+        lastAiSeeKeyPress = "Key \(g.key) \(g.gesture.label.lowercased()) → \(action.label)"
+        Task { await perform(action) }
+    }
+
+    /// Actions reachable from a button. Anything that needs the voice loop
+    /// starts it first; the user hears the usual start cue.
+    func perform(_ action: GlassesKeyAction) async {
+        switch action {
+        case .none:
+            return
+        case .toggleListening:
+            if connectionState == .disconnected { await startSession() } else { endSession() }
+        case .visualQuery:
+            await ensureSessionThen { self.submitQuery("What am I looking at?") }
+        case .rememberPerson:
+            await ensureSessionThen { self.submitQuery("Remember this person") }
+        case .snapPhoto:
+            await testPhoto()
+        }
+    }
+
+    private func ensureSessionThen(_ body: @escaping @MainActor () -> Void) async {
+        if connectionState == .disconnected {
+            await startSession()
+            guard connectionState != .disconnected else { return }
+        }
+        body()
     }
 
     func endSession() {

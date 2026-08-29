@@ -35,6 +35,9 @@ xcrun swiftc \
 ```bash
 xcrun swiftc HermesGlasses/Services/GlassesVendor.swift \
   tests/glasses-vendor/main.swift -o /tmp/glasses-vendor-tests && /tmp/glasses-vendor-tests
+
+xcrun swiftc HermesGlasses/Services/GlassesKeyMap.swift \
+  tests/glasses-keys/main.swift -o /tmp/glasses-keys-tests && /tmp/glasses-keys-tests
 ```
 
 Other standalone suites live under `tests/` (`device-context`, `display-logic`)

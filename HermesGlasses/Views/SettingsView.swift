@@ -316,6 +316,7 @@ private struct DevicesPage: View {
 
             if hermesVM.glassesVendor == .aisee {
                 aiseeConnectionSection
+                aiseeButtonsSection
             }
 
             if hermesVM.glassesVendor == .meta {
@@ -497,6 +498,40 @@ private struct DevicesPage: View {
     /// Scan / discovered-device list while unpaired, refresh-battery /
     /// disconnect once the link is up. AiSee has no Meta AI app step - this
     /// card is the whole pairing flow.
+    /// Map the three physical keys (tap / double tap) to actions.
+    private var aiseeButtonsSection: some View {
+        HermesSection(
+            header: "Buttons",
+            footer: "A double tap is two presses within 0.4 s; a single tap fires once that window passes. Which key is which shows under Developer › AiSee button."
+        ) {
+            ForEach(GlassesKeyMap.keys, id: \.self) { key in
+                ForEach(GlassesKeyGesture.allCases) { gesture in
+                    let slot = GlassesKeySlot(key: key, gesture: gesture)
+                    HStack {
+                        Text("Key \(key) · \(gesture.label)")
+                            .font(.system(size: 15))
+                        Spacer()
+                        Picker("", selection: Binding(
+                            get: { hermesVM.glassesKeyMap.action(for: slot) },
+                            set: { hermesVM.glassesKeyMap.set($0, for: slot) }
+                        )) {
+                            ForEach(GlassesKeyAction.allCases) { action in
+                                Text(action.label).tag(action)
+                            }
+                        }
+                        .labelsHidden()
+                        .tint(.secondary)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 6)
+                    if !(key == GlassesKeyMap.keys.last && gesture == GlassesKeyGesture.allCases.last) {
+                        HermesDivider()
+                    }
+                }
+            }
+        }
+    }
+
     private var aiseeConnectionSection: some View {
         HermesSection(
             header: "AiSee connection",
