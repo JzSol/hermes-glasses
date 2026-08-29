@@ -1405,6 +1405,8 @@ private struct DeveloperPage: View {
                 if hermesVM.glassesVendor == .aisee {
                     HermesDivider()
                     HermesRow("AiSee mic", value: hermesVM.lastTestMicSummary ?? "Run the Mic test", showsChevron: false)
+                    HermesDivider()
+                    HermesRow("AiSee button", value: hermesVM.lastAiSeeKeyPress ?? "Press a key on the glasses", showsChevron: false)
                 }
                 if hermesVM.glassesVendor == .meta {
                     HermesDivider()
