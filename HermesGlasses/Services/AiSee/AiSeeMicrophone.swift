@@ -25,6 +25,8 @@ final class AiSeeMicrophone: @unchecked Sendable {
     private let lock = NSLock()
     // All of the below: `lock`-guarded.
     private var resampler: PCMResampler?
+    /// SBC/Opus → PCM node between the connection and the resampler (nil for a PCM device).
+    private var decoder: (any AudioStreamInputable)?
     private var sink: AiSeePCMSink?
     private var buffers = 0
 
@@ -35,12 +37,37 @@ final class AiSeeMicrophone: @unchecked Sendable {
 
     private var bufferCount: Int { lock.withLock { buffers } }
 
+    private static func fourCC(_ id: AudioFormatID) -> String {
+        let b = [24, 16, 8, 0].map { Character(UnicodeScalar(UInt8((id >> UInt32($0)) & 0xFF))) }
+        return String(b)
+    }
+
     func start(onBuffer: @escaping @Sendable (AVAudioPCMBuffer) -> Void) async throws {
         lock.withLock { buffers = 0 }
         connection.onAudioStreamStartedHandler = { [weak self] in
             guard let self else { return }
             do {
-                let resampler = try PCMResampler(audioFrom: self.connection, resampleTo: AiSeePCM.sampleRate)
+                // The device streams ENCODED audio (SBC or Opus, per
+                // `outDataFormat.mFormatID`); the resampler only accepts PCM,
+                // so a decoder node sits between the connection and it.
+                // Wiring the resampler straight to the connection threw
+                // `unacceptableData` and delivered nothing.
+                let f = self.connection.outDataFormat
+                let upstream: any AudioStreamOutputable
+                let codec: String
+                switch f.mFormatID {
+                case kAudioFormatLinearPCM:
+                    upstream = self.connection; codec = "pcm"
+                case kAudioFormatOpus:
+                    let d = try OpusDecoder(audioFrom: self.connection)
+                    self.lock.withLock { self.decoder = d }
+                    upstream = d; codec = "opus"
+                default:
+                    let d = try SBCDecoder(audioFrom: self.connection)
+                    self.lock.withLock { self.decoder = d }
+                    upstream = d; codec = "sbc(\(Self.fourCC(f.mFormatID)))"
+                }
+                let resampler = try PCMResampler(audioFrom: upstream, resampleTo: AiSeePCM.sampleRate)
                 guard let sink = AiSeePCMSink(upstreamFormat: resampler.outDataFormat, onBuffer: { [weak self] buffer in
                     if let self { self.lock.withLock { self.buffers += 1 } }
                     onBuffer(buffer)
@@ -53,8 +80,7 @@ final class AiSeeMicrophone: @unchecked Sendable {
                     self.resampler = resampler
                     self.sink = sink
                 }
-                let f = self.connection.outDataFormat
-                self.log("mic: stream started — device \(Int(f.mSampleRate)) Hz ×\(f.mChannelsPerFrame) → 16000 Hz mono")
+                self.log("mic: stream started — device \(codec) \(Int(f.mSampleRate)) Hz ×\(f.mChannelsPerFrame) → 16000 Hz mono")
             } catch {
                 self.log("mic: resampler setup failed: \(error)")
             }
@@ -79,13 +105,14 @@ final class AiSeeMicrophone: @unchecked Sendable {
     func stop(releasingHandlers: Bool = true) async {
         let t0 = Date()
         do { try await connection.mediaRoutine.stopInputAudioStream() } catch { log("mic: stop error: \(error)") }
+        let decoder: (any AudioStreamInputable)? = lock.withLock { let d = self.decoder; self.decoder = nil; return d }
         let resampler: PCMResampler? = lock.withLock {
             let current = self.resampler
             self.resampler = nil
             self.sink = nil
             return current
         }
-        connection.removeStreamTarget(resampler)
+        connection.removeStreamTarget(decoder ?? resampler)
         if releasingHandlers {
             // Don't leave this mic's closures installed on a connection it no longer
             // feeds — the SDK would keep calling them for the next stream.
