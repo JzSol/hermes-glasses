@@ -1,9 +1,11 @@
 # Hermes Glasses
 
-Talk to your own AI through Meta Ray-Ban smart glasses - hands-free voice
-conversations with live on-device transcription, computer vision through the
-glasses camera ("what am I looking at?"), voice-started navigation on the
-lens, and a private, on-device memory of the people you meet. Bring your own
+Talk to your own AI through smart glasses - **Meta Ray-Ban**, or **AiSee**
+and other sub-$100 Realtek-based AI glasses (RTL8773D + RTL8735B reference
+design) - with hands-free voice conversations, live on-device transcription,
+computer vision through the glasses camera ("what am I looking at?"),
+voice-started navigation on the lens, and a private, on-device memory of the
+people you meet. Bring your own
 API key for a zero-infrastructure setup, or point it at a Hermes Agent for
 full agentic, tool-using conversations. No glasses at hand? Phone mode runs
 every feature from the iPhone alone, with a simulated lens on screen.
@@ -72,13 +74,14 @@ A standalone, MIT-licensed project.
   on the lens, and a full map screen (with place search) in the app
 - 📖 **Definitions** - "what is a quokka?" answers as usual and puts a
   Wikipedia image next to the text on the lens
-- 👓 **AiSee glasses** (camera, live feed, mic; no HUD) - a second glasses
-  vendor alongside Meta Ray-Ban, selectable in Settings › Devices › Glasses
-  picker. Camera and live feed work the same as Ray-Ban; external mic captures
-  audio from the AiSee glasses instead of the iPhone
-
-### Remember
-
+- 👓 **AiSee and other Realtek-based glasses** - a second glasses vendor
+  alongside Meta: pick it under Settings › Devices › Glasses. Camera stills
+  for visual queries and "remember this person", the live feed for Lens, the
+  glasses' Opus microphone for the voice loop, and the temple button mapped
+  to actions (tap / double tap / triple tap → start-stop listening, "what am
+  I looking at?", snap a photo, remember this person). No HUD. Any glasses
+  built on Realtek's AI-glasses SDK (`RTKAIDeviceConnection`) should work -
+  these typically retail under $100.
 - 🤝 **"Remember this person"** - snaps a glasses photo while you speak a
   note about who you just met
 - 🗣️ **"Record this conversation"** - captures the full transcript plus
