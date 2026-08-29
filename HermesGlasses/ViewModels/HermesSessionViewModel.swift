@@ -115,6 +115,7 @@ final class HermesSessionViewModel {
     var lastTestPhoto: UIImage? = nil
     var lastTestPhotoSource: String? = nil
     var lastTestAudioRoute: String? = nil
+    var lastTestMicSummary: String? = nil
     /// Glasses camera permission (granted in the Meta AI app); nil = unknown
     var cameraPermissionGranted: Bool? = nil
     /// Preferred microphone source; the banner chip shows the ACTUAL route
@@ -672,7 +673,9 @@ final class HermesSessionViewModel {
         self.wearables = wearables
         self.deviceSelector = AutoDeviceSelector(wearables: wearables)
         self.activeGlassesDevice = self.deviceSelector.activeDevice
-        let aiseeLog: AiSeeLog = { line in NSLog("[Hermes][AiSee] %@", line) }
+        // os_log, not NSLog: this is what shows up in the device syslog.
+        let aiseeLogger = Logger(subsystem: "com.flowsxr.hermesglasses", category: "aisee")
+        let aiseeLog: AiSeeLog = { line in aiseeLogger.notice("\(line, privacy: .public)") }
         let coordinator = AiSeeDeviceCoordinator(log: aiseeLog)
         self.aisee = AiSeeConnectionService(log: aiseeLog)
         self.aiseeCoordinator = coordinator
@@ -849,10 +852,10 @@ final class HermesSessionViewModel {
             // and reopens it itself, so this refusal means "not yet", not
             // "never" - demoting on it would take the glasses mic away for
             // the length of a photo.
-            NSLog("[Hermes] AiSee mic reopen deferred, capture in progress (attempt \(attempt))")
+            Logger(subsystem: "com.flowsxr.hermesglasses", category: "aisee").notice("AiSee mic reopen deferred, capture in progress (attempt \(attempt))")
             scheduleAiSeeMicRecovery(attempt: attempt + 1)
         } catch {
-            NSLog("[Hermes] AiSee mic did not reopen: \(error.localizedDescription)")
+            Logger(subsystem: "com.flowsxr.hermesglasses", category: "aisee").notice("AiSee mic did not reopen: \(error.localizedDescription)")
             do {
                 try await fallBackToPhoneMic(
                     notice: Self.aiseeMicFallbackNotice, stoppingCapture: true
@@ -1056,7 +1059,7 @@ final class HermesSessionViewModel {
                         try await startAiSeeMicrophone()
                         sessionUsesAiSeeMic = true
                     } catch {
-                        NSLog("[Hermes] AiSee mic unavailable: \(error.localizedDescription)")
+                        Logger(subsystem: "com.flowsxr.hermesglasses", category: "aisee").notice("AiSee mic unavailable: \(error.localizedDescription)")
                         try await fallBackToPhoneMic(
                             notice: Self.aiseeMicFallbackNotice,
                             stoppingCapture: true
@@ -2592,7 +2595,7 @@ final class HermesSessionViewModel {
                 endSession()
                 return .sessionEnded
             }
-            NSLog("[Hermes] AiSee mic switch failed: \(error.localizedDescription)")
+            Logger(subsystem: "com.flowsxr.hermesglasses", category: "aisee").notice("AiSee mic switch failed: \(error.localizedDescription)")
             do {
                 try await fallBackToPhoneMic(
                     notice: Self.aiseeMicFallbackNotice, stoppingCapture: true
@@ -3015,6 +3018,30 @@ final class HermesSessionViewModel {
 
     /// Pure output test: play a locally generated tone through the current
     /// audio route (glasses in glasses mode). No bridge or Hermes involved.
+    /// AiSee only: open the kit's microphone for four seconds and count what
+    /// arrives. This is the on-screen answer to "is the glasses mic streaming
+    /// at all" - independent of the recognizer, the audio manager and the UI.
+    func testAiSeeMic() async {
+        await runTest("Mic") { [self] in
+            guard glassesVendor == .aisee else { throw TestFailure("Select AiSee under Devices first.") }
+            guard aisee.state.isConnected else { throw TestFailure("AiSee glasses are not connected.") }
+            let tally = AiSeeMicTally()
+            let t0 = Date()
+            try await aiseeCoordinator.startMicrophone { buffer in
+                tally.record(AiSeePCM.peakLevel(buffer), frames: Int(buffer.frameLength))
+            }
+            let startMs = Int(Date().timeIntervalSince(t0) * 1000)
+            try await Task.sleep(for: .seconds(4))
+            await aiseeCoordinator.stopMicrophone()
+            let (buffers, frames, peak) = tally.snapshot()
+            let summary = "start \(startMs) ms · \(buffers) buffers · \(frames / 16) ms audio · peak \(String(format: "%.2f", peak))"
+            lastTestMicSummary = summary
+            guard buffers > 0 else {
+                throw TestFailure("AiSee mic opened (\(startMs) ms) but delivered no audio in 4 s. Output route: \(audioManager.currentOutputName)")
+            }
+        }
+    }
+
     func testSound() async {
         await runTest("Sound") { [self] in
             if connectionState == .disconnected {
@@ -3227,4 +3254,17 @@ struct ConversationTurn: Identifiable {
     var photo: Data? = nil
     /// Which camera took `photo` ("AiSee camera", "Ray-Ban camera", "iPhone camera").
     var photoSource: String? = nil
+}
+
+
+/// Thread-safe counter for `testAiSeeMic` - the kit delivers on its own thread.
+private final class AiSeeMicTally: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffers = 0
+    private var frames = 0
+    private var peak: Float = 0
+    func record(_ level: Float, frames n: Int) {
+        lock.withLock { buffers += 1; frames += n; peak = max(peak, level) }
+    }
+    func snapshot() -> (Int, Int, Float) { lock.withLock { (buffers, frames, peak) } }
 }

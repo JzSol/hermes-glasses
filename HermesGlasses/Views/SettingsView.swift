@@ -1342,7 +1342,9 @@ private struct DeveloperPage: View {
 
     /// Display is a Ray-Ban Display feature; AiSee has no lens.
     private var tests: [String] {
-        Self.tests.filter { $0 != "Display" || hermesVM.glassesSupportsDisplay }
+        var list = Self.tests.filter { $0 != "Display" || hermesVM.glassesSupportsDisplay }
+        if hermesVM.glassesVendor == .aisee { list.insert("Mic", at: 1) }
+        return list
     }
 
     var body: some View {
@@ -1411,6 +1413,10 @@ private struct DeveloperPage: View {
                 HermesRow("Vision route", value: visionRouteText, showsChevron: false)
                 HermesDivider()
                 HermesRow("Audio output", value: hermesVM.lastTestAudioRoute ?? "Run the Sound test", showsChevron: false)
+                if hermesVM.glassesVendor == .aisee {
+                    HermesDivider()
+                    HermesRow("AiSee mic", value: hermesVM.lastTestMicSummary ?? "Run the Mic test", showsChevron: false)
+                }
                 if hermesVM.glassesVendor == .meta {
                     HermesDivider()
                     HermesRow("Glasses display", value: displayText, showsChevron: false)
@@ -1460,6 +1466,7 @@ private struct DeveloperPage: View {
         switch name {
         case "Bridge": await hermesVM.testBridge()
         case "Sound": await hermesVM.testSound()
+        case "Mic": await hermesVM.testAiSeeMic()
         case "Photo": await hermesVM.testPhoto()
         case "Query": await hermesVM.testQuery()
         case "Visual": await hermesVM.testVisualQuery()
