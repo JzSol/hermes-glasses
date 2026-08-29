@@ -433,6 +433,8 @@ final class HermesSessionViewModel {
     /// encounter is already saved and this only fills in names.
     @ObservationIgnored private var badgeAssistTask: Task<Void, Never>?
     @ObservationIgnored private var pendingPhoto: Data?
+    /// Last photo sent in Direct mode, reused only when a fresh capture fails.
+    @ObservationIgnored private var lastDirectPhoto: Data?
     @ObservationIgnored private var lastDirectPhotoAt: Date?
     @ObservationIgnored private var pendingDefinitionSubject: String?
     @ObservationIgnored private var definitionGeneration = 0
@@ -1328,14 +1330,23 @@ final class HermesSessionViewModel {
     /// API call - no server round trips.
     private func askDirect(_ text: String, context: String? = nil) async {
         var photo: Data?
-        if VisualQueryDetector.shouldCapturePhoto(text, lastPhotoAt: lastDirectPhotoAt),
+        // A visual query always gets a FRESH photo: the model's history is
+        // text-only, so the memory window that skipped a re-shoot left the
+        // model blind ("I can't see a photo") for any deictic question asked
+        // within two minutes of the last one. The window now only decides
+        // whether a failed capture may fall back to the previous photo.
+        if VisualQueryDetector.shouldCapturePhoto(text, lastPhotoAt: nil),
            hasVisionSource,
            await ensureVisionPermission(interactive: false) {
             displayManager.showPhotoCaptured()
             photo = try? await captureVisionPhoto()
             if photo != nil {
                 lastDirectPhotoAt = Date()
+                lastDirectPhoto = photo
                 pendingPhoto = photo
+            } else if let recent = lastDirectPhoto, let at = lastDirectPhotoAt,
+                      Date().timeIntervalSince(at) <= VisualQueryDetector.photoMemoryWindow {
+                photo = recent
             }
         }
 
