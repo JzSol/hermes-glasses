@@ -122,8 +122,6 @@ final class HermesSessionViewModel {
     var glassesKeyMap: GlassesKeyMap = GlassesKeyMap.load() {
         didSet { glassesKeyMap.save() }
     }
-    @ObservationIgnored private var keyGestures = GlassesKeyGestureDetector()
-    @ObservationIgnored private var keyFlushTask: Task<Void, Never>?
     /// Glasses camera permission (granted in the Meta AI app); nil = unknown
     var cameraPermissionGranted: Bool? = nil
     /// Preferred microphone source; the banner chip shows the ACTUAL route
@@ -2655,30 +2653,12 @@ final class HermesSessionViewModel {
 
     // MARK: - Glasses buttons
 
-    /// Raw press from the kit → single/double gesture → mapped action. The
-    /// single-tap decision waits out the double-tap window (400 ms).
+    /// Key index from the kit (the glasses detect tap / double / triple in
+    /// firmware and report 1 / 2 / 3) → mapped action.
     private func handleGlassesKeyPress(_ index: Int) {
+        let action = glassesKeyMap.action(forKey: index)
         let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
-        lastAiSeeKeyPress = "Key \(index) · \(f.string(from: Date()))"
-        let now = Date()
-        if let gesture = keyGestures.press(key: index, at: now) {
-            keyFlushTask?.cancel(); keyFlushTask = nil
-            performGlassesKeyGesture(gesture)
-            return
-        }
-        keyFlushTask?.cancel()
-        let deadline = keyGestures.nextFlushAt ?? now
-        keyFlushTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
-            guard !Task.isCancelled, let self else { return }
-            if let gesture = self.keyGestures.flush(now: Date()) { self.performGlassesKeyGesture(gesture) }
-        }
-    }
-
-    private func performGlassesKeyGesture(_ g: (key: Int, gesture: GlassesKeyGesture)) {
-        let slot = GlassesKeySlot(key: g.key, gesture: g.gesture)
-        let action = glassesKeyMap.action(for: slot)
-        lastAiSeeKeyPress = "Key \(g.key) \(g.gesture.label.lowercased()) → \(action.label)"
+        lastAiSeeKeyPress = "\(GlassesKeyMap.label(forKey: index)) (key \(index)) → \(action.label) · \(f.string(from: Date()))"
         Task { await perform(action) }
     }
 
