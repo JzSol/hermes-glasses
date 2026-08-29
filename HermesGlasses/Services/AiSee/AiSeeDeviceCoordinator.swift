@@ -42,6 +42,18 @@ actor AiSeeDeviceCoordinator {
     /// Notified whenever `micOpen` or `streaming` changes, including changes the
     /// host did not ask for (an SDK-initiated stream termination, a failed mic
     /// reopen). Hosts mirror their own UI state from this.
+    /// Physical key presses on the glasses (`keyIdx` as the SDK reports it; the
+    /// vendor demo maps 1 → photo, 2 → livestream). The kit only reports them —
+    /// mapping a key to an action is the host's decision.
+    private var keyPressObserver: (@Sendable (_ keyIndex: Int) -> Void)?
+    func setKeyPressObserver(_ observer: (@Sendable (_ keyIndex: Int) -> Void)?) {
+        keyPressObserver = observer
+    }
+    private func keyPressed(_ index: Int) {
+        log("key: pressed \(index)")
+        keyPressObserver?(index)
+    }
+
     func setStateObserver(_ observer: (@Sendable (_ micOpen: Bool, _ streaming: Bool) -> Void)?) {
         onStateChange = observer
     }
@@ -52,8 +64,14 @@ actor AiSeeDeviceCoordinator {
         // Every piece of state below describes the device we are leaving, so a swap
         // to a different connection resets exactly as a detach does — otherwise a
         // reconnect inherits the old device's mic/stream flags.
-        if self.connection !== connection { resetDeviceState() }
+        if self.connection !== connection {
+            resetDeviceState()
+            self.connection?.mediaRoutine.onKeyPressNotification = nil
+        }
         self.connection = connection
+        connection?.mediaRoutine.onKeyPressNotification = { [weak self] index in
+            Task { await self?.keyPressed(index) }
+        }
         if connection != nil {
             // A power cycle is the only way out of the wedge, and it always brings a
             // new connection with it — so attaching one clears the latch.
@@ -341,6 +359,7 @@ actor AiSeeDeviceCoordinator {
     var streaming: Bool { false }
     var unavailableUntilReconnect: Bool { false }
     func detach() {}
+    func setKeyPressObserver(_ observer: (@Sendable (_ keyIndex: Int) -> Void)?) {}
     func setStateObserver(_ observer: (@Sendable (_ micOpen: Bool, _ streaming: Bool) -> Void)?) {}
     func capturePhoto() async throws -> Data { throw AiSeeError.notConnected }
     func startLiveStream(onFrame: @escaping @Sendable (AiSeeFrame) -> Void,

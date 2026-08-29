@@ -116,6 +116,8 @@ final class HermesSessionViewModel {
     var lastTestPhotoSource: String? = nil
     var lastTestAudioRoute: String? = nil
     var lastTestMicSummary: String? = nil
+    /// Last physical key press on the AiSee glasses ("Key 1 · 10:07:32"); nil until one arrives.
+    var lastAiSeeKeyPress: String? = nil
     /// Glasses camera permission (granted in the Meta AI app); nil = unknown
     var cameraPermissionGranted: Bool? = nil
     /// Preferred microphone source; the banner chip shows the ACTUAL route
@@ -712,6 +714,14 @@ final class HermesSessionViewModel {
             }
         }
         observeAiSeeConnection()
+        Task { [weak self] in
+            await self?.aiseeCoordinator.setKeyPressObserver { index in
+                Task { @MainActor [weak self] in
+                    let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
+                    self?.lastAiSeeKeyPress = "Key \(index) · \(f.string(from: Date()))"
+                }
+            }
+        }
         // The stored mic source outlives the app, the vendor setting can be
         // changed while it is closed, and `glassesVendor.didSet` only fires on
         // a live switch - so a launch can come up with a mic source that's
