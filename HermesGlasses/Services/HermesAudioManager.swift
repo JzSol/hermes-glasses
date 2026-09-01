@@ -130,6 +130,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         var recognitionConditioningEnabled = false
         var bridgeConditioningEnabled = false
         var maximumInputGainEnabled = false
+        var mediaDuckingEnabled = false
     }
 
     private let adamAudioSettingsLock = OSAllocatedUnfairLock(
@@ -160,6 +161,14 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             adamAudioSettingsLock.withLockUnchecked { $0.maximumInputGainEnabled = newValue }
             if newValue { applyMaximumInputGainIfPossible() }
         }
+    }
+
+    /// Ask iOS to lower audio from other apps while Adam's voice session is
+    /// active. This remains opt-in so the original Hermes target preserves
+    /// its existing mixing behavior.
+    var mediaDuckingEnabled: Bool {
+        get { adamAudioSettingsLock.withLockUnchecked { $0.mediaDuckingEnabled } }
+        set { adamAudioSettingsLock.withLockUnchecked { $0.mediaDuckingEnabled = newValue } }
     }
 
     // MARK: - Private
@@ -324,7 +333,8 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             // Mode .default, NOT .voiceChat - its DSP gates speech to the
             // noise floor. HFP is bidirectional: TTS also moves to the
             // chosen device's speakers while this mode is active (by design).
-            try session.setCategory(
+            try configureAudioSessionCategory(
+                session,
                 .playAndRecord,
                 mode: .default,
                 options: [.allowBluetoothHFP]
@@ -365,7 +375,8 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
                 // fall back to the iPhone mic so the session still works.
                 logger.warning("Bluetooth route unavailable for \(String(describing: route), privacy: .public) - falling back to iPhone mic")
                 try? session.setPreferredInput(nil)
-                try session.setCategory(
+                try configureAudioSessionCategory(
+                    session,
                     .playAndRecord,
                     mode: .default,
                     options: [.defaultToSpeaker]
@@ -375,7 +386,8 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         } else {
             // iPhone mic only: no Bluetooth options, so iOS cannot
             // re-route input to the glasses and kill the tap.
-            try session.setCategory(
+            try configureAudioSessionCategory(
+                session,
                 .playAndRecord,
                 mode: .default,
                 options: [.defaultToSpeaker]
@@ -466,7 +478,8 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         // .allowBluetoothA2DP (not HFP): the glasses' mic is NOT an iOS input
         // here, so nothing wants a hands-free link - but TTS should still be
         // able to land on A2DP glasses/earbuds when a pair is connected.
-        try session.setCategory(
+        try configureAudioSessionCategory(
+            session,
             .playAndRecord,
             mode: .default,
             options: [.defaultToSpeaker, .allowBluetoothA2DP]
@@ -558,7 +571,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             state.lowInputRoute = nil
             state.lowInputWarningActive = false
         }
-        try? AVAudioSession.sharedInstance().setActive(false)
+        deactivateAudioSession()
         let warningHandler = callbackLock.withLockUnchecked { $0.onMicWarning }
         DispatchQueue.main.async { warningHandler?(nil) }
     }
@@ -724,7 +737,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     /// without a capture session running
     func preparePlaybackOnly() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .default)
+        try configureAudioSessionCategory(session, .playback, mode: .default)
         try session.setActive(true)
     }
 
@@ -732,7 +745,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     /// iOS can then select the glasses' A2DP route for full-band TTS.
     func prepareHighQualityPlayback() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .spokenAudio)
+        try configureAudioSessionCategory(session, .playback, mode: .spokenAudio)
         try session.setActive(true)
     }
 
@@ -752,6 +765,58 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     }
 
     // MARK: - Private
+
+    /// System ducking is the supported way for an iOS app to lower another
+    /// app's media. If a route or OS version rejects the option, retain the
+    /// voice experience by retrying the same category unchanged.
+    private func configureAudioSessionCategory(
+        _ session: AVAudioSession,
+        _ category: AVAudioSession.Category,
+        mode: AVAudioSession.Mode,
+        options: AVAudioSession.CategoryOptions = []
+    ) throws {
+        guard mediaDuckingEnabled else {
+            try session.setCategory(category, mode: mode, options: options)
+            return
+        }
+
+        var duckingOptions = options
+        duckingOptions.insert(.duckOthers)
+        do {
+            try session.setCategory(
+                category,
+                mode: mode,
+                options: duckingOptions
+            )
+        } catch {
+            logger.warning(
+                "System media ducking unavailable; continuing without it: \(error.localizedDescription, privacy: .public)"
+            )
+            try session.setCategory(category, mode: mode, options: options)
+        }
+    }
+
+    /// Let other apps restore their media when Adam releases its audio
+    /// session. If notification is unavailable, still deactivate normally.
+    private func deactivateAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        guard mediaDuckingEnabled else {
+            try? session.setActive(false)
+            return
+        }
+
+        do {
+            try session.setActive(
+                false,
+                options: [.notifyOthersOnDeactivation]
+            )
+        } catch {
+            logger.warning(
+                "Media restore notification unavailable; deactivating normally: \(error.localizedDescription, privacy: .public)"
+            )
+            try? session.setActive(false)
+        }
+    }
 
     private func requestMicrophonePermission() async -> Bool {
         switch AVAudioApplication.shared.recordPermission {

@@ -523,6 +523,7 @@ final class AdamVoiceSession {
         audioManager.recognitionConditioningEnabled = false
         audioManager.bridgeConditioningEnabled = false
         audioManager.maximumInputGainEnabled = false
+        audioManager.mediaDuckingEnabled = false
 
         _ = wakeGate.cancel()
         pendingBridgeAudio = false
@@ -574,6 +575,7 @@ final class AdamVoiceSession {
             audioManager.recognitionConditioningEnabled = true
             audioManager.bridgeConditioningEnabled = true
             audioManager.maximumInputGainEnabled = true
+            audioManager.mediaDuckingEnabled = true
             _ = try await audioManager.startCapture(route: .glassesMic)
             refreshAudioRoute()
         } catch is CancellationError {
