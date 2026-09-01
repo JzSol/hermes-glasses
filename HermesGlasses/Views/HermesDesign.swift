@@ -20,6 +20,31 @@
 import SwiftUI
 import UIKit
 
+/// Light/dark override shared by both app roots. `.system` follows the phone.
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    static let storageKey = "appearance_mode"
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
 // MARK: - Palette
 
 extension Color {

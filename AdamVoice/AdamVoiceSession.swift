@@ -102,6 +102,19 @@ final class AdamVoiceSession {
     var lastCommand = ""
     var lastResponse = ""
     var liveTranscript = ""
+    private var conversationHistoryStore = AssistantConversationHistory(limit: 50)
+    private var completedConversationRequestID: String?
+    var conversationHistory: [ConversationTurn] { conversationHistoryStore.turns }
+    var pendingConversationUserText: String {
+        guard pendingRequestID != nil,
+              pendingRequestID != completedConversationRequestID else { return "" }
+        return lastCommand
+    }
+    var streamingConversationResponse: String {
+        guard pendingRequestID != nil,
+              pendingRequestID != completedConversationRequestID else { return "" }
+        return lastResponse
+    }
     var micRoute = "Not started"
     var outputRoute = "Not started"
     var micLevel: Float = 0
@@ -461,6 +474,8 @@ final class AdamVoiceSession {
         lastCommand = ""
         lastResponse = ""
         liveTranscript = ""
+        conversationHistoryStore.clear()
+        completedConversationRequestID = nil
     }
 
     // MARK: - Lifecycle
@@ -487,6 +502,7 @@ final class AdamVoiceSession {
         lastCommand = ""
         lastResponse = ""
         pendingRequestID = nil
+        completedConversationRequestID = nil
         followUpModeSupported = false
         activeCaptureIsFollowUp = false
         turnGeneration &+= 1
@@ -861,6 +877,8 @@ final class AdamVoiceSession {
                 self.lastCommand = ""
                 self.lastResponse = ""
                 self.liveTranscript = ""
+                self.conversationHistoryStore.clear()
+                self.completedConversationRequestID = nil
             }
         }
         client.onDisconnected = { [weak self, weak client] in
@@ -1172,6 +1190,7 @@ final class AdamVoiceSession {
         responseTimeoutTask?.cancel()
         responseTimeoutTask = nil
         lastResponse = text
+        appendConversationTurnIfNeeded(response: text)
         pendingBridgeAudio = bridgeWillSendAudio && outputKind != .bridgeAudio
 
         if bridgeWillSendAudio {
@@ -1189,6 +1208,23 @@ final class AdamVoiceSession {
             return
         }
         speakLocally(text)
+    }
+
+    private func appendConversationTurnIfNeeded(response: String) {
+        guard let requestID = pendingRequestID,
+              completedConversationRequestID != requestID else { return }
+        let command = lastCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let answer = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty, !answer.isEmpty else { return }
+
+        conversationHistoryStore.append(
+            ConversationTurn(
+                userText: command,
+                agentText: answer,
+                timestamp: Date()
+            )
+        )
+        completedConversationRequestID = requestID
     }
 
     private func handleBridgeAudio(

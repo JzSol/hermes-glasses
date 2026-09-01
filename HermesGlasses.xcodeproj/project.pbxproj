@@ -77,6 +77,8 @@
 		AAAA00000000000000000811 /* LensPDFRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000812 /* LensPDFRenderer.swift */; };
 		AAAA00000000000000000813 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000814 /* ShareSheet.swift */; };
 		AAAA00000000000000000817 /* HermesDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000818 /* HermesDesign.swift */; };
+		AAAA00000000000000000871 /* AssistantConversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000870 /* AssistantConversation.swift */; };
+		AAAA00000000000000000873 /* AssistantConversationSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000872 /* AssistantConversationSurface.swift */; };
 		AAAA00000000000000000819 /* NavigationMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000820 /* NavigationMapView.swift */; };
 		AAAA00000000000000000801 /* MWDATCore in Frameworks */ = {isa = PBXBuildFile; productRef = AAAA00000000000000000701 /* MWDATCore */; };
 		AAAA00000000000000000802 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = AAAA00000000000000000702 /* MWDATCamera */; };
@@ -131,6 +133,9 @@
 		ADAD00000000000000000011 /* AdamSpeechSignal.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000116 /* AdamSpeechSignal.swift */; };
 		ADAD00000000000000000012 /* AdamSoundscapeWaveform.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000117 /* AdamSoundscapeWaveform.swift */; };
 		ADAD00000000000000000013 /* AdamSoundscapeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000118 /* AdamSoundscapeManager.swift */; };
+		ADAD00000000000000000014 /* HermesDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000818 /* HermesDesign.swift */; };
+		ADAD00000000000000000015 /* AssistantConversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000870 /* AssistantConversation.swift */; };
+		ADAD00000000000000000016 /* AssistantConversationSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000872 /* AssistantConversationSurface.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -230,6 +235,8 @@
 		AAAA00000000000000000812 /* LensPDFRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lens/LensPDFRenderer.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000814 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000818 /* HermesDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesDesign.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000870 /* AssistantConversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantConversation.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000872 /* AssistantConversationSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantConversationSurface.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000820 /* NavigationMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationMapView.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000A53 /* AiSeeCameraSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeCameraSource.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000A0A /* AiSeeConnectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeConnectionService.swift; sourceTree = "<group>"; };
@@ -334,6 +341,7 @@
 				AAAA00000000000000000816 /* ObjectLogView.swift */,
 				AAAA00000000000000000814 /* ShareSheet.swift */,
 				AAAA00000000000000000818 /* HermesDesign.swift */,
+				AAAA00000000000000000872 /* AssistantConversationSurface.swift */,
 				AAAA00000000000000000820 /* NavigationMapView.swift */,
 				AAAA00000000000000000830 /* OnboardingView.swift */,
 				AAAA00000000000000000832 /* SimulatedLensView.swift */,
@@ -434,6 +442,7 @@
 		AAAA0000000000000000006 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				AAAA00000000000000000870 /* AssistantConversation.swift */,
 				AAAA00000000000000000141 /* yolo11n.mlpackage */,
 			);
 			path = Models;
@@ -658,6 +667,8 @@
 				AAAA00000000000000000811 /* LensPDFRenderer.swift in Sources */,
 				AAAA00000000000000000813 /* ShareSheet.swift in Sources */,
 				AAAA00000000000000000817 /* HermesDesign.swift in Sources */,
+				AAAA00000000000000000871 /* AssistantConversation.swift in Sources */,
+				AAAA00000000000000000873 /* AssistantConversationSurface.swift in Sources */,
 				AAAA00000000000000000819 /* NavigationMapView.swift in Sources */,
 				AAAA00000000000000000A54 /* AiSeeCameraSource.swift in Sources */,
 				AAAA00000000000000000A01 /* AiSeeConnectionService.swift in Sources */,
@@ -692,6 +703,9 @@
 				ADAD00000000000000000011 /* AdamSpeechSignal.swift in Sources */,
 				ADAD00000000000000000012 /* AdamSoundscapeWaveform.swift in Sources */,
 				ADAD00000000000000000013 /* AdamSoundscapeManager.swift in Sources */,
+				ADAD00000000000000000014 /* HermesDesign.swift in Sources */,
+				ADAD00000000000000000015 /* AssistantConversation.swift in Sources */,
+				ADAD00000000000000000016 /* AssistantConversationSurface.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

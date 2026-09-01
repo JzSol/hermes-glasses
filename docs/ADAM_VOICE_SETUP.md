@@ -5,6 +5,14 @@ Meta glasses. It uses standard Bluetooth hands-free audio rather than Meta's
 Wearables Device Access Toolkit. You do not need a Meta developer project or
 a paid Apple Developer membership for a personal prototype.
 
+Adam uses the same chat-first presentation as the full HermesGlasses app:
+conversation bubbles and bounded history, live transcription, session status,
+waveform, start/end/cancel/retry controls, warm Hermes styling, appearance
+settings, and attachment cards when a session supplies an attachment. Adam's
+adapter deliberately exposes no photo button because this target has no camera;
+the interface labels that limitation explicitly and visual bridge requests
+return a camera-unavailable error instead of pretending to capture an image.
+
 ## What runs where
 
 - Ray-Bans: Bluetooth HFP microphone and speaker.
@@ -216,15 +224,17 @@ bridge host; the workflow never reads or commits its secrets.
 1. Pair the Ray-Bans to the iPhone in the Meta AI app and confirm they can act
    as a Bluetooth call device.
 2. Keep the iPhone and Mac connected to the same tailnet.
-3. In Adam, save the `wss://...:8443/voice` endpoint.
-4. Paste the bridge token; it is stored in iPhone Keychain.
-5. Select English or Latvian, open Adam, and grant microphone and speech
+3. Open Adam's gear button and save the `wss://...:8443/voice` endpoint.
+4. Paste the bridge token in Settings; it is stored in iPhone Keychain.
+5. Select English or Latvian, close Settings, and grant microphone and speech
    recognition access. Adam starts listening automatically while the app is open.
-6. Confirm the Input row says `Ray-Ban HFP`. If it says iPhone microphone,
-   reconnect the glasses' Bluetooth audio and restart the session.
+6. In Settings, confirm the Ray-Ban audio card names the glasses HFP input. If
+   it names the iPhone microphone, reconnect the glasses' Bluetooth audio and
+   restart the session.
 7. Say “Adam, what time is it?” or say “Adam”, wait for the flute/listening
-   state, then speak the command. The **Heard** line is Hermes's final local
-   transcript and English replies use George, a British male Kokoro voice.
+   state, then speak the command. The terracotta user bubble is Hermes's final
+   local transcript; the white bubble is the answer. English replies use
+   George, a British male Kokoro voice.
 8. After Adam replies, speak the next command without repeating `Adam`. The
    follow-up window lasts 30 seconds and resets after each completed answer.
    Say `donzo` by itself to close it and return to wake-only listening.
@@ -242,7 +252,9 @@ recording buffer is not modified.
 
 ## Prototype limits
 
-- No camera or “what am I looking at?” support in this target.
+- No camera or “what am I looking at?” capture in this target. The shared
+  attachment card remains available for data supplied by a future non-camera
+  source, but Adam never shows a fake capture control.
 - The app must have been opened and started; iOS does not provide a systemwide
   third-party wake phrase from a terminated app.
 - Background and lock-screen continuity must be verified on the target iPhone;

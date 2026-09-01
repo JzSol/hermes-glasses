@@ -184,6 +184,11 @@ headset, so it needs no Meta Wearables project, camera permission, App ID, or
 Client Token. The iPhone performs wake/boundary detection, then sends the
 captured command over the private bridge. Hermes performs final STT and agent
 reasoning; Kokoro MLX generates the British male response locally on the Mac.
+Adam shares the full app's chat-first UI components: conversation history,
+live transcript bubbles, response and attachment cards, session waveform and
+status controls, warm styling, appearance settings, and accessibility labels.
+Camera-only actions remain hidden and the interface states that photos are
+unavailable, while the underlying target stays free of Meta/camera dependencies.
 
 The first turn begins with **“Adam”**. After every completed reply, Adam opens
 a fresh 30-second follow-up window where the next command needs no wake word;

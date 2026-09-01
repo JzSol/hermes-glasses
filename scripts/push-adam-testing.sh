@@ -52,6 +52,8 @@ invalid_paths=`
     git diff --name-only "${remote_ref}..HEAD" | while IFS= read -r path; do
         case "$path" in
             AdamVoice/*) : ;;
+            HermesGlasses.xcodeproj/project.pbxproj) : ;;
+            HermesGlasses/Models/AssistantConversation.swift) : ;;
             HermesGlasses/Services/HermesAudioManager.swift) : ;;
             HermesGlasses/Services/HermesAPIClient.swift) : ;;
             HermesGlasses/Services/HermesSpeechRecognizer.swift) : ;;
@@ -63,12 +65,18 @@ invalid_paths=`
             HermesGlasses/Services/AdamSpeechSignal.swift) : ;;
             HermesGlasses/Services/AdamSoundscapeWaveform.swift) : ;;
             HermesGlasses/Services/AdamSoundscapeManager.swift) : ;;
+            HermesGlasses/ViewModels/HermesSessionViewModel.swift) : ;;
+            HermesGlasses/Views/AssistantConversationSurface.swift) : ;;
+            HermesGlasses/Views/ContentView.swift) : ;;
+            HermesGlasses/Views/HermesDesign.swift) : ;;
             Config/AdamVoice.xcconfig) : ;;
             Config/AdamVoice.example.xcconfig) : ;;
+            README.md) : ;;
             docs/ADAM_VOICE_SETUP.md) : ;;
             scripts/push-adam-testing.sh) : ;;
             tests/adam-signal/*) : ;;
             tests/adam-soundscape/*) : ;;
+            tests/assistant-conversation/*) : ;;
             tests/endpoint/*) : ;;
             tests/speech-voice/*) : ;;
             tests/voice-locale/*) : ;;

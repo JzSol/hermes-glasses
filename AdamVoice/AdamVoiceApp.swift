@@ -12,6 +12,12 @@ import SwiftUI
 struct AdamVoiceApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var session: AdamVoiceSession
+    @AppStorage(AppearanceMode.storageKey) private var appearanceRaw =
+        AppearanceMode.system.rawValue
+
+    private var appearance: AppearanceMode {
+        AppearanceMode(rawValue: appearanceRaw) ?? .system
+    }
 
     init() {
         _session = State(initialValue: AdamVoiceSession())
@@ -20,6 +26,7 @@ struct AdamVoiceApp: App {
     var body: some Scene {
         WindowGroup {
             AdamVoiceView(session: session)
+                .preferredColorScheme(appearance.colorScheme)
                 .onChange(of: scenePhase, initial: true) { _, newPhase in
                     switch newPhase {
                     case .active:
