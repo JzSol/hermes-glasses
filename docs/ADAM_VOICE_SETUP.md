@@ -132,6 +132,7 @@ stt:
     language: ''
     device: cpu
     compute_type: int8
+    beam_size: 1
     vad: true
     vad_min_silence_ms: 350
 ```
