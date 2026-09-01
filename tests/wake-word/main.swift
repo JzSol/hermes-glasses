@@ -65,11 +65,9 @@ expect(gate.timeout(now: t0.addingTimeInterval(8.1)),
 expectEqual(gate.handleFinal("late command", now: t0.addingTimeInterval(8.1)), .suppressed,
             "late command after timeout is suppressed")
 
-// Explicit lifecycle events always return to armed mode.
+// Cancellation and failures always return to wake-only mode.
 expectEqual(gate.handleFinal("Adam", now: t0), .prompt, "wake before cancel")
 expectEqual(gate.cancel(), .rearmed, "cancel rearms")
-expectEqual(gate.handleFinal("Adam", now: t0), .prompt, "wake before completion")
-expectEqual(gate.completed(), .rearmed, "completion rearms")
 expectEqual(gate.handleFinal("Adam", now: t0), .prompt, "wake before failure")
 expectEqual(gate.failed(), .rearmed, "failure rearms")
 
@@ -93,17 +91,46 @@ expectEqual(gate.state, .armed, "interrupt-and-submit rearms")
 gate.setSpeaking(false)
 expectEqual(gate.state, .armed, "speaking false leaves gate armed")
 
-// Completing a response never opens a hands-free follow-up window. Every new
-// turn must begin with Adam.
-var responseGate = WakeWordGate()
+// A successful response opens a fresh 30-second hands-free follow-up window.
+var responseGate = WakeWordGate(followUpWindow: 30)
 responseGate.setSpeaking(true)
-expectEqual(responseGate.completed(), .rearmed,
-            "response completion rearms wake-only mode")
-expectEqual(responseGate.handleFinal("what about tomorrow?", now: t0), .suppressed,
-            "post-response speech without Adam is suppressed")
-expectEqual(responseGate.handleFinal("Adam, what about tomorrow?", now: t0),
+expectEqual(responseGate.completed(now: t0), .followUpOpened,
+            "response completion opens follow-up mode")
+expect(responseGate.state.isFollowUp, "completed response is in follow-up state")
+expectEqual(responseGate.remainingCommandWindow(now: t0), 30,
+            "follow-up starts with a 30-second deadline")
+expectEqual(responseGate.handleFinal("what about tomorrow?", now: t0.addingTimeInterval(2)),
             .submit("what about tomorrow?"),
-            "post-response command still works when prefixed by Adam")
+            "follow-up command does not require Adam")
+
+// Each successful reply resets the full follow-up window.
+responseGate.setSpeaking(true)
+let secondReply = t0.addingTimeInterval(20)
+expectEqual(responseGate.completed(now: secondReply), .followUpOpened,
+            "next reply reopens follow-up mode")
+expectEqual(responseGate.remainingCommandWindow(now: secondReply), 30,
+            "next reply resets the full follow-up deadline")
+
+// Donzo is an exact end phrase: case, width, punctuation, and diacritics are
+// tolerated, while longer phrases remain normal commands.
+expectEqual(responseGate.handleFinal("DÓNZO!", now: secondReply), .followUpEnded,
+            "standalone donzo ends follow-up mode")
+expectEqual(responseGate.state, .armed, "donzo returns to wake-only mode")
+responseGate.setSpeaking(true)
+_ = responseGate.completed(now: secondReply)
+expectEqual(responseGate.handleFinal("donzo please", now: secondReply),
+            .submit("donzo please"), "longer donzo phrase reaches Hermes")
+
+// Timeout and failure both return to wake-only behavior.
+responseGate.setSpeaking(true)
+_ = responseGate.completed(now: t0)
+expect(responseGate.timeout(now: t0.addingTimeInterval(30.1)),
+       "follow-up timeout rearms")
+expectEqual(responseGate.handleFinal("late follow-up", now: t0.addingTimeInterval(31)),
+            .suppressed, "speech after follow-up timeout needs Adam")
+responseGate.setSpeaking(true)
+_ = responseGate.completed(now: t0)
+expectEqual(responseGate.failed(), .rearmed, "failed follow-up returns wake-only")
 
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

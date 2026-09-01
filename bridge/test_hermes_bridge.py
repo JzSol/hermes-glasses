@@ -558,6 +558,7 @@ class BridgeWelcomeTests(unittest.TestCase):
             self.assertTrue(payload["capabilities"]["server_stt"])
             self.assertTrue(payload["capabilities"]["streaming_tts"])
             self.assertTrue(payload["capabilities"]["turn_cancel"])
+            self.assertTrue(payload["capabilities"]["follow_up_mode"])
             hb.BRIDGE_VISION = True
             payload = json.loads(hb.welcome_message())
             self.assertTrue(payload["capabilities"]["vision"])
@@ -687,6 +688,7 @@ class BridgeAudioProtocolTests(unittest.TestCase):
                 "channels": 1,
                 "locale": "en-GB",
                 "vocabulary": ["Tailscale", "Ray-Ban Meta"],
+                "follow_up": True,
             }),
             b"\x01\x00" * 320,
             json.dumps({"type": "audio_end", "request_id": request_id}),
@@ -701,6 +703,7 @@ class BridgeAudioProtocolTests(unittest.TestCase):
         self.assertEqual(capture["request_id"], request_id)
         self.assertEqual(capture["locale"], "en-GB")
         self.assertEqual(capture["vocabulary"], ["Tailscale", "Ray-Ban Meta"])
+        self.assertTrue(capture["follow_up"])
         self.assertEqual(bytes(capture["pcm"]), b"\x01\x00" * 320)
         payloads = [json.loads(item) for item in websocket.sent if isinstance(item, str)]
         self.assertEqual(payloads[1], {"type": "audio_ready", "request_id": request_id})
@@ -723,6 +726,42 @@ class BridgeAudioProtocolTests(unittest.TestCase):
         self.assertEqual(error["type"], "error")
         self.assertEqual(error["request_id"], "bad-format")
         self.assertIn("16000 Hz", error["message"])
+
+    def test_follow_up_defaults_false_for_old_clients(self):
+        request_id = "old-client-turn"
+        websocket = ConnectionWebSocket([
+            json.dumps({
+                "type": "audio_start",
+                "request_id": request_id,
+                "format": "pcm_s16le",
+                "sample_rate": 16_000,
+                "channels": 1,
+            }),
+            b"\x01\x00" * 320,
+            json.dumps({"type": "audio_end", "request_id": request_id}),
+        ])
+        realtime_turn = mock.AsyncMock()
+
+        with mock.patch.object(hb, "process_audio_turn", realtime_turn):
+            asyncio.run(hb.handle_connection(websocket))
+
+        self.assertFalse(realtime_turn.await_args.args[1]["follow_up"])
+
+    def test_non_boolean_follow_up_is_rejected(self):
+        websocket = ConnectionWebSocket([json.dumps({
+            "type": "audio_start",
+            "request_id": "bad-follow-up",
+            "format": "pcm_s16le",
+            "sample_rate": 16_000,
+            "channels": 1,
+            "follow_up": "yes",
+        })])
+
+        asyncio.run(hb.handle_connection(websocket))
+
+        error = json.loads(websocket.sent[1])
+        self.assertEqual(error["type"], "error")
+        self.assertIn("boolean", error["message"])
 
     def test_pcm_wav_wrapper_has_expected_wire_format(self):
         import io
@@ -947,6 +986,64 @@ class BridgeAudioProtocolTests(unittest.TestCase):
             if isinstance(item, str) and json.loads(item).get("type") == "error"
         ]
         self.assertEqual(errors, [])
+
+
+class BridgeFollowUpTests(unittest.TestCase):
+    @staticmethod
+    def _run_turn(transcript, follow_up):
+        websocket = FakeWebSocket([])
+        api = mock.MagicMock()
+        api.transcribe.return_value = {
+            "transcript": transcript,
+            "provider": "local",
+            "backend": "mlx-whisper",
+        }
+        gateway = SimpleNamespace(ask=mock.AsyncMock(return_value="All right."))
+        stream = mock.MagicMock()
+        stream.open = mock.AsyncMock(return_value=False)
+        stream.close = mock.AsyncMock()
+        stream.provider = "kokoro-mlx"
+        stream.voice = "bm_george"
+        capture = {
+            "request_id": "follow-up-turn",
+            "locale": "en-GB",
+            "pcm": bytearray(b"\x01\x00" * 320),
+            "vocabulary": ["Donzo"],
+            "follow_up": follow_up,
+        }
+        state = {
+            "send_lock": asyncio.Lock(),
+            "hermes_api": api,
+            "gateway": gateway,
+        }
+        with mock.patch.object(hb, "HermesTTSStream", return_value=stream), \
+             mock.patch.object(hb, "synthesize_speech", return_value=b""):
+            asyncio.run(hb.process_audio_turn(websocket, capture, state))
+        payloads = [
+            json.loads(item) for item in websocket.sent if isinstance(item, str)
+        ]
+        return payloads, gateway
+
+    def test_standalone_donzo_ends_follow_up_without_agent_or_tts(self):
+        for phrase in ("donzo", "DONZO!", "Dónzo.", "ＤＯＮＺＯ"):
+            payloads, gateway = self._run_turn(phrase, True)
+            self.assertEqual(payloads, [{
+                "type": "follow_up_ended",
+                "request_id": "follow-up-turn",
+            }])
+            gateway.ask.assert_not_awaited()
+
+    def test_longer_donzo_phrase_remains_a_normal_follow_up_command(self):
+        payloads, gateway = self._run_turn("donzo please", True)
+        self.assertEqual(payloads[0]["type"], "transcript")
+        self.assertIn("response", [payload["type"] for payload in payloads])
+        gateway.ask.assert_awaited_once()
+
+    def test_donzo_outside_follow_up_remains_a_normal_command(self):
+        payloads, gateway = self._run_turn("donzo", False)
+        self.assertEqual(payloads[0]["type"], "transcript")
+        self.assertIn("response_start", [payload["type"] for payload in payloads])
+        gateway.ask.assert_awaited_once()
 
 
 class BridgeStreamingTTSTests(unittest.TestCase):

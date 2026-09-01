@@ -183,15 +183,16 @@ camera, location, or glasses-registration permission.
 2. Keep the iPhone and Mac connected to the same tailnet.
 3. In Adam, save the `wss://...:8443/voice` endpoint.
 4. Paste the bridge token; it is stored in iPhone Keychain.
-5. Select English or Latvian, tap **Start**, and grant microphone and speech
-   recognition access.
+5. Select English or Latvian, open Adam, and grant microphone and speech
+   recognition access. Adam starts listening automatically while the app is open.
 6. Confirm the Input row says `Ray-Ban HFP`. If it says iPhone microphone,
    reconnect the glasses' Bluetooth audio and restart the session.
 7. Say “Adam, what time is it?” or say “Adam”, wait for the flute/listening
    state, then speak the command. The **Heard** line is Hermes's final local
    transcript and English replies use George, a British male Kokoro voice.
-8. Say `Adam` again for every new turn. Post-response conversation without the
-   wake word is ignored.
+8. After Adam replies, speak the next command without repeating `Adam`. The
+   follow-up window lasts 30 seconds and resets after each completed answer.
+   Say `donzo` by itself to close it and return to wake-only listening.
 
 The **Listening sounds** switch is enabled by default. One short, quiet
 generated flute cue marks the open command window; recording itself stays

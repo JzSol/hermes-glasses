@@ -11,14 +11,25 @@ import Foundation
 /// Whether a finalized or partial transcript should reach the agent.
 struct WakeWordGate: Sendable {
     static let defaultCommandWindow: TimeInterval = 8
+    static let defaultFollowUpWindow: TimeInterval = 30
 
     enum State: Equatable, Sendable {
         case armed
         case awaitingCommand(until: Date)
+        case followUp(until: Date)
         case speaking
 
         var isAwaitingCommand: Bool {
-            if case .awaitingCommand = self { return true }
+            switch self {
+            case .awaitingCommand, .followUp:
+                return true
+            case .armed, .speaking:
+                return false
+            }
+        }
+
+        var isFollowUp: Bool {
+            if case .followUp = self { return true }
             return false
         }
     }
@@ -37,6 +48,10 @@ struct WakeWordGate: Sendable {
         case interruptAndSubmit(String)
         /// The command window expired before a command arrived.
         case rearmed
+        /// A successful reply opened the hands-free follow-up window.
+        case followUpOpened
+        /// The standalone end phrase closed the follow-up window.
+        case followUpEnded
     }
 
     private struct Token {
@@ -46,6 +61,7 @@ struct WakeWordGate: Sendable {
 
     private(set) var state: State = .armed
     private let commandWindow: TimeInterval
+    private let followUpWindow: TimeInterval
     private let aliases: [[String]]
 
     /// Create a gate with the single Adam wake word. Custom aliases are
@@ -53,9 +69,11 @@ struct WakeWordGate: Sendable {
     /// matched by whole tokens at the beginning of an utterance.
     init(
         commandWindow: TimeInterval = WakeWordGate.defaultCommandWindow,
+        followUpWindow: TimeInterval = WakeWordGate.defaultFollowUpWindow,
         aliases: [String] = ["Adam"]
     ) {
         self.commandWindow = max(0, commandWindow)
+        self.followUpWindow = max(0, followUpWindow)
         self.aliases = aliases.compactMap { Self.tokenValues(in: $0) }
             .filter { !$0.isEmpty }
     }
@@ -63,8 +81,12 @@ struct WakeWordGate: Sendable {
     /// The deadline of the active command window, if any. Session timers use
     /// this instead of assuming every window has the initial wake duration.
     var commandDeadline: Date? {
-        guard case .awaitingCommand(let deadline) = state else { return nil }
-        return deadline
+        switch state {
+        case .awaitingCommand(let deadline), .followUp(let deadline):
+            return deadline
+        case .armed, .speaking:
+            return nil
+        }
     }
 
     /// Seconds remaining in the active command window.
@@ -77,7 +99,7 @@ struct WakeWordGate: Sendable {
     /// beginning of the utterance is meaningful. In awaiting mode the next
     /// non-empty final is always the command, as promised by the wake UX.
     mutating func handleFinal(_ text: String, now: Date = Date()) -> Action {
-        if case .awaitingCommand(let deadline) = state, now >= deadline {
+        if let deadline = commandDeadline, now >= deadline {
             state = .armed
             return .suppressed
         }
@@ -89,6 +111,11 @@ struct WakeWordGate: Sendable {
         case .awaitingCommand:
             state = .armed
             return .submit(trimmed)
+        case .followUp:
+            state = .armed
+            return Self.isFollowUpEndPhrase(trimmed)
+                ? .followUpEnded
+                : .submit(trimmed)
         case .speaking:
             guard let match = prefixMatch(in: text) else { return .suppressed }
             if let tail = match.tail, !tail.isEmpty {
@@ -114,7 +141,7 @@ struct WakeWordGate: Sendable {
     /// exists. This keeps ambient partials private and avoids substring wake
     /// matches.
     mutating func handlePartial(_ text: String, now: Date = Date()) -> Action {
-        if case .awaitingCommand(let deadline) = state, now >= deadline {
+        if let deadline = commandDeadline, now >= deadline {
             state = .armed
             return .rearmed
         }
@@ -137,9 +164,9 @@ struct WakeWordGate: Sendable {
         return .rearmed
     }
 
-    mutating func completed() -> Action {
-        state = .armed
-        return .rearmed
+    mutating func completed(now: Date = Date()) -> Action {
+        state = .followUp(until: now.addingTimeInterval(followUpWindow))
+        return .followUpOpened
     }
 
     mutating func failed() -> Action {
@@ -150,7 +177,7 @@ struct WakeWordGate: Sendable {
     /// Expire the command window without consuming a future utterance.
     @discardableResult
     mutating func timeout(now: Date = Date()) -> Bool {
-        guard case .awaitingCommand(let deadline) = state, now >= deadline else {
+        guard let deadline = commandDeadline, now >= deadline else {
             return false
         }
         state = .armed
@@ -217,6 +244,10 @@ struct WakeWordGate: Sendable {
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
             locale: Locale(identifier: "en_US_POSIX")
         ).lowercased()
+    }
+
+    private static func isFollowUpEndPhrase(_ text: String) -> Bool {
+        tokenValues(in: text) == ["donzo"]
     }
 
     private static func trimLeadingSeparators(_ text: String) -> String {

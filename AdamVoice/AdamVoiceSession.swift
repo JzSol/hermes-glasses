@@ -42,7 +42,9 @@ final class AdamVoiceSession {
             case .armed, .listening:
                 return "Listening for Adam"
             case .wakeAcknowledged, .awaitingCommand:
-                return "Wake acknowledged — listening"
+                return self == .awaitingCommand
+                    ? "Follow-up listening — say donzo to finish"
+                    : "Wake acknowledged — listening"
             case .hearingSpeech:
                 return "Hearing your command"
             case .transcribing:
@@ -64,7 +66,8 @@ final class AdamVoiceSession {
             case .connecting: return "connecting"
             case .reconnecting: return "reconnecting"
             case .armed, .listening: return "armed"
-            case .wakeAcknowledged, .awaitingCommand: return "wake_acknowledged"
+            case .wakeAcknowledged: return "wake_acknowledged"
+            case .awaitingCommand: return "follow_up_listening"
             case .hearingSpeech: return "hearing_speech"
             case .transcribing: return "transcribing"
             case .thinking, .processing: return "thinking"
@@ -176,6 +179,8 @@ final class AdamVoiceSession {
     @ObservationIgnored private var runGeneration = 0
     @ObservationIgnored private var isOpeningBridge = false
     @ObservationIgnored private var pendingBridgeAudio = false
+    @ObservationIgnored private var followUpModeSupported = false
+    @ObservationIgnored private var activeCaptureIsFollowUp = false
     @ObservationIgnored private var outputKind: OutputKind?
     @ObservationIgnored private var cancellingOutput = false
     /// Stop callbacks are delivered asynchronously by AVSpeechSynthesizer /
@@ -422,6 +427,7 @@ final class AdamVoiceSession {
         responseTimeoutTask = nil
         turnGeneration &+= 1
         pendingRequestID = nil
+        activeCaptureIsFollowUp = false
         commandWindowTask?.cancel()
         commandWindowTask = nil
         pendingBridgeAudio = false
@@ -463,6 +469,8 @@ final class AdamVoiceSession {
         lastCommand = ""
         lastResponse = ""
         pendingRequestID = nil
+        followUpModeSupported = false
+        activeCaptureIsFollowUp = false
         turnGeneration &+= 1
         reconnectAttempt = 0
         wakeGate = WakeWordGate(
@@ -518,6 +526,7 @@ final class AdamVoiceSession {
 
         _ = wakeGate.cancel()
         pendingBridgeAudio = false
+        activeCaptureIsFollowUp = false
         outputKind = nil
         cancellingOutput = false
         ignoredOutputCompletions = 0
@@ -785,6 +794,7 @@ final class AdamVoiceSession {
         }
         client.onCapabilities = { [weak self] capabilities in
             Task { @MainActor [weak self] in
+                self?.followUpModeSupported = capabilities.followUpMode
                 guard capabilities.audioUpload,
                       capabilities.serverSTT,
                       capabilities.streamingTTS else {
@@ -801,6 +811,15 @@ final class AdamVoiceSession {
                 // Local cancellation already returns to listening. This
                 // callback is intentionally idempotent for remote confirms.
                 self.errorMessage = nil
+            }
+        }
+        client.onFollowUpEnded = { [weak self, weak client] requestID in
+            Task { @MainActor [weak self, weak client] in
+                guard let self, let client,
+                      self.isCurrentBridge(client, generation: generation),
+                      let pendingRequestID = self.pendingRequestID,
+                      requestID == nil || requestID == pendingRequestID else { return }
+                self.finishFollowUpMode(playCompletionCue: false)
             }
         }
         client.onCapturePhotoRequested = { [weak self, weak client] in
@@ -836,6 +855,10 @@ final class AdamVoiceSession {
     private func handleBridgeDisconnect(_ client: HermesAPIClient, generation: Int) {
         guard isCurrentBridge(client, generation: generation) else { return }
         bridgeConnected = false
+        followUpModeSupported = false
+        commandWindowTask?.cancel()
+        commandWindowTask = nil
+        _ = wakeGate.cancel()
         client.onDisconnected = nil
         bridgeClient = nil
         bridgeGeneration += 1
@@ -880,10 +903,12 @@ final class AdamVoiceSession {
             client.onSessionReset = nil
             client.onAttention = nil
             client.onTurnCancelled = nil
+            client.onFollowUpEnded = nil
             client.disconnect()
         }
         bridgeClient = nil
         bridgeConnected = false
+        followUpModeSupported = false
         pendingBridgeAudio = false
         if pendingRequestID != nil {
             responseTimeoutTask?.cancel()
@@ -978,6 +1003,11 @@ final class AdamVoiceSession {
             break
         case .rearmed:
             status = bridgeConnected ? .armed : .reconnecting
+        case .followUpOpened:
+            status = .awaitingCommand
+            armCommandWindowTimeout()
+        case .followUpEnded:
+            finishFollowUpMode(playCompletionCue: true)
         }
     }
 
@@ -985,8 +1015,9 @@ final class AdamVoiceSession {
         commandWindowTask?.cancel()
         guard let remaining = wakeGate.remainingCommandWindow(), remaining > 0 else {
             commandWindowTask = nil
+            let wasFollowUp = wakeGate.state.isFollowUp
             if wakeGate.timeout() {
-                finishListeningSoundscape()
+                finishListeningSoundscape(playCompletionIfIdle: wasFollowUp)
                 liveTranscript = ""
                 status = bridgeConnected ? .armed : .reconnecting
             }
@@ -997,10 +1028,12 @@ final class AdamVoiceSession {
             try? await Task.sleep(nanoseconds: nanoseconds)
             guard !Task.isCancelled, let self, self.isRunning else { return }
             self.commandWindowTask = nil
+            let wasFollowUp = self.wakeGate.state.isFollowUp
             if self.wakeGate.timeout() {
-                self.finishListeningSoundscape()
+                self.finishListeningSoundscape(playCompletionIfIdle: wasFollowUp)
                 self.liveTranscript = ""
                 self.isCapturingUtterance = false
+                self.activeCaptureIsFollowUp = false
                 self.utteranceAudio.removeAll(keepingCapacity: true)
                 self.lastUtteranceAudio.removeAll(keepingCapacity: true)
                 self.status = self.bridgeConnected ? .armed : .reconnecting
@@ -1015,6 +1048,9 @@ final class AdamVoiceSession {
     private func submitRecordedUtterance() {
         commandWindowTask?.cancel()
         commandWindowTask = nil
+        let isFollowUp = followUpModeSupported
+            && (activeCaptureIsFollowUp || wakeGate.state.isFollowUp)
+        activeCaptureIsFollowUp = false
         _ = wakeGate.cancel()
         let audio = takeRecordedUtterance()
         guard audio.count >= 640, audioHasMeaningfulEnergy(audio) else {
@@ -1081,7 +1117,10 @@ final class AdamVoiceSession {
                   self.turnGeneration == requestGeneration else { return }
             do {
                 try await client.uploadAudioCapture(
-                    audio, requestID: requestID, vocabulary: terms
+                    audio,
+                    requestID: requestID,
+                    vocabulary: terms,
+                    followUp: isFollowUp
                 )
             } catch {
                 guard self.pendingRequestID == requestID else { return }
@@ -1295,13 +1334,31 @@ final class AdamVoiceSession {
         responseTimeoutTask?.cancel()
         responseTimeoutTask = nil
         pendingRequestID = nil
-        if case .speaking = wakeGate.state {
-            _ = wakeGate.completed()
-        } else {
-            wakeGate.setSpeaking(false)
+        let shouldOpenFollowUp = bridgeConnected && followUpModeSupported
+        if !shouldOpenFollowUp { _ = wakeGate.cancel() }
+        status = bridgeConnected ? .armed : .reconnecting
+        scheduleSpeechResume(openFollowUp: shouldOpenFollowUp)
+        if !bridgeConnected { scheduleReconnect() }
+    }
+
+    private func finishFollowUpMode(playCompletionCue: Bool) {
+        soundscape.stopThinkingPulse()
+        responseTimeoutTask?.cancel()
+        responseTimeoutTask = nil
+        commandWindowTask?.cancel()
+        commandWindowTask = nil
+        pendingRequestID = nil
+        pendingBridgeAudio = false
+        activeCaptureIsFollowUp = false
+        isCapturingUtterance = false
+        utteranceAudio.removeAll(keepingCapacity: true)
+        lastUtteranceAudio.removeAll(keepingCapacity: true)
+        _ = wakeGate.cancel()
+        speechRecognizer.isSuspended = false
+        if playCompletionCue, listeningSoundsEnabled {
+            soundscape.playCompletionCue()
         }
         status = bridgeConnected ? .armed : .reconnecting
-        scheduleSpeechResume()
         if !bridgeConnected { scheduleReconnect() }
     }
 
@@ -1314,6 +1371,7 @@ final class AdamVoiceSession {
         responseTimeoutTask = nil
         pendingRequestID = nil
         pendingBridgeAudio = false
+        activeCaptureIsFollowUp = false
         errorMessage = message
         _ = wakeGate.failed()
         turnGeneration &+= 1
@@ -1343,6 +1401,7 @@ final class AdamVoiceSession {
         responseTimeoutTask = nil
         pendingRequestID = nil
         pendingBridgeAudio = false
+        activeCaptureIsFollowUp = false
         commandWindowTask?.cancel()
         commandWindowTask = nil
         soundscape.stopImmediately()
@@ -1430,13 +1489,23 @@ final class AdamVoiceSession {
         pendingBridgeAudio = false
     }
 
-    private func scheduleSpeechResume() {
+    private func scheduleSpeechResume(openFollowUp: Bool = false) {
         speechResumeTask?.cancel()
         speechResumeTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: Self.speechResumeGrace)
             guard !Task.isCancelled, let self, self.isRunning else { return }
             self.speechResumeTask = nil
             self.speechRecognizer.isSuspended = false
+            guard openFollowUp, self.bridgeConnected,
+                  self.followUpModeSupported else {
+                _ = self.wakeGate.cancel()
+                return
+            }
+            let action = self.wakeGate.completed()
+            if action == .followUpOpened {
+                self.status = .awaitingCommand
+                self.armCommandWindowTimeout()
+            }
         }
     }
 
@@ -1478,10 +1547,14 @@ final class AdamVoiceSession {
     private func handleSpeechStarted() {
         guard isRunning, outputKind == nil,
               pendingRequestID == nil,
-              status == .armed || status == .wakeAcknowledged else { return }
+              status == .armed || status == .wakeAcknowledged
+                || status == .awaitingCommand else { return }
+        activeCaptureIsFollowUp = wakeGate.state.isFollowUp
         utteranceAudio = preRollAudio
         isCapturingUtterance = true
         if wakeGate.state.isAwaitingCommand {
+            commandWindowTask?.cancel()
+            commandWindowTask = nil
             status = .hearingSpeech
         }
         if wakeGate.state.isAwaitingCommand, listeningSoundsEnabled {
@@ -1503,6 +1576,7 @@ final class AdamVoiceSession {
             // A single "Adam plus question" utterance still waits for
             // Apple's final text so WakeWordGate can strip the wake prefix.
             status = .armed
+            activeCaptureIsFollowUp = false
         }
     }
 

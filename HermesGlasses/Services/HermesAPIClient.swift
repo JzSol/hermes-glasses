@@ -33,6 +33,7 @@ struct HermesBridgeCapabilities: Equatable, Sendable {
     var serverSTT = false
     var streamingTTS = false
     var turnCancel = false
+    var followUpMode = false
 }
 
 struct HermesVoiceMetadata: Equatable, Sendable {
@@ -78,6 +79,8 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
     var onAttention: ((String) -> Void)?
     /// Called when the bridge has stopped the active turn.
     var onTurnCancelled: ((String?) -> Void)?
+    /// Called when a standalone "donzo" closed the hands-free follow-up mode.
+    var onFollowUpEnded: ((String?) -> Void)?
 
     // MARK: - Private
 
@@ -251,7 +254,8 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
             audioUpload: capabilityJSON?["audio_upload"] as? Bool ?? false,
             serverSTT: capabilityJSON?["server_stt"] as? Bool ?? false,
             streamingTTS: capabilityJSON?["streaming_tts"] as? Bool ?? false,
-            turnCancel: capabilityJSON?["turn_cancel"] as? Bool ?? false
+            turnCancel: capabilityJSON?["turn_cancel"] as? Bool ?? false,
+            followUpMode: capabilityJSON?["follow_up_mode"] as? Bool ?? false
         )
     }
 
@@ -329,24 +333,16 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
     /// belong to `requestID` until `finishAudioCapture` closes the turn.
     func startAudioCapture(
         requestID: String,
-        vocabulary: [String] = []
+        vocabulary: [String] = [],
+        followUp: Bool = false
     ) {
         guard isConnected, let ws = webSocket, !requestID.isEmpty else { return }
         isFinalized = false
-        let words = Array(vocabulary.prefix(24)).map {
-            String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(48))
-        }.filter { !$0.isEmpty }
-        let payload: [String: Any] = [
-            "type": "audio_start",
-            "request_id": requestID,
-            "locale": locale.rawValue,
-            "format": "pcm_s16le",
-            "sample_rate": 16_000,
-            "channels": 1,
-            "vocabulary": words,
-            "wake_verified": true,
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+        guard let data = try? makeAudioStartData(
+            requestID: requestID,
+            vocabulary: vocabulary,
+            followUp: followUp
+        ),
               let text = String(data: data, encoding: .utf8) else { return }
         ws.send(.string(text)) { [weak self] error in
             if let error {
@@ -363,26 +359,18 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
     func uploadAudioCapture(
         _ data: Data,
         requestID: String,
-        vocabulary: [String] = []
+        vocabulary: [String] = [],
+        followUp: Bool = false
     ) async throws {
         guard isConnected, let ws = webSocket, !requestID.isEmpty else {
             throw URLError(.notConnectedToInternet)
         }
         isFinalized = false
-        let words = Array(vocabulary.prefix(24)).map {
-            String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(48))
-        }.filter { !$0.isEmpty }
-        let start: [String: Any] = [
-            "type": "audio_start",
-            "request_id": requestID,
-            "locale": locale.rawValue,
-            "format": "pcm_s16le",
-            "sample_rate": 16_000,
-            "channels": 1,
-            "vocabulary": words,
-            "wake_verified": true,
-        ]
-        let startData = try JSONSerialization.data(withJSONObject: start)
+        let startData = try makeAudioStartData(
+            requestID: requestID,
+            vocabulary: vocabulary,
+            followUp: followUp
+        )
         guard let startText = String(data: startData, encoding: .utf8) else {
             throw HermesAPIClientError.invalidAudioPayload
         }
@@ -398,6 +386,31 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
         }
         isFinalized = true
         try await ws.send(.string(endText))
+    }
+
+    /// Build the protocol-v2 opening frame without requiring a live socket.
+    /// Keeping this pure prevents the streaming and complete-upload paths
+    /// from drifting and gives endpoint tests a stable protocol seam.
+    func makeAudioStartData(
+        requestID: String,
+        vocabulary: [String] = [],
+        followUp: Bool = false
+    ) throws -> Data {
+        let words = Array(vocabulary.prefix(24)).map {
+            String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(48))
+        }.filter { !$0.isEmpty }
+        let payload: [String: Any] = [
+            "type": "audio_start",
+            "request_id": requestID,
+            "locale": locale.rawValue,
+            "format": "pcm_s16le",
+            "sample_rate": 16_000,
+            "channels": 1,
+            "vocabulary": words,
+            "wake_verified": true,
+            "follow_up": followUp,
+        ]
+        return try JSONSerialization.data(withJSONObject: payload)
     }
 
     /// Data indices are not guaranteed to start at zero. Adam's rolling
@@ -671,6 +684,8 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
                 }
             case "turn_cancelled":
                 self?.onTurnCancelled?(json["request_id"] as? String)
+            case "follow_up_ended":
+                self?.onFollowUpEnded?(json["request_id"] as? String)
             default:
                 break
             }

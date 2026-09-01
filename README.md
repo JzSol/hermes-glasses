@@ -185,9 +185,11 @@ Client Token. The iPhone performs wake/boundary detection, then sends the
 captured command over the private bridge. Hermes performs final STT and agent
 reasoning; Kokoro MLX generates the British male response locally on the Mac.
 
-Every turn must begin with **“Adam”**; ambient and post-response speech is
-suppressed. A short generated flute cue marks the command window, recording is
-silent, and a droplet confirms upload. English replies use local Kokoro voice
+The first turn begins with **“Adam”**. After every completed reply, Adam opens
+a fresh 30-second follow-up window where the next command needs no wake word;
+say **“donzo”** by itself to end it immediately. A short generated flute cue
+marks the initial command window, recording is silent, and a droplet confirms
+upload. English replies use local Kokoro voice
 `bm_george`; Latvian uses the male Nils neural fallback. Adam applies bounded
 gain to quiet HFP wake audio and to the PCM copy sent to Whisper, stores the
 bridge token in iPhone Keychain, and accepts a release endpoint only when it is

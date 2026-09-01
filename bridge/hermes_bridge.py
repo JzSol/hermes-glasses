@@ -7,7 +7,8 @@ the captured utterance to Hermes for final STT, agent reasoning, and TTS.
 Protocol (JSON text frames):
   app → bridge: {"type":"audio_start","request_id":...,
                  "format":"pcm_s16le","sample_rate":16000,"channels":1,
-                 "locale":"en-GB"|"lv-LV"}     begin captured utterance
+                 "locale":"en-GB"|"lv-LV","follow_up":bool}
+                                                  begin captured utterance
   app → bridge: binary PCM16 frames, then {"type":"audio_end",...}
   app → bridge: {"type":"query","text":...}   legacy text client
   app → bridge: {"type":"new_session"}           forget the conversation
@@ -18,6 +19,7 @@ Protocol (JSON text frames):
                 "turn_cancel":bool}} /
                 {"type":"capture_photo"} /
                 {"type":"response","text":...,"request_id":...} /
+                {"type":"follow_up_ended","request_id":...} /
                 {"type":"session_reset"} /
                 transcript / response deltas / response +
                 audio_start + binary PCM16 mono TTS + audio_end
@@ -41,6 +43,7 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 import wave
 import urllib.error
 import urllib.parse
@@ -130,7 +133,7 @@ HERMES_AUDIO_MAX_BYTES = (
     * HERMES_AUDIO_MAX_SECONDS
 )
 HERMES_STT_PROMPT = (
-    "Adam, Hermes, Janis, Ray-Ban Meta, Tailscale. Preserve names, product "
+    "Adam, Donzo, Hermes, Janis, Ray-Ban Meta, Tailscale. Preserve names, product "
     "terms, and punctuation exactly."
 )
 
@@ -877,6 +880,16 @@ def strip_adam_wake_word(text: str) -> str:
     return _WAKE_PREFIX_RE.sub("", (text or "").strip(), count=1).strip()
 
 
+def is_donzo_command(text: str) -> bool:
+    """Match only a standalone, punctuation-tolerant follow-up end phrase."""
+    folded = unicodedata.normalize("NFKD", text or "").casefold()
+    without_marks = "".join(
+        character for character in folded
+        if unicodedata.category(character) != "Mn"
+    )
+    return re.findall(r"[^\W_]+", without_marks, flags=re.UNICODE) == ["donzo"]
+
+
 def _stt_language(locale: str) -> str:
     return "lv" if sanitize_locale(locale) == "lv-LV" else "en"
 
@@ -1421,6 +1434,12 @@ async def process_audio_turn(
             backend=transcription.get("backend"),
         )
         transcript = str(transcription.get("transcript") or "").strip()
+        if capture.get("follow_up") and is_donzo_command(transcript):
+            await phone_send(json.dumps({
+                "type": "follow_up_ended",
+                "request_id": request_id,
+            }))
+            return
         await phone_send(json.dumps({
             "type": "transcript",
             "text": transcript,
@@ -1886,6 +1905,7 @@ def welcome_message() -> str:
             "server_stt": True,
             "streaming_tts": True,
             "turn_cancel": True,
+            "follow_up_mode": True,
         },
     })
 
@@ -2009,10 +2029,19 @@ async def handle_connection(websocket):
                         request_id,
                     )
                     continue
+                follow_up = data.get("follow_up", False)
+                if not isinstance(follow_up, bool):
+                    await _send_protocol_error(
+                        websocket,
+                        "audio_start follow_up must be a boolean.",
+                        request_id,
+                    )
+                    continue
                 conn_state["audio_capture"] = {
                     "request_id": request_id,
                     "locale": sanitize_locale(data.get("locale")),
                     "vocabulary": _safe_vocabulary(data.get("vocabulary")),
+                    "follow_up": follow_up,
                     "pcm": bytearray(),
                     "started_at": time.monotonic(),
                 }

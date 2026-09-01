@@ -120,14 +120,36 @@ expect(HermesAPIClient.parseCapabilities(from: welcome)?.vision == false,
        "welcome parser reads disabled vision")
 expect(HermesAPIClient.parseCapabilities(from: welcome)?.turnCancel == false,
        "welcome parser defaults missing turn cancellation to false")
-let cancellableWelcome = #"{"type":"welcome","capabilities":{"turn_cancel":true}}"#.data(using: .utf8)!
+expect(HermesAPIClient.parseCapabilities(from: welcome)?.followUpMode == false,
+       "welcome parser defaults missing follow-up mode to false")
+let cancellableWelcome = #"{"type":"welcome","capabilities":{"turn_cancel":true,"follow_up_mode":true}}"#.data(using: .utf8)!
 expect(HermesAPIClient.parseCapabilities(from: cancellableWelcome)?.turnCancel == true,
        "welcome parser reads turn cancellation capability")
+expect(HermesAPIClient.parseCapabilities(from: cancellableWelcome)?.followUpMode == true,
+       "welcome parser reads follow-up mode capability")
 let noVisionKey = #"{"type":"welcome"}"#.data(using: .utf8)!
 expect(HermesAPIClient.parseCapabilities(from: noVisionKey)?.vision == false,
        "welcome parser defaults missing vision to false")
 expect(HermesAPIClient.parseCapabilities(from: Data("{}".utf8)) == nil,
        "non-welcome frame is not capabilities")
+
+if let body = try? client.makeAudioStartData(
+    requestID: "follow-up-123",
+    vocabulary: ["Donzo", "Vārti"],
+    followUp: true
+),
+   let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+    expect(json["type"] as? String == "audio_start",
+           "audio capture builder emits opening frame")
+    expect(json["request_id"] as? String == "follow-up-123",
+           "audio capture carries request identity")
+    expect(json["follow_up"] as? Bool == true,
+           "audio capture identifies follow-up turns")
+    expect(json["wake_verified"] as? Bool == true,
+           "audio capture retains verified wake provenance")
+} else {
+    expect(false, "client builds follow-up audio start JSON")
+}
 
 // Adam's rolling pre-roll buffer trims old PCM with removeFirst(). Foundation
 // Data retains its original indices after that operation, so upload chunking
