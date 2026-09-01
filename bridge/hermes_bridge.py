@@ -994,9 +994,12 @@ class HermesLocalAPI:
         return result
 
     def websocket_url(self, path: str) -> str:
+        # Token resolution may replace an OAuth-protected fixed dashboard with
+        # Adam's private loopback backend. Resolve it before parsing the host so
+        # a first-use WebSocket cannot retain the stale dashboard port.
+        token = self.token()
         parsed = urllib.parse.urlsplit(self.base_url)
         scheme = "wss" if parsed.scheme == "https" else "ws"
-        token = self.token()
         query = urllib.parse.urlencode({"token": token})
         return urllib.parse.urlunsplit(
             (scheme, parsed.netloc, path, query, "")
@@ -1297,13 +1300,21 @@ class HermesTTSStream:
             )
             first = json.loads(await asyncio.wait_for(self.websocket.recv(), 15))
             if first.get("type") != "start":
+                print(
+                    "[Hermes] Streaming TTS unavailable "
+                    f"(frame={_timing_metadata(first.get('type'))})"
+                )
                 await self.close(stop=True, end_phone=True)
                 return False
             self.sample_rate = int(first.get("sample_rate") or 24_000)
             self.channels = int(first.get("channels") or 1)
             self.receiver = asyncio.create_task(self._receive())
             return True
-        except Exception:
+        except Exception as error:
+            print(
+                "[Hermes] Streaming TTS unavailable "
+                f"(error={type(error).__name__})"
+            )
             await self.close(stop=True, end_phone=True)
             return False
 

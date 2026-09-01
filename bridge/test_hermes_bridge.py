@@ -597,6 +597,25 @@ class BridgeHermesPrivateBackendTests(unittest.TestCase):
         ):
             self.assertFalse(hb._loopback_http_base(value), value)
 
+    def test_websocket_uses_backend_selected_during_token_resolution(self):
+        api = hb.HermesLocalAPI("http://127.0.0.1:9119")
+
+        def select_private_backend():
+            api.base_url = "http://127.0.0.1:54321"
+            return "private-token"
+
+        with mock.patch.object(api, "token", side_effect=select_private_backend):
+            url = api.websocket_url("/api/audio/speak-stream")
+
+        parsed = hb.urllib.parse.urlsplit(url)
+        self.assertEqual(parsed.scheme, "ws")
+        self.assertEqual(parsed.hostname, "127.0.0.1")
+        self.assertEqual(parsed.port, 54321)
+        self.assertEqual(
+            hb.urllib.parse.parse_qs(parsed.query),
+            {"token": ["private-token"]},
+        )
+
     def test_private_python_keeps_venv_symlink_and_checkout_root(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             agent_root = Path(temp_dir) / "hermes-agent"

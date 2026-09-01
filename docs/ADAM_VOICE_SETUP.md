@@ -149,6 +149,12 @@ also keep the fixed-port dashboard running, restart that service separately:
 hermes serve --host 127.0.0.1 --port 9119
 ```
 
+The always-on LaunchAgent must use the same Hermes environment where the
+plugin dependencies were installed. Both `HERMES_BIN` and
+`HERMES_BRIDGE_PRIVATE_PYTHON` should point inside
+`~/.hermes/hermes-agent/.venv/`; a legacy `hermes-agent/venv/` environment
+without `kokoro_mlx` makes Adam fall back to the slower Edge voice.
+
 The plugin warms George in the background; its first start downloads the
 local model weights. Hermes also downloads faster-whisper `small` once.
 
