@@ -60,6 +60,15 @@ wss://<mac-name>.<tailnet>.ts.net:8443/voice
 
 Do not add the token to that URL. Adam sends it as a Bearer header.
 
+Recent Hermes versions protect fixed-port dashboards with password/OAuth.
+Leave that protection enabled. When port 9119 does not expose a loopback
+session token, Adam starts a second Hermes backend on an OS-assigned loopback
+port with a random per-process token. This backend uses the same `HERMES_HOME`,
+subscription logins, model settings, and plugins; it cannot be reached through
+Tailscale and is terminated with the bridge. Set
+`HERMES_BRIDGE_PRIVATE_BACKEND=false` only if `HERMES_BRIDGE_API_BASE` already
+provides non-interactive authentication.
+
 For a foreground bridge test:
 
 ```bash
@@ -127,8 +136,8 @@ stt:
     vad_min_silence_ms: 350
 ```
 
-Restart the loopback Hermes service after changing plugins or voice
-configuration:
+Restart the Adam bridge after changing plugins or voice configuration. If you
+also keep the fixed-port dashboard running, restart that service separately:
 
 ```bash
 hermes serve --host 127.0.0.1 --port 9119

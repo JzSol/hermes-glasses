@@ -253,7 +253,11 @@ on your Mac and point the app at it over WebSocket.
    Copy `bridge/.env.example` to `bridge/.env` to configure it - in
    particular, `HERMES_BRIDGE_TOKEN` is **always required**. Current clients
    send it in the WebSocket `Authorization: Bearer` handshake header. Tokens
-   in endpoint query strings are rejected.
+   in endpoint query strings are rejected. If a current Hermes dashboard on
+   port 9119 is protected by password/OAuth, Adam automatically starts a
+   separate token-authenticated Hermes backend on a random loopback port. It
+   shares the same Hermes profile and plugins, is never exposed through
+   Tailscale, and exits with the bridge; no dashboard token needs to be copied.
 3. Keep the bridge bound to loopback and expose it privately with Tailscale
    Serve (for example `tailscale serve --https=8443
    http://127.0.0.1:8765`). In the app, choose **Settings → Assistant →

@@ -4,8 +4,10 @@ import json
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -559,6 +561,85 @@ class BridgeWelcomeTests(unittest.TestCase):
             hb.AUTH_TOKEN = original_token
             hb.BRIDGE_VISION = original_vision
         self.assertFalse(json.loads(websocket.sent[0])["capabilities"]["vision"])
+
+
+class BridgeHermesPrivateBackendTests(unittest.TestCase):
+    @staticmethod
+    def _response(html):
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = html.encode("utf-8")
+        return response
+
+    def test_loopback_detection_is_strict(self):
+        for value in (
+            "http://127.0.0.1:9119", "https://localhost:9119", "http://[::1]",
+        ):
+            self.assertTrue(hb._loopback_http_base(value), value)
+        for value in (
+            "https://adam.example.com", "file:///tmp/hermes", "not a url",
+        ):
+            self.assertFalse(hb._loopback_http_base(value), value)
+
+    def test_private_python_keeps_venv_symlink_and_checkout_root(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            agent_root = Path(temp_dir) / "hermes-agent"
+            interpreter = agent_root / ".venv" / "bin" / "python"
+            interpreter.parent.mkdir(parents=True)
+            interpreter.symlink_to(Path(sys.executable).resolve())
+
+            python, discovered_root = hb._hermes_private_paths(str(interpreter))
+
+        self.assertEqual(python, interpreter)
+        self.assertEqual(discovered_root, agent_root)
+
+    def test_existing_dashboard_token_is_used_without_private_backend(self):
+        html = '<script>window.__HERMES_SESSION_TOKEN__ = "fixed-token";</script>'
+        api = hb.HermesLocalAPI("http://127.0.0.1:9119")
+        with mock.patch.object(
+            hb.urllib.request, "urlopen", return_value=self._response(html)
+        ), mock.patch.object(hb._PRIVATE_BACKEND, "ensure") as ensure:
+            self.assertEqual(api.token(), "fixed-token")
+        ensure.assert_not_called()
+        self.assertEqual(api.base_url, "http://127.0.0.1:9119")
+
+    def test_loopback_login_page_uses_private_backend(self):
+        api = hb.HermesLocalAPI("http://127.0.0.1:9119")
+        with mock.patch.object(hb, "HERMES_PRIVATE_BACKEND", "auto"), \
+             mock.patch.object(
+                 hb.urllib.request, "urlopen",
+                 return_value=self._response("<html>Sign in</html>"),
+             ), mock.patch.object(
+                 hb._PRIVATE_BACKEND, "ensure",
+                 return_value=("http://127.0.0.1:54321", "private-token"),
+             ) as ensure:
+            self.assertEqual(api.token(), "private-token")
+        ensure.assert_called_once_with()
+        self.assertEqual(api.base_url, "http://127.0.0.1:54321")
+
+    def test_unavailable_loopback_service_uses_private_backend(self):
+        api = hb.HermesLocalAPI("http://127.0.0.1:9119")
+        with mock.patch.object(hb, "HERMES_PRIVATE_BACKEND", "auto"), \
+             mock.patch.object(
+                 hb.urllib.request, "urlopen",
+                 side_effect=hb.urllib.error.URLError("offline"),
+             ), mock.patch.object(
+                 hb._PRIVATE_BACKEND, "ensure",
+                 return_value=("http://127.0.0.1:54322", "private-token"),
+             ) as ensure:
+            self.assertEqual(api.token(), "private-token")
+        ensure.assert_called_once_with()
+
+    def test_remote_login_page_never_starts_private_backend(self):
+        api = hb.HermesLocalAPI("https://adam.example.com")
+        with mock.patch.object(hb, "HERMES_PRIVATE_BACKEND", "auto"), \
+             mock.patch.object(
+                 hb.urllib.request, "urlopen",
+                 return_value=self._response("<html>Sign in</html>"),
+             ), mock.patch.object(hb._PRIVATE_BACKEND, "ensure") as ensure:
+            with self.assertRaisesRegex(RuntimeError, "session token"):
+                api.token()
+        ensure.assert_not_called()
 
 
 class BridgeAudioProtocolTests(unittest.TestCase):

@@ -30,11 +30,14 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import wave
 import urllib.error
@@ -107,6 +110,13 @@ HERMES_RUN_BUDGET = _env_int("HERMES_BRIDGE_RUN_BUDGET", 90)
 HERMES_API_BASE = os.environ.get(
     "HERMES_BRIDGE_API_BASE", "http://127.0.0.1:9119"
 ).rstrip("/")
+HERMES_PRIVATE_BACKEND = os.environ.get(
+    "HERMES_BRIDGE_PRIVATE_BACKEND", "auto"
+).strip().lower()
+HERMES_PRIVATE_PYTHON = os.environ.get(
+    "HERMES_BRIDGE_PRIVATE_PYTHON",
+    str(Path(os.path.abspath(os.path.expanduser(HERMES_BIN))).parent / "python"),
+)
 HERMES_AUDIO_SAMPLE_RATE = 16_000
 HERMES_AUDIO_CHANNELS = 1
 HERMES_AUDIO_FORMAT = "pcm_s16le"
@@ -670,6 +680,146 @@ def extract_dashboard_token(html: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _loopback_http_base(value: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme in {"http", "https"}
+        and (parsed.hostname or "").lower() in {
+            "127.0.0.1", "localhost", "::1"
+        }
+    )
+
+
+def _hermes_private_paths(value: str) -> tuple[Path, Path]:
+    """Return the venv Python and its Hermes checkout without dereferencing.
+
+    Hermes's managed virtual-environment interpreter is a symlink. Resolving
+    that symlink points into the runtime cache and loses the checkout root
+    needed for ``python -m hermes_cli.main``.
+    """
+    python = Path(os.path.abspath(os.path.expanduser(value)))
+    if not python.is_file():
+        raise RuntimeError("Hermes private-backend Python is unavailable")
+    try:
+        agent_root = python.parents[2]
+    except IndexError as error:
+        raise RuntimeError("Hermes private-backend path is invalid") from error
+    return python, agent_root
+
+
+class HermesPrivateBackend:
+    """Own one token-authenticated, loopback-only Hermes voice backend.
+
+    Current Hermes correctly places fixed-port dashboards with a configured
+    public URL behind interactive cookie auth. Adam is a non-interactive local
+    service, so it starts the existing Desktop-private backend shape on an
+    OS-assigned port instead of weakening or scraping that dashboard auth.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.process: subprocess.Popen | None = None
+        self.base_url: str | None = None
+        self.token_value: str | None = None
+        self.ready_file: Path | None = None
+
+    def ensure(self) -> tuple[str, str]:
+        with self._lock:
+            if (
+                self.process is not None
+                and self.process.poll() is None
+                and self.base_url
+                and self.token_value
+            ):
+                return self.base_url, self.token_value
+
+            self._stop_locked()
+            python, agent_root = _hermes_private_paths(HERMES_PRIVATE_PYTHON)
+
+            runtime_dir = (
+                Path(os.environ.get("HERMES_HOME", "~/.hermes"))
+                .expanduser()
+                / "runtime"
+                / "adam-voice"
+            )
+            runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with contextlib.suppress(OSError):
+                runtime_dir.chmod(0o700)
+            ready_file = runtime_dir / f"backend-{os.getpid()}.json"
+            with contextlib.suppress(FileNotFoundError):
+                ready_file.unlink()
+
+            token = secrets.token_urlsafe(32)
+            environment = os.environ.copy()
+            environment.update({
+                "HERMES_DESKTOP": "1",
+                "HERMES_DASHBOARD_SESSION_TOKEN": token,
+                "HERMES_DESKTOP_READY_FILE": str(ready_file),
+            })
+            process = subprocess.Popen(
+                [
+                    str(python), "-m", "hermes_cli.main", "serve",
+                    "--host", "127.0.0.1", "--port", "0",
+                ],
+                cwd=str(agent_root),
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self.process = process
+            self.ready_file = ready_file
+
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    self._stop_locked()
+                    raise RuntimeError("Hermes private voice backend exited during startup")
+                try:
+                    payload = json.loads(ready_file.read_text(encoding="utf-8"))
+                    port = int(payload.get("port") or 0)
+                except (FileNotFoundError, OSError, TypeError, ValueError,
+                        json.JSONDecodeError):
+                    port = 0
+                if 1 <= port <= 65535:
+                    self.base_url = f"http://127.0.0.1:{port}"
+                    self.token_value = token
+                    return self.base_url, token
+                time.sleep(0.05)
+
+            self._stop_locked()
+            raise RuntimeError("Hermes private voice backend did not become ready")
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stop_locked()
+
+    def _stop_locked(self) -> None:
+        process, self.process = self.process, None
+        if process is not None and process.poll() is None:
+            with contextlib.suppress(OSError):
+                process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(OSError):
+                    process.kill()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    process.wait(timeout=5)
+        if self.ready_file is not None:
+            with contextlib.suppress(FileNotFoundError, OSError):
+                self.ready_file.unlink()
+        self.ready_file = None
+        self.base_url = None
+        self.token_value = None
+
+
+_PRIVATE_BACKEND = HermesPrivateBackend()
+
+
 def pcm16_wav(
     pcm: bytes,
     sample_rate: int = HERMES_AUDIO_SAMPLE_RATE,
@@ -721,15 +871,30 @@ class HermesLocalAPI:
     def token(self, refresh: bool = False) -> str:
         if self._token and not refresh:
             return self._token
+        private_allowed = HERMES_PRIVATE_BACKEND not in {
+            "0", "false", "no", "off", "disabled"
+        }
         request = urllib.request.Request(
             self.base_url + "/",
             headers={"Accept": "text/html", "Cache-Control": "no-cache"},
         )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            html = response.read().decode("utf-8", errors="replace")
-        token = extract_dashboard_token(html)
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                html = response.read().decode("utf-8", errors="replace")
+        except (OSError, TimeoutError, urllib.error.URLError) as error:
+            if private_allowed and _loopback_http_base(self.base_url):
+                self.base_url, token = _PRIVATE_BACKEND.ensure()
+            else:
+                raise RuntimeError("Hermes voice backend is unavailable") from error
+        else:
+            token = extract_dashboard_token(html)
         if not token:
-            raise RuntimeError("Hermes did not expose a loopback session token")
+            if private_allowed and _loopback_http_base(self.base_url):
+                self.base_url, token = _PRIVATE_BACKEND.ensure()
+            else:
+                raise RuntimeError(
+                    "Hermes did not expose a loopback session token"
+                )
         self._token = token
         return token
 
@@ -1774,8 +1939,18 @@ async def main():
     # (a 1-3 MB raw JPEG becomes an even bigger base64 string), so raise
     # max_size well above the websockets default of 1 MiB to avoid a 1009
     # close before the frame is fully received.
-    async with websockets.serve(handle_connection, HOST, PORT, max_size=16 * 1024 * 1024):
-        await asyncio.Future()  # run forever
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        with contextlib.suppress(NotImplementedError):
+            loop.add_signal_handler(signum, stop_event.set)
+    try:
+        async with websockets.serve(
+            handle_connection, HOST, PORT, max_size=16 * 1024 * 1024
+        ):
+            await stop_event.wait()
+    finally:
+        await asyncio.to_thread(_PRIVATE_BACKEND.stop)
 
 
 if __name__ == "__main__":
