@@ -132,5 +132,19 @@ responseGate.setSpeaking(true)
 _ = responseGate.completed(now: t0)
 expectEqual(responseGate.failed(), .rearmed, "failed follow-up returns wake-only")
 
+// Adam's own acknowledgement cue must never become the command that follows
+// the wake word. Capture remains closed for every cue-originated event and
+// opens only after the cue has fully finished.
+var cueGate = WakeCueCaptureGate()
+expect(cueGate.acceptsCapture, "capture starts open before a wake cue")
+cueGate.beginCue()
+expect(cueGate.isBlocking, "wake cue closes command capture")
+expect(!cueGate.acceptsCapture, "wake cue audio cannot start a command")
+cueGate.finishCue()
+expect(cueGate.acceptsCapture, "capture opens after the wake cue")
+cueGate.beginCue()
+cueGate.cancel()
+expect(cueGate.acceptsCapture, "cancelling a wake window cannot leave capture blocked")
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

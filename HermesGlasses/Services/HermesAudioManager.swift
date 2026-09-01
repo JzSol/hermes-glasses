@@ -171,6 +171,17 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         set { adamAudioSettingsLock.withLockUnchecked { $0.mediaDuckingEnabled = newValue } }
     }
 
+    /// Pause only speech/silence transition callbacks. Raw capture keeps
+    /// running so the audio route stays stable, while both boundaries discard
+    /// in-progress VAD state so a local cue cannot leak into a real utterance.
+    func setSpeechDetectionSuppressed(_ suppressed: Bool) {
+        tapLock.withLockUnchecked { state in
+            state.speechDetectionSuppressed = suppressed
+            state.isSpeechActive = false
+            state.silenceDuration = 0
+        }
+    }
+
     // MARK: - Private
 
     private let logger = Logger(subsystem: "com.flowsxr.hermesglasses", category: "audio")
@@ -221,6 +232,9 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         // VAD
         var isSpeechActive: Bool = false
         var silenceDuration: TimeInterval = 0
+        // Adam briefly closes VAD while its own wake cue is audible. Without
+        // this, HFP loopback can turn the cue into a phantom command.
+        var speechDetectionSuppressed = false
         // True while buffers arrive via `ingest` instead of an engine tap
         var externalCapture: Bool = false
     }
@@ -427,7 +441,9 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             state.lowInputRoute = nil
             state.lowInputWarningActive = false
             state.ambientNoiseRMS = 0.001
+            state.isSpeechActive = false
             state.silenceDuration = 0
+            state.speechDetectionSuppressed = false
             // Defensive: an engine tap and `ingest` must never both feed the
             // pipeline. `stopCapture()` clears this, but a caller that switched
             // routes without one would otherwise leave `ingest` armed alongside
@@ -499,7 +515,9 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             state.lowInputSince = nil
             state.lowInputRoute = nil
             state.lowInputWarningActive = false
+            state.isSpeechActive = false
             state.silenceDuration = 0
+            state.speechDetectionSuppressed = false
             state.externalCapture = true
         }
         isCapturing = true
@@ -1088,6 +1106,11 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         let rms = computeRMS(channelData[0], frameLength: frameLength)
         let (isVoice, wasSpeechActive, transition) = tapLock.withLockUnchecked {
             state -> (Bool, Bool, VADTransition) in
+            guard !state.speechDetectionSuppressed else {
+                state.isSpeechActive = false
+                state.silenceDuration = 0
+                return (false, false, .none)
+            }
             let wasSpeechActive = state.isSpeechActive
             let threshold = AdamSpeechSignal.adaptiveSpeechThreshold(
                 noiseRMS: state.ambientNoiseRMS

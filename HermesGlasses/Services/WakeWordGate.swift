@@ -8,6 +8,28 @@
 
 import Foundation
 
+/// Prevents Adam's own wake acknowledgement cue from becoming the first
+/// command in the newly opened command window. The session also pauses the
+/// recognizer and VAD while this gate is closed; keeping the decision here
+/// makes the safety invariant independently testable.
+struct WakeCueCaptureGate: Sendable {
+    private(set) var isBlocking = false
+
+    mutating func beginCue() {
+        isBlocking = true
+    }
+
+    mutating func finishCue() {
+        isBlocking = false
+    }
+
+    mutating func cancel() {
+        isBlocking = false
+    }
+
+    var acceptsCapture: Bool { !isBlocking }
+}
+
 /// Whether a finalized or partial transcript should reach the agent.
 struct WakeWordGate: Sendable {
     static let defaultCommandWindow: TimeInterval = 8
