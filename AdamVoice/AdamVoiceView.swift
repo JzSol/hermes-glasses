@@ -24,6 +24,10 @@ struct AdamVoiceView: View {
                     statusCard
                     conversation
                     setup
+                    Text(Self.versionLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
                 }
                 .padding()
             }
@@ -308,5 +312,12 @@ struct AdamVoiceView: View {
         case .failed:
             return .red
         }
+    }
+
+    private static var versionLabel: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = info?["CFBundleVersion"] as? String ?? "—"
+        return "Adam \(version) (\(build))"
     }
 }
