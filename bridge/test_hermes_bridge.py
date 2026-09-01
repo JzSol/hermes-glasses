@@ -302,6 +302,20 @@ class TestSessionStore(unittest.TestCase):
             j.dump({"session_id": "old", "date": "2020-01-01"}, f)
         self.assertIsNone(self.hb.load_session())
 
+    def test_legacy_session_without_voice_profile_is_not_loaded(self):
+        with open(self.tmp.name, "w") as f:
+            json.dump({"session_id": "legacy", "date": hb._today()}, f)
+        self.assertIsNone(self.hb.load_session())
+
+    def test_session_with_changed_voice_profile_is_not_loaded(self):
+        with open(self.tmp.name, "w") as f:
+            json.dump({
+                "session_id": "wrong-profile",
+                "date": hb._today(),
+                "voice_profile": "different",
+            }, f)
+        self.assertIsNone(self.hb.load_session())
+
     def test_clear(self):
         self.hb.store_session("x")
         self.hb.clear_session()
@@ -543,6 +557,7 @@ class BridgeWelcomeTests(unittest.TestCase):
             self.assertTrue(payload["capabilities"]["audio_upload"])
             self.assertTrue(payload["capabilities"]["server_stt"])
             self.assertTrue(payload["capabilities"]["streaming_tts"])
+            self.assertTrue(payload["capabilities"]["turn_cancel"])
             hb.BRIDGE_VISION = True
             payload = json.loads(hb.welcome_message())
             self.assertTrue(payload["capabilities"]["vision"])
@@ -737,6 +752,202 @@ class BridgeAudioProtocolTests(unittest.TestCase):
         self.assertIn("Vandret", captured["payload"]["prompt"])
         self.assertTrue(captured["payload"]["data_url"].startswith("data:audio/wav;base64,"))
 
+    def test_cancel_turn_stops_task_and_interrupts_gateway(self):
+        async def run():
+            started = asyncio.Event()
+            gateway = mock.AsyncMock()
+
+            class YieldingConnection(ConnectionWebSocket):
+                async def __anext__(self):
+                    value = await super().__anext__()
+                    if isinstance(value, str) and '"type": "cancel_turn"' in value:
+                        await started.wait()
+                    else:
+                        await asyncio.sleep(0)
+                    return value
+
+            request_id = "cancel-me"
+            websocket = YieldingConnection([
+                json.dumps({
+                    "type": "audio_start",
+                    "request_id": request_id,
+                    "format": "pcm_s16le",
+                    "sample_rate": 16_000,
+                    "channels": 1,
+                }),
+                b"\x01\x00" * 320,
+                json.dumps({"type": "audio_end", "request_id": request_id}),
+                json.dumps({"type": "cancel_turn", "request_id": request_id}),
+            ])
+
+            async def blocked_turn(_websocket, _capture, state):
+                state["gateway"] = gateway
+                started.set()
+                await asyncio.Future()
+
+            with mock.patch.object(hb, "process_audio_turn", side_effect=blocked_turn):
+                await hb.handle_connection(websocket)
+            return websocket, gateway
+
+        websocket, gateway = asyncio.run(run())
+        gateway.interrupt.assert_awaited_once()
+        payloads = [
+            json.loads(item) for item in websocket.sent if isinstance(item, str)
+        ]
+        self.assertIn(
+            {"type": "turn_cancelled", "request_id": "cancel-me"}, payloads
+        )
+
+    def test_cancel_during_upload_drains_queued_frames_without_errors(self):
+        request_id = "cancel-upload"
+        websocket = ConnectionWebSocket([
+            json.dumps({
+                "type": "audio_start",
+                "request_id": request_id,
+                "format": "pcm_s16le",
+                "sample_rate": 16_000,
+                "channels": 1,
+            }),
+            json.dumps({"type": "cancel_turn", "request_id": request_id}),
+            b"\x01\x00" * 320,
+            json.dumps({"type": "audio_end", "request_id": request_id}),
+        ])
+        realtime_turn = mock.AsyncMock()
+
+        with mock.patch.object(hb, "process_audio_turn", realtime_turn):
+            asyncio.run(hb.handle_connection(websocket))
+
+        realtime_turn.assert_not_awaited()
+        payloads = [
+            json.loads(item) for item in websocket.sent if isinstance(item, str)
+        ]
+        self.assertIn(
+            {"type": "turn_cancelled", "request_id": request_id}, payloads
+        )
+        self.assertFalse(any(item.get("type") == "error" for item in payloads))
+
+    def test_cancel_after_server_completion_is_idempotent_for_playback(self):
+        async def run():
+            request_id = "cancel-playback"
+
+            class YieldingConnection(ConnectionWebSocket):
+                async def __anext__(self):
+                    value = await super().__anext__()
+                    await asyncio.sleep(0)
+                    return value
+
+            websocket = YieldingConnection([
+                json.dumps({
+                    "type": "audio_start",
+                    "request_id": request_id,
+                    "format": "pcm_s16le",
+                    "sample_rate": 16_000,
+                    "channels": 1,
+                }),
+                b"\x01\x00" * 320,
+                json.dumps({"type": "audio_end", "request_id": request_id}),
+                json.dumps({"type": "cancel_turn", "request_id": request_id}),
+            ])
+            with mock.patch.object(hb, "process_audio_turn", mock.AsyncMock()):
+                await hb.handle_connection(websocket)
+            return websocket
+
+        websocket = asyncio.run(run())
+        payloads = [
+            json.loads(item) for item in websocket.sent if isinstance(item, str)
+        ]
+        self.assertIn(
+            {"type": "turn_cancelled", "request_id": "cancel-playback"},
+            payloads,
+        )
+        self.assertFalse(any(item.get("type") == "error" for item in payloads))
+
+    def test_new_session_cancels_active_turn_before_gateway_reset(self):
+        async def run():
+            started = asyncio.Event()
+            cancelled = asyncio.Event()
+            gateway = mock.AsyncMock()
+
+            class ResetConnection(ConnectionWebSocket):
+                async def __anext__(self):
+                    value = await super().__anext__()
+                    if isinstance(value, str) and '"type": "new_session"' in value:
+                        await started.wait()
+                    else:
+                        await asyncio.sleep(0)
+                    return value
+
+            websocket = ResetConnection([
+                json.dumps({
+                    "type": "audio_start",
+                    "request_id": "old-turn",
+                    "format": "pcm_s16le",
+                    "sample_rate": 16_000,
+                    "channels": 1,
+                }),
+                b"\x01\x00" * 320,
+                json.dumps({"type": "audio_end", "request_id": "old-turn"}),
+                json.dumps({"type": "new_session"}),
+            ])
+
+            async def blocked_turn(_websocket, _capture, state):
+                state["gateway"] = gateway
+                started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    cancelled.set()
+
+            with mock.patch.object(hb, "process_audio_turn", side_effect=blocked_turn):
+                await hb.handle_connection(websocket)
+            return websocket, gateway, cancelled
+
+        websocket, gateway, cancelled = asyncio.run(run())
+        self.assertTrue(cancelled.is_set())
+        gateway.interrupt.assert_awaited_once()
+        gateway.reset.assert_awaited_once()
+        payloads = [
+            json.loads(item) for item in websocket.sent if isinstance(item, str)
+        ]
+        self.assertIn({"type": "session_reset"}, payloads)
+
+    def test_twenty_consecutive_audio_turns_finish_without_overlap(self):
+        async def run():
+            frames = []
+            for index in range(20):
+                request_id = f"turn-{index}"
+                frames.extend([
+                    json.dumps({
+                        "type": "audio_start",
+                        "request_id": request_id,
+                        "format": "pcm_s16le",
+                        "sample_rate": 16_000,
+                        "channels": 1,
+                    }),
+                    b"\x01\x00" * 320,
+                    json.dumps({"type": "audio_end", "request_id": request_id}),
+                ])
+
+            class YieldingConnection(ConnectionWebSocket):
+                async def __anext__(self):
+                    value = await super().__anext__()
+                    await asyncio.sleep(0)
+                    return value
+
+            websocket = YieldingConnection(frames)
+            realtime_turn = mock.AsyncMock()
+            with mock.patch.object(hb, "process_audio_turn", realtime_turn):
+                await hb.handle_connection(websocket)
+            return websocket, realtime_turn
+
+        websocket, realtime_turn = asyncio.run(run())
+        self.assertEqual(realtime_turn.await_count, 20)
+        errors = [
+            json.loads(item) for item in websocket.sent
+            if isinstance(item, str) and json.loads(item).get("type") == "error"
+        ]
+        self.assertEqual(errors, [])
+
 
 class BridgeStreamingTTSTests(unittest.TestCase):
     def test_phone_playback_starts_on_first_pcm_and_always_ends(self):
@@ -784,6 +995,92 @@ class BridgeStreamingTTSTests(unittest.TestCase):
 
 
 class BridgeGatewayTests(unittest.TestCase):
+    def test_fast_voice_profile_is_applied_only_to_primary_session(self):
+        async def connect(inherit_profile):
+            socket = StreamWebSocket([
+                json.dumps({
+                    "method": "event",
+                    "params": {"type": "gateway.ready"},
+                }),
+                json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": "adam-1",
+                    "result": {
+                        "session_id": "runtime-session",
+                        "stored_session_id": "stored-session",
+                    },
+                }),
+            ])
+            api = SimpleNamespace(
+                websocket_url=lambda _path: "ws://127.0.0.1/private"
+            )
+            gateway = hb.HermesGateway(api)
+            async def fake_connect(*_args, **_kwargs):
+                return socket
+
+            with mock.patch.object(hb.websockets, "connect", new=fake_connect), \
+                 mock.patch.object(hb, "load_session", return_value=None), \
+                 mock.patch.object(hb, "store_session") as store:
+                await gateway._connect(
+                    force_new=inherit_profile,
+                    inherit_profile=inherit_profile,
+                )
+            request = json.loads(socket.sent[0])
+            return request["params"], store
+
+        primary_params, primary_store = asyncio.run(connect(False))
+        self.assertEqual(primary_params["provider"], hb.HERMES_AGENT_PROVIDER)
+        self.assertEqual(primary_params["model"], hb.HERMES_AGENT_MODEL)
+        self.assertEqual(
+            primary_params["reasoning_effort"],
+            hb.HERMES_AGENT_REASONING_EFFORT,
+        )
+        self.assertEqual(primary_params["fast"], hb.HERMES_AGENT_FAST)
+        primary_store.assert_called_once_with("stored-session")
+
+        inherited_params, inherited_store = asyncio.run(connect(True))
+        for key in ("provider", "model", "reasoning_effort", "fast"):
+            self.assertNotIn(key, inherited_params)
+        inherited_store.assert_not_called()
+
+    def test_failed_fast_profile_retries_with_inherited_profile(self):
+        async def run():
+            gateway = hb.HermesGateway(SimpleNamespace())
+            gateway._connect = mock.AsyncMock()
+            gateway._ask_connected = mock.AsyncMock(
+                side_effect=[RuntimeError("unsupported profile"), "fallback reply"]
+            )
+            with mock.patch.object(hb, "clear_session") as clear:
+                result = await gateway.ask("hello", mock.AsyncMock())
+            return result, gateway, clear
+
+        result, gateway, clear = asyncio.run(run())
+        self.assertEqual(result, "fallback reply")
+        self.assertEqual(
+            gateway._connect.await_args_list,
+            [
+                mock.call(force_new=False, inherit_profile=False),
+                mock.call(force_new=True, inherit_profile=True),
+            ],
+        )
+        clear.assert_called_once_with()
+
+    def test_interrupt_sends_rpc_and_closes_socket(self):
+        async def run():
+            gateway = hb.HermesGateway(SimpleNamespace())
+            gateway.websocket = StreamWebSocket()
+            gateway.session_id = "session-1"
+            upstream = gateway.websocket
+            await gateway.interrupt()
+            return gateway, upstream
+
+        gateway, upstream = asyncio.run(run())
+        request = json.loads(upstream.sent[0])
+        self.assertEqual(request["method"], "session.interrupt")
+        self.assertEqual(request["params"]["session_id"], "session-1")
+        self.assertTrue(upstream.closed)
+        self.assertIsNone(gateway.websocket)
+
     def test_attention_event_interrupts_turn_and_closes_event_stream(self):
         async def run():
             api = SimpleNamespace()

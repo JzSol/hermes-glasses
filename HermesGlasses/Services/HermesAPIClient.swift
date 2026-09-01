@@ -32,6 +32,7 @@ struct HermesBridgeCapabilities: Equatable, Sendable {
     var audioUpload = false
     var serverSTT = false
     var streamingTTS = false
+    var turnCancel = false
 }
 
 struct HermesVoiceMetadata: Equatable, Sendable {
@@ -63,6 +64,9 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
     var onAudioStreamEnded: ((String?) -> Void)?
     var onPlaybackComplete: (() -> Void)?
     var onError: ((String) -> Void)?
+    /// Protocol errors can be correlated to one request. When installed, this
+    /// callback receives those frames instead of the legacy uncorrelated one.
+    var onErrorWithRequestID: ((String, String?) -> Void)?
     /// Called after the welcome frame has been parsed.
     var onCapabilities: ((HermesBridgeCapabilities) -> Void)?
     /// Called when the WebSocket disconnects
@@ -72,6 +76,8 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
     /// Bridge confirmed the conversation was reset
     var onSessionReset: (() -> Void)?
     var onAttention: ((String) -> Void)?
+    /// Called when the bridge has stopped the active turn.
+    var onTurnCancelled: ((String?) -> Void)?
 
     // MARK: - Private
 
@@ -244,7 +250,8 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
             vision: capabilityJSON?["vision"] as? Bool ?? false,
             audioUpload: capabilityJSON?["audio_upload"] as? Bool ?? false,
             serverSTT: capabilityJSON?["server_stt"] as? Bool ?? false,
-            streamingTTS: capabilityJSON?["streaming_tts"] as? Bool ?? false
+            streamingTTS: capabilityJSON?["streaming_tts"] as? Bool ?? false,
+            turnCancel: capabilityJSON?["turn_cancel"] as? Bool ?? false
         )
     }
 
@@ -429,6 +436,29 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
     func sendNewSession() {
         guard isConnected, let ws = webSocket else { return }
         ws.send(.string(#"{"type":"new_session"}"#)) { _ in }
+    }
+
+    /// Ask a compatible bridge to stop the active turn. Older bridges omit
+    /// `turn_cancel` from welcome, so callers can safely leave the request
+    /// local without sending an unknown protocol frame.
+    @discardableResult
+    func sendCancelTurn(requestID: String) -> Bool {
+        guard isConnected, let ws = webSocket,
+              capabilities.turnCancel, !requestID.isEmpty else { return false }
+        let payload: [String: String] = [
+            "type": "cancel_turn",
+            "request_id": requestID,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else { return false }
+        ws.send(.string(json)) { [weak self] error in
+            if let error {
+                Task { @MainActor in
+                    self?.onError?("Cancel send error: \(error.localizedDescription)")
+                }
+            }
+        }
+        return true
     }
 
     /// Send an on-device-transcribed query. bridgeTTS asks the bridge to
@@ -624,7 +654,12 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
                 self?.isFinalized = false
             case "error":
                 if let msg = json["message"] as? String {
-                    self?.onError?("Hermes: \(msg)")
+                    let message = "Hermes: \(msg)"
+                    if let handler = self?.onErrorWithRequestID {
+                        handler(message, json["request_id"] as? String)
+                    } else {
+                        self?.onError?(message)
+                    }
                 }
             case "capture_photo":
                 self?.onCapturePhotoRequested?()
@@ -634,6 +669,8 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
                 if let message = json["message"] as? String {
                     self?.onAttention?(message)
                 }
+            case "turn_cancelled":
+                self?.onTurnCancelled?(json["request_id"] as? String)
             default:
                 break
             }

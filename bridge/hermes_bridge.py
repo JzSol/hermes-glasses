@@ -11,9 +11,11 @@ Protocol (JSON text frames):
   app → bridge: binary PCM16 frames, then {"type":"audio_end",...}
   app → bridge: {"type":"query","text":...}   legacy text client
   app → bridge: {"type":"new_session"}           forget the conversation
+  app → bridge: {"type":"cancel_turn","request_id":...} stop the active turn
   app → bridge: {"type":"photo","data":<b64>}    reply to capture_photo
   app → bridge: {"type":"photo_error", ...}
-  bridge → app: {"type":"welcome","capabilities":{"vision":bool}} /
+  bridge → app: {"type":"welcome","capabilities":{"vision":bool,
+                "turn_cancel":bool}} /
                 {"type":"capture_photo"} /
                 {"type":"response","text":...,"request_id":...} /
                 {"type":"session_reset"} /
@@ -105,8 +107,9 @@ HERMES_MAX_TURNS = _env_int("HERMES_BRIDGE_MAX_TURNS", 20)
 HERMES_RUN_BUDGET = _env_int("HERMES_BRIDGE_RUN_BUDGET", 90)
 
 # Hermes's local dashboard API is the low-latency path for Adam.  It keeps one
-# agent session alive, runs final STT with the configured faster-whisper
-# provider, and streams the configured TTS provider as raw PCM.
+# agent session alive, runs final STT with Hermes's configured provider, and
+# streams the configured TTS provider as raw PCM. Adam recommends the optional
+# MLX Whisper provider on Apple silicon with faster-whisper as its fallback.
 HERMES_API_BASE = os.environ.get(
     "HERMES_BRIDGE_API_BASE", "http://127.0.0.1:9119"
 ).rstrip("/")
@@ -130,6 +133,31 @@ HERMES_STT_PROMPT = (
     "Adam, Hermes, Janis, Ray-Ban Meta, Tailscale. Preserve names, product "
     "terms, and punctuation exactly."
 )
+
+# Per-session voice profile. These overrides keep spoken turns responsive
+# without changing the user's global Hermes model. If an override cannot run,
+# HermesGateway retries once with the user's inherited profile settings.
+HERMES_AGENT_PROVIDER = os.environ.get(
+    "HERMES_BRIDGE_AGENT_PROVIDER", "openai-codex"
+).strip()
+HERMES_AGENT_MODEL = os.environ.get(
+    "HERMES_BRIDGE_AGENT_MODEL", "gpt-5.4-mini"
+).strip()
+HERMES_AGENT_REASONING_EFFORT = os.environ.get(
+    "HERMES_BRIDGE_AGENT_REASONING_EFFORT", "low"
+).strip()
+HERMES_AGENT_FAST = _env_bool("HERMES_BRIDGE_AGENT_FAST", True)
+
+
+def voice_session_profile_signature() -> str:
+    """Stable, non-secret identity for the persisted Adam voice profile."""
+    return json.dumps({
+        "version": 1,
+        "provider": HERMES_AGENT_PROVIDER,
+        "model": HERMES_AGENT_MODEL,
+        "reasoning_effort": HERMES_AGENT_REASONING_EFFORT,
+        "fast": HERMES_AGENT_FAST,
+    }, sort_keys=True, separators=(",", ":"))
 
 # Bridge-side TTS (edge-tts/say → PCM streaming). Default OFF: the app
 # speaks replies on-device with AVSpeechSynthesizer. Set HERMES_BRIDGE_TTS=1
@@ -405,7 +433,11 @@ def load_session() -> str | None:
     try:
         with open(SESSION_FILE, encoding="utf-8") as f:
             data = json.load(f)
-        if data.get("date") == _today() and data.get("session_id"):
+        if (
+            data.get("date") == _today()
+            and data.get("session_id")
+            and data.get("voice_profile") == voice_session_profile_signature()
+        ):
             return data["session_id"]
     except (OSError, ValueError):
         pass
@@ -425,7 +457,11 @@ def store_session(session_id: str):
         )
         os.chmod(temp_path, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"session_id": session_id, "date": _today()}, f)
+            json.dump({
+                "session_id": session_id,
+                "date": _today(),
+                "voice_profile": voice_session_profile_signature(),
+            }, f)
             f.flush()
             os.fsync(f.fileno())
         os.replace(temp_path, session_path)
@@ -959,8 +995,8 @@ def prewarm_voice_backend() -> bool:
     try:
         api = HermesLocalAPI()
         # A short silent capture exercises the real transcription endpoint.
-        # Silero VAD drops it, while faster-whisper still loads and caches the
-        # configured model. Kokoro warms independently during plugin startup.
+        # Backend VAD may drop it, while the configured local provider still
+        # loads and caches its model. Kokoro warms independently at startup.
         silence = b"\0\0" * (HERMES_AUDIO_SAMPLE_RATE // 2)
         api.transcribe(silence, "en-GB", ["Adam", "Hermes", "Ray-Ban Meta"])
         print("[Hermes] Private voice backend and local STT are warm")
@@ -968,6 +1004,24 @@ def prewarm_voice_backend() -> bool:
     except Exception as error:
         print(f"[Hermes] Voice prewarm failed ({type(error).__name__})")
         return False
+
+
+def _timing_metadata(value) -> str:
+    """Bound backend labels before including them in metadata-only logs."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "unknown"))[:48]
+
+
+def log_voice_timing(stage: str, started_at: float, **metadata) -> None:
+    elapsed_ms = max(0, round((time.monotonic() - started_at) * 1000))
+    suffix = "".join(
+        f" {key}={_timing_metadata(value)}"
+        for key, value in sorted(metadata.items())
+        if value is not None
+    )
+    print(
+        f"[Bridge] Voice timing stage={_timing_metadata(stage)} "
+        f"elapsed_ms={elapsed_ms}{suffix}"
+    )
 
 
 class HermesGateway:
@@ -990,6 +1044,26 @@ class HermesGateway:
     async def reset(self) -> None:
         await self.close()
         clear_session()
+
+    async def interrupt(self) -> None:
+        """Best-effort stop for the active Hermes turn, then reset its socket.
+
+        Closing after the interrupt prevents late events from the cancelled
+        turn being mistaken for the next prompt on this session-scoped stream.
+        The stored Hermes session remains resumable on the next request.
+        """
+        websocket = self.websocket
+        session_id = self.session_id
+        if websocket is not None and session_id:
+            self._rpc_id += 1
+            with contextlib.suppress(Exception):
+                await websocket.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": f"adam-cancel-{self._rpc_id}",
+                    "method": "session.interrupt",
+                    "params": {"session_id": session_id},
+                }))
+        await self.close()
 
     async def _receive_json(self, timeout: float = 30) -> dict:
         if self.websocket is None:
@@ -1024,7 +1098,11 @@ class HermesGateway:
             result = frame.get("result")
             return result if isinstance(result, dict) else {}
 
-    async def _connect(self, force_new: bool = False) -> None:
+    async def _connect(
+        self,
+        force_new: bool = False,
+        inherit_profile: bool = False,
+    ) -> None:
         if self.websocket is not None and self.session_id:
             return
         url = await asyncio.to_thread(self.api.websocket_url, "/api/ws")
@@ -1055,16 +1133,27 @@ class HermesGateway:
                 self.session_id = result.get("session_id")
 
             if not self.session_id:
-                result = await self._rpc("session.create", {
+                create_params = {
                     "title": "Adam Voice",
                     "source": "adam_voice",
                     "cwd": BRIDGE_WORKDIR,
                     "cols": 100,
                     "close_on_disconnect": False,
-                })
+                }
+                if not inherit_profile:
+                    if HERMES_AGENT_MODEL:
+                        create_params["model"] = HERMES_AGENT_MODEL
+                    if HERMES_AGENT_PROVIDER:
+                        create_params["provider"] = HERMES_AGENT_PROVIDER
+                    if HERMES_AGENT_REASONING_EFFORT:
+                        create_params["reasoning_effort"] = (
+                            HERMES_AGENT_REASONING_EFFORT
+                        )
+                    create_params["fast"] = HERMES_AGENT_FAST
+                result = await self._rpc("session.create", create_params)
                 self.session_id = str(result.get("session_id") or "") or None
                 stored = str(result.get("stored_session_id") or "")
-                if stored:
+                if stored and not inherit_profile:
                     store_session(stored)
             if not self.session_id:
                 raise RuntimeError("Hermes did not create a voice session")
@@ -1077,7 +1166,13 @@ class HermesGateway:
         async with self._turn_lock:
             for attempt in range(2):
                 try:
-                    await self._connect(force_new=attempt > 0)
+                    inherit_profile = attempt > 0
+                    if inherit_profile:
+                        clear_session()
+                    await self._connect(
+                        force_new=inherit_profile,
+                        inherit_profile=inherit_profile,
+                    )
                     return await self._ask_connected(text, on_delta, on_attention)
                 except HermesAttentionRequired:
                     await self.close()
@@ -1152,7 +1247,14 @@ class HermesAttentionRequired(RuntimeError):
 class HermesTTSStream:
     """Pipe Hermes's configured sentence streamer to the phone WebSocket."""
 
-    def __init__(self, api, phone, request_id, send_lock):
+    def __init__(
+        self,
+        api,
+        phone,
+        request_id,
+        send_lock,
+        on_audio_start=None,
+    ):
         self.api = api
         self.phone = phone
         self.request_id = request_id
@@ -1166,6 +1268,7 @@ class HermesTTSStream:
         self.channels = 1
         self.provider = "kokoro-mlx"
         self.voice = "bm_george"
+        self.on_audio_start = on_audio_start
 
     async def _phone_send(self, value) -> None:
         async with self.send_lock:
@@ -1196,6 +1299,9 @@ class HermesTTSStream:
         if self.phone_started:
             return
         self.phone_started = True
+        callback, self.on_audio_start = self.on_audio_start, None
+        if callback is not None:
+            await callback(self.provider)
         await self._phone_send(json.dumps({
             "type": "audio_start",
             "request_id": self.request_id,
@@ -1295,14 +1401,24 @@ async def process_audio_turn(
     gateway = conn_state.setdefault("gateway", HermesGateway(api))
     tts = None
     fallback_audio_open = False
+    turn_started_at = float(capture.get("ended_at") or time.monotonic())
+    first_delta_logged = False
+    first_audio_logged = False
 
     async def phone_send(payload) -> None:
         async with send_lock:
             await websocket.send(payload)
 
     try:
+        stt_started_at = time.monotonic()
         transcription = await asyncio.to_thread(
             api.transcribe, pcm, locale, capture.get("vocabulary")
+        )
+        log_voice_timing(
+            "stt",
+            stt_started_at,
+            provider=transcription.get("provider"),
+            backend=transcription.get("backend"),
         )
         transcript = str(transcription.get("transcript") or "").strip()
         await phone_send(json.dumps({
@@ -1327,11 +1443,30 @@ async def process_audio_turn(
 
         # Kokoro is English-only. Latvian deliberately uses the British/male
         # bridge fallback path until a local Latvian provider is available.
-        tts = HermesTTSStream(api, websocket, request_id, send_lock)
+        async def on_first_audio(provider: str) -> None:
+            nonlocal first_audio_logged
+            if first_audio_logged:
+                return
+            first_audio_logged = True
+            log_voice_timing(
+                "first_spoken_pcm", turn_started_at, provider=provider
+            )
+
+        tts = HermesTTSStream(
+            api,
+            websocket,
+            request_id,
+            send_lock,
+            on_audio_start=on_first_audio,
+        )
         streaming_tts = locale != "lv-LV" and await tts.open()
         delta_text = []
 
         async def on_delta(delta: str) -> None:
+            nonlocal first_delta_logged
+            if not first_delta_logged:
+                first_delta_logged = True
+                log_voice_timing("first_agent_delta", turn_started_at)
             delta_text.append(delta)
             await phone_send(json.dumps({
                 "type": "response_delta",
@@ -1393,6 +1528,7 @@ async def process_audio_turn(
             }))
             fallback_audio_open = True
             if audio:
+                await on_first_audio("edge")
                 for index in range(0, len(audio), 16_384):
                     await phone_send(audio[index:index + 16_384])
             await phone_send(json.dumps({
@@ -1406,6 +1542,10 @@ async def process_audio_turn(
             "request_id": request_id,
             "message": "Adam could not complete that turn. Please try again.",
         }))
+    except asyncio.CancelledError:
+        # A user cancellation is a normal turn outcome. Do not emit an error
+        # frame that could race the explicit turn_cancelled confirmation.
+        raise
     finally:
         if tts is not None:
             await tts.close(stop=True, end_phone=True)
@@ -1745,6 +1885,7 @@ def welcome_message() -> str:
             "audio_upload": True,
             "server_stt": True,
             "streaming_tts": True,
+            "turn_cancel": True,
         },
     })
 
@@ -1780,7 +1921,31 @@ async def handle_connection(websocket):
         "last_photo_at": 0.0,
         "audio_capture": None,
         "send_lock": asyncio.Lock(),
+        "turn_task": None,
+        "turn_request_id": None,
+        "recent_turn_request_ids": [],
     }
+
+    def remember_finished_turn(request_id: str | None) -> None:
+        if not request_id:
+            return
+        recent = conn_state["recent_turn_request_ids"]
+        if request_id in recent:
+            recent.remove(request_id)
+        recent.append(request_id)
+        del recent[:-8]
+
+    def turn_finished(task: asyncio.Task) -> None:
+        if conn_state.get("turn_task") is task:
+            remember_finished_turn(conn_state.get("turn_request_id"))
+            conn_state["turn_task"] = None
+            conn_state["turn_request_id"] = None
+        if not task.cancelled():
+            # Retrieve any unexpected exception so asyncio never reports an
+            # unhandled background task. process_audio_turn already converts
+            # ordinary failures to protocol errors.
+            with contextlib.suppress(Exception):
+                task.exception()
 
     try:
         async for message in websocket:
@@ -1790,6 +1955,8 @@ async def handle_connection(websocket):
                     await _send_protocol_error(
                         websocket, "Audio arrived before audio_start."
                     )
+                    continue
+                if capture.get("cancelled"):
                     continue
                 if len(capture["pcm"]) + len(message) > HERMES_AUDIO_MAX_BYTES:
                     request_id = capture.get("request_id")
@@ -1814,6 +1981,12 @@ async def handle_connection(websocket):
             msg_type = data.get("type")
 
             if msg_type == "audio_start":
+                active_turn = conn_state.get("turn_task")
+                if active_turn is not None and not active_turn.done():
+                    await _send_protocol_error(
+                        websocket, "An audio turn is already active."
+                    )
+                    continue
                 if conn_state.get("audio_capture") is not None:
                     await _send_protocol_error(
                         websocket, "An audio capture is already active."
@@ -1861,6 +2034,8 @@ async def handle_connection(websocket):
                     )
                     continue
                 conn_state["audio_capture"] = None
+                if capture.get("cancelled"):
+                    continue
                 if len(capture["pcm"]) < 640 or len(capture["pcm"]) % 2:
                     await _send_protocol_error(
                         websocket,
@@ -1871,7 +2046,59 @@ async def handle_connection(websocket):
                 print(
                     f"[Bridge] Audio turn received ({len(capture['pcm'])} bytes)"
                 )
-                await process_audio_turn(websocket, capture, conn_state)
+                capture["ended_at"] = time.monotonic()
+                log_voice_timing("upload_received", capture["started_at"])
+                conn_state["turn_request_id"] = capture["request_id"]
+                conn_state["turn_task"] = asyncio.create_task(
+                    process_audio_turn(websocket, capture, conn_state)
+                )
+                conn_state["turn_task"].add_done_callback(turn_finished)
+
+            elif msg_type == "cancel_turn":
+                request_id = _validated_request_id(data.get("request_id"))
+                active_turn = conn_state.get("turn_task")
+                active_request_id = conn_state.get("turn_request_id")
+                if request_id is None:
+                    await _send_protocol_error(
+                        websocket, "cancel_turn requires a valid request_id."
+                    )
+                    continue
+                capture = conn_state.get("audio_capture")
+                if capture is not None and request_id == capture.get("request_id"):
+                    # Keep the cancelled envelope until audio_end so binary
+                    # frames already queued by URLSession are silently drained.
+                    capture["cancelled"] = True
+                    await websocket.send(json.dumps({
+                        "type": "turn_cancelled", "request_id": request_id
+                    }))
+                    continue
+                if request_id in conn_state["recent_turn_request_ids"]:
+                    # Playback can outlive server generation. Cancellation is
+                    # idempotent once the correlated stream was delivered.
+                    await websocket.send(json.dumps({
+                        "type": "turn_cancelled", "request_id": request_id
+                    }))
+                    continue
+                if request_id != active_request_id:
+                    await _send_protocol_error(
+                        websocket,
+                        "cancel_turn request_id does not match the active turn.",
+                        request_id,
+                    )
+                    continue
+                if active_turn is not None and not active_turn.done():
+                    active_turn.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await active_turn
+                    gateway = conn_state.get("gateway")
+                    if gateway is not None:
+                        await gateway.interrupt()
+                conn_state["turn_task"] = None
+                conn_state["turn_request_id"] = None
+                remember_finished_turn(request_id)
+                await websocket.send(json.dumps({
+                    "type": "turn_cancelled", "request_id": request_id
+                }))
 
             elif msg_type == "query":
                 # App transcribed on-device and sends text directly
@@ -1892,12 +2119,26 @@ async def handle_connection(websocket):
                     }))
 
             elif msg_type == "new_session":
-                # Forget the conversation; next query starts fresh
-                clear_session()
+                # Reset is a cancellation barrier: no old turn or queued
+                # upload may write into the newly-created conversation.
+                capture = conn_state.get("audio_capture")
+                if capture is not None:
+                    capture["cancelled"] = True
+                active_turn = conn_state.get("turn_task")
+                if active_turn is not None and not active_turn.done():
+                    active_turn.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await active_turn
+                conn_state["turn_task"] = None
+                conn_state["turn_request_id"] = None
+                conn_state["recent_turn_request_ids"].clear()
                 clear_claude_history()
                 gateway = conn_state.get("gateway")
                 if gateway is not None:
+                    await gateway.interrupt()
                     await gateway.reset()
+                else:
+                    clear_session()
                 conn_state["last_photo_at"] = 0.0
                 print("[Bridge] Conversation reset by app")
                 await websocket.send(json.dumps({"type": "session_reset"}))
@@ -1908,6 +2149,13 @@ async def handle_connection(websocket):
             elif msg_type == "ping":
                 await websocket.send(json.dumps({"type": "pong"}))
 
+        # Test/fake sockets and normal disconnects can end the receive stream
+        # immediately after audio_end. Drain the turn before closing so the
+        # response is not abandoned.
+        active_turn = conn_state.get("turn_task")
+        if active_turn is not None and not active_turn.done():
+            await active_turn
+
     except websockets.exceptions.ConnectionClosed:
         print("[Bridge] Glasses disconnected")
     except Exception as e:
@@ -1915,6 +2163,11 @@ async def handle_connection(websocket):
         # diagnostics. Keep the launchd log metadata-only.
         print(f"[Bridge] Connection handler failed ({type(e).__name__})")
     finally:
+        active_turn = conn_state.get("turn_task")
+        if active_turn is not None and not active_turn.done():
+            active_turn.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await active_turn
         gateway = conn_state.get("gateway")
         if gateway is not None:
             await gateway.close()
@@ -1946,7 +2199,7 @@ async def main():
 ║              Hermes Glasses Bridge Server                ║
 ║                                                          ║
 ║  Listening on ws://{HOST}:{PORT}/voice                       ║
-║  Wake: on iPhone · final STT: Hermes faster-whisper      ║
+║  Wake: on iPhone · final STT: Hermes configured STT      ║
 ║  Brain: {BRAIN} {f"({CLAUDE_MODEL})" if _canon_brain(BRAIN) in ("anthropic", "openai", "gemini") else "(CLI agent)":<30}  ║
 ║                                                          ║
 ║  {connection_hint:<54}║

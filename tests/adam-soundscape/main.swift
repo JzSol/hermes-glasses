@@ -38,6 +38,8 @@ func ascii(_ data: Data, _ range: Range<Int>) -> String {
 let flute = AdamSoundscapeWaveform.fluteLoop(sampleRate: 8_000, duration: 2)
 let opening = AdamSoundscapeWaveform.openingCue(sampleRate: 8_000)
 let droplet = AdamSoundscapeWaveform.droplet(sampleRate: 8_000)
+let speechStart = AdamSoundscapeWaveform.speechStartCue(sampleRate: 8_000)
+let thinking = AdamSoundscapeWaveform.thinkingPulse(sampleRate: 8_000)
 
 // Basic shape and metadata.
 expect(flute.sampleRate == 8_000, "flute keeps requested sample rate")
@@ -46,6 +48,8 @@ expect(flute.samples.count > 0 && droplet.samples.count > 0, "clips contain samp
 expect(flute.samples.contains { $0 != 0 }, "flute is non-silent")
 expect(droplet.samples.contains { $0 != 0 }, "droplet is non-silent")
 expect(opening.samples.contains { $0 != 0 }, "opening cue is non-silent")
+expect(speechStart.samples.contains { $0 != 0 }, "speech-start cue is non-silent")
+expect(thinking.samples.contains { $0 != 0 }, "thinking pulse is non-silent")
 expect(flute.samples.allSatisfy { $0 >= Int16.min && $0 <= Int16.max }, "flute samples are bounded")
 expect(droplet.samples.allSatisfy { $0 >= Int16.min && $0 <= Int16.max }, "droplet samples are bounded")
 // Integer PCM values are finite by construction; the range checks above are
@@ -54,6 +58,10 @@ expect(flute.samples.allSatisfy { Int($0) >= Int(Int16.min) && Int($0) <= Int(In
 expect(droplet.samples.allSatisfy { Int($0) >= Int(Int16.min) && Int($0) <= Int(Int16.max) }, "droplet samples are finite")
 expect(flute.peakAmplitude > 0 && flute.peakAmplitude < 0.2, "flute remains very quiet")
 expect(droplet.peakAmplitude > flute.peakAmplitude, "droplet has a distinct cue level")
+expect(speechStart.peakAmplitude > 0 && speechStart.peakAmplitude < 0.06,
+       "speech-start cue stays quiet")
+expect(thinking.peakAmplitude > 0 && thinking.peakAmplitude < 0.06,
+       "thinking pulse stays quiet")
 
 // Smooth fades prevent clicks at the start/end of generated clips.
 expect(abs(Int(flute.samples.first ?? 1)) <= 2, "flute starts at a fade edge")
@@ -62,11 +70,23 @@ expect(abs(Int(opening.samples.first ?? 1)) <= 2, "opening starts at a fade edge
 expect(abs(Int(opening.samples.last ?? 1)) <= 2, "opening ends at a fade edge")
 expect(abs(Int(droplet.samples.first ?? 1)) <= 2, "droplet starts at a fade edge")
 expect(abs(Int(droplet.samples.last ?? 1)) <= 2, "droplet ends at a fade edge")
+expect(abs(Int(speechStart.samples.first ?? 1)) <= 2,
+       "speech-start cue starts at a fade edge")
+expect(abs(Int(speechStart.samples.last ?? 1)) <= 2,
+       "speech-start cue ends at a fade edge")
+expect(abs(Int(thinking.samples.first ?? 1)) <= 2,
+       "thinking pulse starts at a fade edge")
+expect(abs(Int(thinking.samples.last ?? 1)) <= 2,
+       "thinking pulse ends at a fade edge")
 
 // Different cue generators must not collapse to one generic tone.
 expect(flute.samples != droplet.samples, "flute and droplet shapes differ")
 expect(opening.samples != flute.samples, "opening and loop shapes differ")
 expect(droplet.samples.count < flute.samples.count, "droplet is shorter than loop")
+expect(speechStart.samples != thinking.samples,
+       "speech-start and thinking cue shapes differ")
+expect(speechStart.duration < thinking.duration,
+       "speech-start cue is shorter than thinking pulse")
 
 // RIFF/WAVE header and PCM metadata are canonical and internally consistent.
 let wav = flute.wavData

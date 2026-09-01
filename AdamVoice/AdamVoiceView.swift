@@ -63,10 +63,25 @@ struct AdamVoiceView: View {
                 Spacer()
                 if session.status == .connecting
                     || session.status == .reconnecting
+                    || session.status == .transcribing
+                    || session.status == .thinking
+                    || session.status == .preparingVoice
                     || session.status == .processing {
                     ProgressView()
                         .controlSize(.small)
                 }
+            }
+
+            if session.canCancelTurn {
+                Button("Cancel", role: .cancel) {
+                    session.cancelTurn()
+                }
+                .buttonStyle(.bordered)
+            } else if session.canRetryTurn {
+                Button("Retry") {
+                    session.retryTurn()
+                }
+                .buttonStyle(.borderedProminent)
             }
 
             Text("Say “Adam”, then ask a question.")
@@ -241,7 +256,7 @@ struct AdamVoiceView: View {
                 )
             )
 
-            Text("A short flute cue opens listening, then silence protects your recording. A droplet confirms the end.")
+            Text("A short flute cue opens listening. A quiet tick marks speech, a droplet marks its end, and a soft pulse marks thinking.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -297,9 +312,10 @@ struct AdamVoiceView: View {
         switch session.status {
         case .idle:
             return .secondary
-        case .connecting, .reconnecting, .processing:
+        case .connecting, .reconnecting, .transcribing, .thinking,
+             .preparingVoice, .processing:
             return .orange
-        case .listening, .awaitingCommand:
+        case .armed, .wakeAcknowledged, .hearingSpeech, .listening, .awaitingCommand:
             return .green
         case .speaking:
             return .blue

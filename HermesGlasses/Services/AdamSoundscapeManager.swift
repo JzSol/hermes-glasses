@@ -18,6 +18,8 @@ struct AdamSoundscapeConfiguration: Equatable, Sendable {
     var ambienceVolume: Float = 0.78
     var openingCueVolume: Float = 0.82
     var dropletVolume: Float = 0.78
+    var speechStartCueVolume: Float = 0.45
+    var thinkingPulseVolume: Float = 0.55
     var fadeOutDuration: TimeInterval = 0.16
 
     static let `default` = AdamSoundscapeConfiguration()
@@ -27,6 +29,8 @@ struct AdamSoundscapeConfiguration: Equatable, Sendable {
         copy.ambienceVolume = Self.volume(copy.ambienceVolume)
         copy.openingCueVolume = Self.volume(copy.openingCueVolume)
         copy.dropletVolume = Self.volume(copy.dropletVolume)
+        copy.speechStartCueVolume = Self.volume(copy.speechStartCueVolume)
+        copy.thinkingPulseVolume = Self.volume(copy.thinkingPulseVolume)
         copy.fadeOutDuration = copy.fadeOutDuration.isFinite
             ? min(2, max(0, copy.fadeOutDuration))
             : AdamSoundscapeConfiguration.default.fadeOutDuration
@@ -57,12 +61,17 @@ final class AdamSoundscapeManager: NSObject {
     private let fluteLoopData: Data
     private let openingCueData: Data
     private let dropletData: Data
+    private let speechStartCueData: Data
+    private let thinkingPulseData: Data
 
     private var ambiencePlayer: AVAudioPlayer?
     private var dropletPlayer: AVAudioPlayer?
+    private var signalPlayer: AVAudioPlayer?
     private var ambienceFadeTask: Task<Void, Never>?
     private var pendingDropletTask: Task<Void, Never>?
+    private var thinkingPulseTask: Task<Void, Never>?
     private var generation: UInt64 = 0
+    private var pulseGeneration: UInt64 = 0
     private var listeningMode: ListeningMode?
 
     /// True from `startListening` until `finishListening` or
@@ -84,14 +93,18 @@ final class AdamSoundscapeManager: NSObject {
         self.fluteLoopData = AdamSoundscapeWaveform.fluteLoop(sampleRate: sampleRate).wavData
         self.openingCueData = AdamSoundscapeWaveform.openingCue(sampleRate: sampleRate).wavData
         self.dropletData = AdamSoundscapeWaveform.droplet(sampleRate: sampleRate).wavData
+        self.speechStartCueData = AdamSoundscapeWaveform.speechStartCue(sampleRate: sampleRate).wavData
+        self.thinkingPulseData = AdamSoundscapeWaveform.thinkingPulse(sampleRate: sampleRate).wavData
         super.init()
     }
 
     deinit {
         ambienceFadeTask?.cancel()
         pendingDropletTask?.cancel()
+        thinkingPulseTask?.cancel()
         ambiencePlayer?.stop()
         dropletPlayer?.stop()
+        signalPlayer?.stop()
     }
 
     /// Begin a listening cue.
@@ -111,6 +124,7 @@ final class AdamSoundscapeManager: NSObject {
         // droplet or fade task rendering under speech.
         cancelPendingAudio()
         stopAmbienceImmediately()
+        stopThinkingPulse()
 
         generation &+= 1
         isListening = true
@@ -180,8 +194,55 @@ final class AdamSoundscapeManager: NSObject {
         isListening = false
         listeningMode = nil
         cancelPendingAudio()
+        stopThinkingPulse()
         stopAmbienceImmediately()
         playDroplet()
+    }
+
+    /// Mark the instant command speech is detected. This is independent of
+    /// the opening flute player so it cannot delay or replace that cue.
+    func playSpeechStartCue() {
+        playSignal(
+            data: speechStartCueData,
+            volume: configuration.speechStartCueVolume
+        )
+    }
+
+    /// Start the delayed repeating thinking cue. Each scheduled loop owns a
+    /// generation token, so a late sleep cannot render after cancellation or a
+    /// newer turn has begun.
+    func scheduleThinkingPulse(
+        startAfter: TimeInterval = 0.9,
+        repeatEvery: TimeInterval = 2.8
+    ) {
+        stopThinkingPulse()
+        pulseGeneration &+= 1
+        let token = pulseGeneration
+        let delay = max(0, startAfter)
+        let interval = max(0.1, repeatEvery)
+        thinkingPulseTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                while !Task.isCancelled {
+                    guard let self, self.pulseGeneration == token else { return }
+                    self.playSignal(
+                        data: self.thinkingPulseData,
+                        volume: self.configuration.thinkingPulseVolume
+                    )
+                    try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                }
+            } catch {
+                return
+            }
+        }
+    }
+
+    func stopThinkingPulse() {
+        pulseGeneration &+= 1
+        thinkingPulseTask?.cancel()
+        thinkingPulseTask = nil
+        signalPlayer?.stop()
+        signalPlayer = nil
     }
 
     /// Stop all sound immediately, including any queued fade/droplet. This is
@@ -192,6 +253,7 @@ final class AdamSoundscapeManager: NSObject {
         listeningMode = nil
         cancelPendingAudio()
         stopAmbienceImmediately()
+        stopThinkingPulse()
         dropletPlayer?.stop()
         dropletPlayer = nil
     }
@@ -224,6 +286,22 @@ final class AdamSoundscapeManager: NSObject {
         guard player.play() else {
             dropletPlayer = nil
             logger.error("Unable to start Adam droplet player")
+            return
+        }
+    }
+
+    private func playSignal(data: Data, volume: Float) {
+        signalPlayer?.stop()
+        signalPlayer = nil
+        guard let player = makePlayer(data: data, volume: volume) else {
+            logger.error("Unable to create Adam signal player")
+            return
+        }
+        signalPlayer = player
+        player.prepareToPlay()
+        guard player.play() else {
+            signalPlayer = nil
+            logger.error("Unable to start Adam signal player")
             return
         }
     }
@@ -274,5 +352,7 @@ final class AdamSoundscapeManager: NSObject {
         pendingDropletTask = nil
         dropletPlayer?.stop()
         dropletPlayer = nil
+        signalPlayer?.stop()
+        signalPlayer = nil
     }
 }

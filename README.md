@@ -50,7 +50,8 @@ A standalone, MIT-licensed project.
 
 - 🎙️ **Live transcription** - Direct mode can use Apple's on-device speech
   recognition; Adam bridge mode uses it only for the wake boundary and sends
-  the command audio to your Mac for a more accurate faster-whisper transcript
+  the command audio to your Mac for an authoritative Hermes transcript. On
+  Apple silicon, Adam prefers MLX Whisper and falls back to faster-whisper
 - 🤖 **Ask anything** - finished utterances go straight to your chosen AI
   provider (Direct mode) or to a Hermes Agent running on your Mac (bridge
   mode), and the answer is spoken back through text-to-speech
@@ -141,10 +142,12 @@ memory), over a WebSocket:
   bridge mode, `HermesAPIClient` talks to the Mac bridge over WebSocket.
 - **Bridge** (`bridge/hermes_bridge.py`) - a small authenticated WebSocket
   server on the Mac. Protocol v2 accepts Adam's 16 kHz PCM utterance, asks
-  Hermes's configured local faster-whisper provider for the authoritative
-  transcript, keeps one Hermes gateway session alive, and pipelines response
-  deltas into local Kokoro MLX speech. The older text/photo protocol remains
-  available for the full app, with Edge TTS as a fallback.
+  Hermes's configured speech-to-text provider for the authoritative transcript,
+  keeps one Hermes gateway session alive, and pipelines response deltas into
+  local Kokoro MLX speech. Adam's recommended provider is the included MLX
+  Whisper plugin, with faster-whisper as its local fallback. The older
+  text/photo protocol remains available for the full app, with Edge TTS as a
+  fallback.
 
 ### WebSocket protocol (app ⇄ bridge, port 8765)
 
@@ -153,10 +156,12 @@ connection.
 
 | Direction | Message | Meaning |
 |---|---|---|
-| bridge → app | `welcome` with `protocol: 2` capabilities | Advertises PCM upload, server STT and streaming TTS |
+| bridge → app | `welcome` with `protocol: 2` capabilities | Advertises PCM upload, server STT, streaming TTS and turn cancellation |
 | app → bridge | `audio_start` + binary PCM16 mono 16 kHz + `audio_end` | Adam command captured after the wake word |
-| bridge → app | `transcript` | Authoritative faster-whisper transcript |
+| bridge → app | `transcript` | Authoritative Hermes STT transcript |
 | bridge → app | `response_start` / `response_delta` / `response` | Correlated persistent-agent answer |
+| app → bridge | `cancel_turn` | Stop the request currently identified by `request_id` |
+| bridge → app | `turn_cancelled` | Confirms the active request was stopped |
 | app → bridge | `{"type":"query","text":...}` | Legacy text-query path |
 | bridge → app | `{"type":"capture_photo"}` | Take a photo with the glasses now |
 | app → bridge | `{"type":"photo","data":"<base64 jpeg>"}` | Captured photo |

@@ -211,7 +211,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         var ambientNoiseRMS: Float = 0.001
         // VAD
         var isSpeechActive: Bool = false
-        var silenceCounter: Int = 0
+        var silenceDuration: TimeInterval = 0
         // True while buffers arrive via `ingest` instead of an engine tap
         var externalCapture: Bool = false
     }
@@ -219,7 +219,9 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     private let tapLock = OSAllocatedUnfairLock(uncheckedState: TapState())
 
     // VAD tuning
-    private let silenceFrames: Int = 20
+    /// Endpoint on elapsed PCM time, not callback count. Audio callbacks have
+    /// different frame sizes across HFP and phone routes.
+    private let silenceDuration: TimeInterval = 0.650
     private let vadDisabled: Bool = true
 
     // A warning is deliberately slower and less sensitive than VAD. HFP
@@ -413,6 +415,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             state.lowInputRoute = nil
             state.lowInputWarningActive = false
             state.ambientNoiseRMS = 0.001
+            state.silenceDuration = 0
             // Defensive: an engine tap and `ingest` must never both feed the
             // pipeline. `stopCapture()` clears this, but a caller that switched
             // routes without one would otherwise leave `ingest` armed alongside
@@ -483,6 +486,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             state.lowInputSince = nil
             state.lowInputRoute = nil
             state.lowInputWarningActive = false
+            state.silenceDuration = 0
             state.externalCapture = true
         }
         isCapturing = true
@@ -1034,7 +1038,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
                 )
             }
             if isVoice {
-                state.silenceCounter = 0
+                state.silenceDuration = 0
                 guard !wasSpeechActive else {
                     return (isVoice, wasSpeechActive, .none)
                 }
@@ -1044,12 +1048,12 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             guard wasSpeechActive else {
                 return (isVoice, wasSpeechActive, .none)
             }
-            state.silenceCounter += 1
-            guard state.silenceCounter >= silenceFrames else {
+            state.silenceDuration += Double(frameLength) / captureFormat.sampleRate
+            guard state.silenceDuration >= silenceDuration else {
                 return (isVoice, wasSpeechActive, .none)
             }
             state.isSpeechActive = false
-            state.silenceCounter = 0
+            state.silenceDuration = 0
             return (isVoice, wasSpeechActive, .silenceStarted)
         }
 

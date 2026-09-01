@@ -118,6 +118,11 @@ if let body = try? client.makeQueryData(
 let welcome = #"{"type":"welcome","capabilities":{"vision":false}}"#.data(using: .utf8)!
 expect(HermesAPIClient.parseCapabilities(from: welcome)?.vision == false,
        "welcome parser reads disabled vision")
+expect(HermesAPIClient.parseCapabilities(from: welcome)?.turnCancel == false,
+       "welcome parser defaults missing turn cancellation to false")
+let cancellableWelcome = #"{"type":"welcome","capabilities":{"turn_cancel":true}}"#.data(using: .utf8)!
+expect(HermesAPIClient.parseCapabilities(from: cancellableWelcome)?.turnCancel == true,
+       "welcome parser reads turn cancellation capability")
 let noVisionKey = #"{"type":"welcome"}"#.data(using: .utf8)!
 expect(HermesAPIClient.parseCapabilities(from: noVisionKey)?.vision == false,
        "welcome parser defaults missing vision to false")

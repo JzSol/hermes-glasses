@@ -48,6 +48,8 @@ enum AdamSoundscapeWaveform {
     static let fluteLoopDuration: TimeInterval = 8
     static let openingCueDuration: TimeInterval = 0.42
     static let dropletDuration: TimeInterval = 0.72
+    static let speechStartCueDuration: TimeInterval = 0.075
+    static let thinkingPulseDuration: TimeInterval = 0.24
 
     /// A very quiet, smooth-looping meditative flute-like drone.
     static func fluteLoop(
@@ -131,6 +133,39 @@ enum AdamSoundscapeWaveform {
         }
 
         return AdamSoundscapeClip(sampleRate: rate, samples: samples)
+    }
+
+    /// A very quiet, immediate acknowledgement that command speech started.
+    /// Its short attack and release make it read as a tick without masking the
+    /// first consonant of the command.
+    static func speechStartCue(
+        sampleRate: Int = defaultSampleRate,
+        duration: TimeInterval = speechStartCueDuration
+    ) -> AdamSoundscapeClip {
+        renderSignal(
+            sampleRate: sampleRate,
+            duration: duration,
+            amplitude: 0.035,
+            frequencies: [1_760, 2_120],
+            decay: 8.0,
+            attack: 0.002
+        )
+    }
+
+    /// A soft, rounded pulse for the thinking state. The session controls the
+    /// delay and repetition interval; this function only renders the cue.
+    static func thinkingPulse(
+        sampleRate: Int = defaultSampleRate,
+        duration: TimeInterval = thinkingPulseDuration
+    ) -> AdamSoundscapeClip {
+        renderSignal(
+            sampleRate: sampleRate,
+            duration: duration,
+            amplitude: 0.028,
+            frequencies: [330, 495],
+            decay: 5.5,
+            attack: 0.018
+        )
     }
 
     /// Encode signed mono PCM16 samples in a canonical RIFF/WAVE container.
@@ -225,6 +260,38 @@ enum AdamSoundscapeWaveform {
 
         }
 
+        return AdamSoundscapeClip(sampleRate: rate, samples: samples)
+    }
+
+    private static func renderSignal(
+        sampleRate: Int,
+        duration: TimeInterval,
+        amplitude: Double,
+        frequencies: [Double],
+        decay: Double,
+        attack: Double
+    ) -> AdamSoundscapeClip {
+        let rate = normalizedSampleRate(sampleRate)
+        let seconds = normalizedDuration(duration, fallback: 0.1)
+        let frameCount = frameCount(duration: seconds, sampleRate: rate)
+        var samples = [Int16](repeating: 0, count: frameCount)
+        var phases = [Double](repeating: 0, count: frequencies.count)
+
+        for index in 0..<frameCount {
+            let time = Double(index) / Double(rate)
+            let progress = frameCount > 1
+                ? Double(index) / Double(frameCount - 1)
+                : 1
+            let attackEnvelope = min(1, time / max(attack, 0.0001))
+            let releaseEnvelope = max(0, 1 - progress)
+            let envelope = attackEnvelope * releaseEnvelope * exp(-decay * time)
+            var signal = 0.0
+            for (offset, frequency) in frequencies.enumerated() {
+                phases[offset] += 2 * Double.pi * frequency / Double(rate)
+                signal += sin(phases[offset]) / Double(max(1, frequencies.count))
+            }
+            samples[index] = pcm16(amplitude * envelope * signal)
+        }
         return AdamSoundscapeClip(sampleRate: rate, samples: samples)
     }
 
