@@ -257,7 +257,8 @@ on your Mac and point the app at it over WebSocket.
    port 9119 is protected by password/OAuth, Adam automatically starts a
    separate token-authenticated Hermes backend on a random loopback port. It
    shares the same Hermes profile and plugins, is never exposed through
-   Tailscale, and exits with the bridge; no dashboard token needs to be copied.
+   Tailscale, warms speech models in the background, and exits with the bridge;
+   no dashboard token needs to be copied.
 3. Keep the bridge bound to loopback and expose it privately with Tailscale
    Serve (for example `tailscale serve --https=8443
    http://127.0.0.1:8765`). In the app, choose **Settings → Assistant →

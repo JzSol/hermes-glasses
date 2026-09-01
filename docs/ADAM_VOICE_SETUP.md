@@ -65,7 +65,9 @@ Leave that protection enabled. When port 9119 does not expose a loopback
 session token, Adam starts a second Hermes backend on an OS-assigned loopback
 port with a random per-process token. This backend uses the same `HERMES_HOME`,
 subscription logins, model settings, and plugins; it cannot be reached through
-Tailscale and is terminated with the bridge. Set
+Tailscale and is terminated with the bridge. Adam starts it and warms local
+STT/Kokoro in the background when the bridge launches, so model startup is not
+part of the first spoken turn. Set
 `HERMES_BRIDGE_PRIVATE_BACKEND=false` only if `HERMES_BRIDGE_API_BASE` already
 provides non-interactive authentication.
 

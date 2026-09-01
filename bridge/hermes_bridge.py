@@ -113,6 +113,7 @@ HERMES_API_BASE = os.environ.get(
 HERMES_PRIVATE_BACKEND = os.environ.get(
     "HERMES_BRIDGE_PRIVATE_BACKEND", "auto"
 ).strip().lower()
+HERMES_PREWARM = _env_bool("HERMES_BRIDGE_PREWARM", True)
 HERMES_PRIVATE_PYTHON = os.environ.get(
     "HERMES_BRIDGE_PRIVATE_PYTHON",
     str(Path(os.path.abspath(os.path.expanduser(HERMES_BIN))).parent / "python"),
@@ -951,6 +952,22 @@ class HermesLocalAPI:
         return urllib.parse.urlunsplit(
             (scheme, parsed.netloc, path, query, "")
         )
+
+
+def prewarm_voice_backend() -> bool:
+    """Start Hermes and load local STT before the first wake utterance."""
+    try:
+        api = HermesLocalAPI()
+        # A short silent capture exercises the real transcription endpoint.
+        # Silero VAD drops it, while faster-whisper still loads and caches the
+        # configured model. Kokoro warms independently during plugin startup.
+        silence = b"\0\0" * (HERMES_AUDIO_SAMPLE_RATE // 2)
+        api.transcribe(silence, "en-GB", ["Adam", "Hermes", "Ray-Ban Meta"])
+        print("[Hermes] Private voice backend and local STT are warm")
+        return True
+    except Exception as error:
+        print(f"[Hermes] Voice prewarm failed ({type(error).__name__})")
+        return False
 
 
 class HermesGateway:
@@ -1939,6 +1956,13 @@ async def main():
     # (a 1-3 MB raw JPEG becomes an even bigger base64 string), so raise
     # max_size well above the websockets default of 1 MiB to avoid a 1009
     # close before the frame is fully received.
+    if HERMES_PREWARM and _loopback_http_base(HERMES_API_BASE):
+        threading.Thread(
+            target=prewarm_voice_backend,
+            name="adam-voice-prewarm",
+            daemon=True,
+        ).start()
+
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):

@@ -641,6 +641,17 @@ class BridgeHermesPrivateBackendTests(unittest.TestCase):
                 api.token()
         ensure.assert_not_called()
 
+    def test_prewarm_loads_local_stt_with_silence(self):
+        with mock.patch.object(hb, "HermesLocalAPI") as api_type:
+            self.assertTrue(hb.prewarm_voice_backend())
+
+        api = api_type.return_value
+        api.transcribe.assert_called_once()
+        pcm, locale, vocabulary = api.transcribe.call_args.args
+        self.assertEqual(len(pcm), hb.HERMES_AUDIO_SAMPLE_RATE)
+        self.assertEqual(locale, "en-GB")
+        self.assertIn("Adam", vocabulary)
+
 
 class BridgeAudioProtocolTests(unittest.TestCase):
     def setUp(self):
