@@ -190,7 +190,10 @@ struct AdamVoiceView: View {
                 .keyboardType(.URL)
                 .textFieldStyle(.roundedBorder)
                 Button("Save endpoint") {
-                    _ = session.saveEndpoint(endpointDraft)
+                    if session.saveEndpoint(endpointDraft),
+                       session.tokenConfigured {
+                        session.start()
+                    }
                 }
                 .buttonStyle(.bordered)
             }
@@ -206,6 +209,7 @@ struct AdamVoiceView: View {
                     Button("Save token") {
                         if session.saveToken(tokenDraft) {
                             tokenDraft = ""
+                            session.start()
                         }
                     }
                     .buttonStyle(.bordered)
