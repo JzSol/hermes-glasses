@@ -10,7 +10,7 @@ import Foundation
 import os
 
 /// Where voice capture (and, on Bluetooth, playback) is routed
-enum CaptureRoute {
+enum CaptureRoute: Sendable {
     /// iPhone built-in mic; playback on the phone speaker
     case phoneMic
     /// Glasses over Bluetooth HFP - bidirectional, but on Display glasses
@@ -37,7 +37,9 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         var onDebug: ((String) -> Void)?
         var onRawBuffer: ((AVAudioPCMBuffer) -> Void)?
         var onLevel: ((Float) -> Void)?
+        var onMicWarning: ((String?) -> Void)?
         var onRouteChanged: (() -> Void)?
+        var onCaptureRecoveryFailed: ((String) -> Void)?
     }
 
     private let callbackLock = OSAllocatedUnfairLock(uncheckedState: Callbacks())
@@ -68,10 +70,17 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         get { callbackLock.withLockUnchecked { $0.onRawBuffer } }
         set { callbackLock.withLockUnchecked { $0.onRawBuffer = newValue } }
     }
-    /// Mic RMS level (0..~1), throttled to ~4/s - for the UI level meter
+    /// Smoothed dBFS mic level (0...1), throttled to ~4/s - for the UI meter.
     var onLevel: ((Float) -> Void)? {
         get { callbackLock.withLockUnchecked { $0.onLevel } }
         set { callbackLock.withLockUnchecked { $0.onLevel = newValue } }
+    }
+    /// Sustained low-input warning, with `nil` clearing the current warning.
+    /// The callback is delivered on the main queue and includes the active
+    /// route (Ray-Ban HFP, another Bluetooth mic, or the iPhone mic).
+    var onMicWarning: ((String?) -> Void)? {
+        get { callbackLock.withLockUnchecked { $0.onMicWarning } }
+        set { callbackLock.withLockUnchecked { $0.onMicWarning = newValue } }
     }
     /// Fired (on main) after a route/config change re-installed the tap.
     /// Consumers feeding SFSpeech MUST restart their recognition request -
@@ -79,6 +88,13 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     var onRouteChanged: (() -> Void)? {
         get { callbackLock.withLockUnchecked { $0.onRouteChanged } }
         set { callbackLock.withLockUnchecked { $0.onRouteChanged = newValue } }
+    }
+    /// Fired after an iOS audio interruption when capture could not be
+    /// restored. Consumers must leave their listening state; no live engine
+    /// exists after this callback.
+    var onCaptureRecoveryFailed: ((String) -> Void)? {
+        get { callbackLock.withLockUnchecked { $0.onCaptureRecoveryFailed } }
+        set { callbackLock.withLockUnchecked { $0.onCaptureRecoveryFailed = newValue } }
     }
 
     /// Converted PCM16 mono 16 kHz samples, delivered ON THE AUDIO THREAD and
@@ -106,6 +122,36 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         uncheckedState: nil
     )
 
+    /// These knobs are intentionally off by default. Adam enables them for
+    /// its own recognition path; the original Hermes target never touches
+    /// them and therefore keeps receiving the source buffers unchanged.
+    private struct AdamAudioSettings {
+        var recognitionConditioningEnabled = false
+        var maximumInputGainEnabled = false
+    }
+
+    private let adamAudioSettingsLock = OSAllocatedUnfairLock(
+        uncheckedState: AdamAudioSettings()
+    )
+
+    /// Apply Adam's bounded copy-only conditioner before on-device speech
+    /// recognition. This is disabled by default for the original app.
+    var recognitionConditioningEnabled: Bool {
+        get { adamAudioSettingsLock.withLockUnchecked { $0.recognitionConditioningEnabled } }
+        set { adamAudioSettingsLock.withLockUnchecked { $0.recognitionConditioningEnabled = newValue } }
+    }
+
+    /// Request the highest input gain supported by the active audio route.
+    /// Bluetooth HFP ports frequently report this as unavailable, so callers
+    /// must treat this as a best-effort enhancement rather than a guarantee.
+    var maximumInputGainEnabled: Bool {
+        get { adamAudioSettingsLock.withLockUnchecked { $0.maximumInputGainEnabled } }
+        set {
+            adamAudioSettingsLock.withLockUnchecked { $0.maximumInputGainEnabled = newValue }
+            if newValue { applyMaximumInputGainIfPossible() }
+        }
+    }
+
     // MARK: - Private
 
     private let logger = Logger(subsystem: "com.flowsxr.hermesglasses", category: "audio")
@@ -121,6 +167,10 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
 
     private var isCapturing: Bool = false
     private var configChangeObserver: NSObjectProtocol?
+    private var interruptionObserver: NSObjectProtocol?
+    private var interruptionRecoveryTask: Task<Void, Never>?
+    private var requestedCaptureRoute: CaptureRoute = .phoneMic
+    private var isInterrupted = false
 
     /// External-capture mode: no AVAudioEngine, no tap - buffers are pushed
     /// in through `ingest` by whoever owns the microphone (the AiSee kit).
@@ -144,6 +194,10 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         var bufferCount: Int = 0
         var lastDebugTime: TimeInterval = 0
         var lastLevelTime: TimeInterval = 0
+        var smoothedLevel: Float = 0
+        var lowInputSince: TimeInterval?
+        var lowInputRoute: String?
+        var lowInputWarningActive = false
         // VAD
         var isSpeechActive: Bool = false
         var silenceCounter: Int = 0
@@ -157,6 +211,17 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     private let silenceThreshold: Float = 0.015
     private let silenceFrames: Int = 20
     private let vadDisabled: Bool = true
+
+    // A warning is deliberately slower and less sensitive than VAD. HFP
+    // microphones can be quiet for a few buffers while a route settles, but a
+    // sustained value below roughly -42 dBFS is a useful indication that the
+    // wearer is speaking into the wrong mic or that the route is unhealthy.
+    private let lowInputThreshold: Float = 0.008
+    /// Do not treat ordinary room silence as a broken microphone. A warning
+    /// starts only when there is sustained low-level activity below the
+    /// healthy speech threshold.
+    private let lowInputActivityFloor: Float = 0.0015
+    private let lowInputWarningDelay: TimeInterval = 3
 
     // Playback - a self-contained clip player, independent of the engine
     private var clipPlayer: AVAudioPlayer?
@@ -229,6 +294,8 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             logger.error("Microphone permission denied")
             throw HermesAudioError.microphonePermissionDenied
         }
+        try Task.checkCancellation()
+        requestedCaptureRoute = route
 
         let session = AVAudioSession.sharedInstance()
 
@@ -248,8 +315,10 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             let target: AVAudioSessionPortDescription?
             switch route {
             case .glassesMic:
+                // A generic fallback can silently choose AirPods or another
+                // person's headset. If no Ray-Ban/Meta-labelled input exists,
+                // use the explicitly reported iPhone fallback instead.
                 target = hfpInputs.first(where: Self.looksLikeGlasses)
-                    ?? hfpInputs.first
             case .headsetMic:
                 // NEVER fall back to the glasses here - that would put the
                 // call screen over the HUD the user chose this mode to keep
@@ -265,9 +334,10 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
                 wantBluetooth = true
 
                 // Wait up to 3s for the Bluetooth route, without blocking the thread
-                for _ in 0..<30 where !isUsingBluetoothInput {
+                for _ in 0..<30 where !requestedRouteIsActive(route) {
                     try await Task.sleep(nanoseconds: 100_000_000)
                 }
+                if !requestedRouteIsActive(route) { wantBluetooth = false }
             }
 
             if !wantBluetooth || !isUsingBluetoothInput {
@@ -297,7 +367,13 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
 
         // Route changes (especially to/from HFP) renegotiate the hardware
         // sample rate - let it settle before touching the engine.
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        try Task.checkCancellation()
+
+        // Input gain is a best-effort route capability. Apply it only after
+        // Bluetooth has settled so an HFP route that supports gain receives
+        // the request, while unsupported routes simply continue normally.
+        applyMaximumInputGainIfPossible()
 
         // Fresh engine every start: the old instance's cached graph is what
         // produces -10868 after a route change. The old player node dies
@@ -306,13 +382,18 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
 
         var waited = 0
         while inputNode.outputFormat(forBus: 0).sampleRate == 0, waited < 10 {
-            try? await Task.sleep(nanoseconds: 200_000_000)
+            try await Task.sleep(nanoseconds: 200_000_000)
             waited += 1
         }
+        try Task.checkCancellation()
 
         isCapturing = true
         tapLock.withLockUnchecked { state in
             state.bufferCount = 0
+            state.smoothedLevel = 0
+            state.lowInputSince = nil
+            state.lowInputRoute = nil
+            state.lowInputWarningActive = false
             // Defensive: an engine tap and `ingest` must never both feed the
             // pipeline. `stopCapture()` clears this, but a caller that switched
             // routes without one would otherwise leave `ingest` armed alongside
@@ -320,6 +401,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             state.externalCapture = false
         }
         observeConfigurationChanges()
+        observeAudioInterruptions()
         installTap()
         do {
             try audioEngine.start()
@@ -327,11 +409,17 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             // One retry with another fresh engine - the first start can
             // race the route transition
             logger.warning("Engine start failed (\(error.localizedDescription, privacy: .public)) - rebuilding and retrying")
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            try await Task.sleep(nanoseconds: 500_000_000)
+            try Task.checkCancellation()
             rebuildEngine()
             observeConfigurationChanges()
+            observeAudioInterruptions()
             installTap()
             try audioEngine.start()
+        }
+        if Task.isCancelled {
+            stopCapture()
+            throw CancellationError()
         }
         logger.info("Audio engine started")
         return isUsingBluetoothInput
@@ -372,6 +460,10 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         clearConverter()
         tapLock.withLockUnchecked { state in
             state.bufferCount = 0
+            state.smoothedLevel = 0
+            state.lowInputSince = nil
+            state.lowInputRoute = nil
+            state.lowInputWarningActive = false
             state.externalCapture = true
         }
         isCapturing = true
@@ -415,12 +507,19 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     func stopCapture() {
         let wasExternal = externalCapture
         isCapturing = false
+        isInterrupted = false
         externalCapture = false
+        interruptionRecoveryTask?.cancel()
+        interruptionRecoveryTask = nil
         clipPlayer?.stop()
         clipPlayer = nil
         if let observer = configChangeObserver {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil
+        }
+        if let observer = interruptionObserver {
+            NotificationCenter.default.removeObserver(observer)
+            interruptionObserver = nil
         }
         // External capture never built an engine or installed a tap.
         // `inputNode` is lazy - touching it here would instantiate the input
@@ -430,7 +529,15 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             audioEngine.stop()
         }
         clearConverter()
+        tapLock.withLockUnchecked { state in
+            state.smoothedLevel = 0
+            state.lowInputSince = nil
+            state.lowInputRoute = nil
+            state.lowInputWarningActive = false
+        }
         try? AVAudioSession.sharedInstance().setActive(false)
+        let warningHandler = callbackLock.withLockUnchecked { $0.onMicWarning }
+        DispatchQueue.main.async { warningHandler?(nil) }
     }
 
     // MARK: - Playback
@@ -543,7 +650,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             object: audioEngine,
             queue: .main
         ) { [weak self] _ in
-            guard let self, self.isCapturing else { return }
+            guard let self, self.isCapturing, !self.isInterrupted else { return }
             self.logger.info("Engine configuration changed - reinstalling tap. Route: \(self.currentInputName, privacy: .public)")
             self.inputNode.removeTap(onBus: 0)
             self.installTap()
@@ -556,6 +663,110 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             }
 
             self.onRouteChanged?()
+        }
+    }
+
+    /// Calls, Siri, alarms, and other system audio can stop the input unit
+    /// without producing an engine-configuration notification. Re-negotiate
+    /// the requested route and rebuild the whole graph when the interruption
+    /// ends so wake-word recognition does not remain silently dead.
+    private func observeAudioInterruptions() {
+        if let observer = interruptionObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let interruptionType = AVAudioSession.InterruptionType(rawValue: rawType)
+            else { return }
+
+            switch interruptionType {
+            case .began:
+                guard self.isCapturing else { return }
+                self.isInterrupted = true
+                self.interruptionRecoveryTask?.cancel()
+                self.interruptionRecoveryTask = nil
+                if let observer = self.configChangeObserver {
+                    NotificationCenter.default.removeObserver(observer)
+                    self.configChangeObserver = nil
+                }
+                self.audioEngine.pause()
+                self.logger.info("Audio capture interrupted")
+                self.sendDebug("audio interrupted; waiting to resume")
+
+            case .ended:
+                guard self.isCapturing else { return }
+                self.isInterrupted = false
+                self.interruptionRecoveryTask?.cancel()
+                let route = self.requestedCaptureRoute
+                self.interruptionRecoveryTask = Task { [weak self] in
+                    guard let self else { return }
+                    let retryDelays: [UInt64] = [300_000_000, 1_000_000_000, 2_000_000_000]
+
+                    for (attempt, delay) in retryDelays.enumerated() {
+                        do {
+                            try await Task.sleep(nanoseconds: delay)
+                            try Task.checkCancellation()
+                            guard self.isCapturing, !self.isInterrupted else { return }
+
+                            _ = try await self.startCapture(route: route)
+                            try Task.checkCancellation()
+                            guard self.isCapturing, !self.isInterrupted else { return }
+
+                            if route == .phoneMic || self.requestedRouteIsActive(route) {
+                                self.interruptionRecoveryTask = nil
+                                self.logger.info("Requested audio route recovered after interruption")
+                                self.sendDebug("requested audio route recovered")
+                                self.onRouteChanged?()
+                                return
+                            }
+
+                            // startCapture deliberately leaves the iPhone mic
+                            // live when HFP is absent. Give the requested route
+                            // two more chances, then keep that working fallback
+                            // and report it honestly through onRouteChanged.
+                            if attempt == retryDelays.indices.last {
+                                self.interruptionRecoveryTask = nil
+                                self.logger.warning("Requested Bluetooth route did not recover; continuing on iPhone microphone")
+                                self.sendDebug("Bluetooth route unavailable after interruption; using iPhone mic")
+                                self.onRouteChanged?()
+                                return
+                            }
+                        } catch is CancellationError {
+                            return
+                        } catch {
+                            self.logger.warning("Audio interruption recovery attempt \(attempt + 1, privacy: .public) failed: \(String(describing: type(of: error)), privacy: .public)")
+                        }
+                    }
+
+                    self.logger.error("Audio capture did not recover after interruption")
+                    let failure = "Audio was interrupted and could not restart. Start Adam again."
+                    let handler = self.onCaptureRecoveryFailed
+                    self.interruptionRecoveryTask = nil
+                    self.stopCapture()
+                    self.sendDebug("audio recovery failed; capture stopped")
+                    handler?(failure)
+                }
+
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    private func requestedRouteIsActive(_ route: CaptureRoute) -> Bool {
+        switch route {
+        case .glassesMic:
+            return isUsingGlassesInput
+        case .headsetMic:
+            return isUsingBluetoothInput && !isUsingGlassesInput
+        case .phoneMic:
+            return !isUsingBluetoothInput
         }
     }
 
@@ -597,6 +808,9 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             let reusable = state.converterInputFormat == buffer.format
             return (reusable ? state.converter : nil, state.bufferCount, level, debug)
         }
+        let conditioningEnabled = adamAudioSettingsLock.withLockUnchecked {
+            $0.recognitionConditioningEnabled
+        }
 
         // (Re)build the converter whenever the incoming format changes -
         // route switches change the sample rate under our feet. Building one
@@ -623,11 +837,41 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         // the rest of this function.
         let callbacks = callbackLock.withLockUnchecked { $0 }
 
-        callbacks.onRawBuffer?(buffer)
+        // Adam opts into a fresh conditioned copy. The original Hermes target
+        // leaves this disabled, so it continues to receive the exact source
+        // buffer and all bridge/recording paths remain untouched.
+        callbacks.onRawBuffer?(
+            conditioningEnabled ? conditionedRecognitionBuffer(buffer) : buffer
+        )
 
-        if entry.level, let onLevel = callbacks.onLevel {
-            let level = rawFloatRMS(buffer)
-            DispatchQueue.main.async { onLevel(max(0, level)) }
+        if entry.level {
+            let rawLevel = rawFloatRMS(buffer)
+            let smoothedLevel: Float
+            if conditioningEnabled {
+                smoothedLevel = tapLock.withLockUnchecked { state in
+                    let next = AdamSpeechSignal.smoothedMeterLevel(
+                        previous: state.smoothedLevel,
+                        rms: rawLevel
+                    )
+                    state.smoothedLevel = next
+                    return next
+                }
+            } else {
+                // Preserve the original Hermes meter contract unless Adam
+                // explicitly opts into the dBFS presentation.
+                smoothedLevel = max(0, rawLevel)
+            }
+            if let onLevel = callbacks.onLevel {
+                DispatchQueue.main.async { onLevel(smoothedLevel) }
+            }
+
+            if conditioningEnabled {
+                let warning = updateLowInputWarning(rawRMS: rawLevel, now: now)
+                if warning.changed {
+                    let warningHandler = callbacks.onMicWarning
+                    DispatchQueue.main.async { warningHandler?(warning.message) }
+                }
+            }
         }
 
         let outputBuffer: AVAudioPCMBuffer?
@@ -713,6 +957,263 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         }
     }
 
+    // MARK: - Adam recognition conditioning
+
+    /// Return a conditioned copy for Adam's speech recognizer. The source
+    /// buffer is never modified: the same source continues through the
+    /// recorder and converted bridge-audio paths below. Any unsupported or
+    /// malformed layout falls back to the original buffer so recognition can
+    /// continue rather than dropping a capture frame.
+    private func conditionedRecognitionBuffer(
+        _ buffer: AVAudioPCMBuffer
+    ) -> AVAudioPCMBuffer {
+        guard let copy = copyPCMBuffer(buffer), conditionPCMBuffer(copy) else {
+            return buffer
+        }
+        return copy
+    }
+
+    private func copyPCMBuffer(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        let frameLength = Int(buffer.frameLength)
+        guard frameLength > 0, frameLength <= Int(buffer.frameCapacity),
+              let copy = AVAudioPCMBuffer(
+                  pcmFormat: buffer.format,
+                  frameCapacity: buffer.frameLength
+              ) else {
+            return nil
+        }
+
+        copy.frameLength = buffer.frameLength
+        // CoreAudio only exposes the mutable collection wrapper on iOS. We
+        // cast the list pointer solely to iterate and copy its bytes; the
+        // source buffer itself is never mutated.
+        let sourceBuffers = UnsafeMutableAudioBufferListPointer(
+            UnsafeMutablePointer(mutating: buffer.audioBufferList)
+        )
+        let destinationBuffers = UnsafeMutableAudioBufferListPointer(
+            copy.mutableAudioBufferList
+        )
+        guard sourceBuffers.count == destinationBuffers.count else { return nil }
+
+        for (source, destination) in zip(sourceBuffers, destinationBuffers) {
+            let byteCount = Int(source.mDataByteSize)
+            guard byteCount <= Int(destination.mDataByteSize) else { return nil }
+            guard byteCount == 0 || (source.mData != nil && destination.mData != nil) else {
+                return nil
+            }
+            if byteCount > 0 {
+                memcpy(destination.mData, source.mData, byteCount)
+            }
+        }
+        return copy
+    }
+
+    private func conditionPCMBuffer(_ buffer: AVAudioPCMBuffer) -> Bool {
+        let frameLength = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        guard frameLength > 0, channelCount > 0 else { return false }
+
+        switch buffer.format.commonFormat {
+        case .pcmFormatFloat32:
+            return conditionFloatPCMBuffer(
+                buffer,
+                frameLength: frameLength,
+                channelCount: channelCount
+            )
+        case .pcmFormatInt16:
+            return conditionInt16PCMBuffer(
+                buffer,
+                frameLength: frameLength,
+                channelCount: channelCount
+            )
+        default:
+            return false
+        }
+    }
+
+    private func conditionFloatPCMBuffer(
+        _ buffer: AVAudioPCMBuffer,
+        frameLength: Int,
+        channelCount: Int
+    ) -> Bool {
+        let audioBuffers = UnsafeMutableAudioBufferListPointer(
+            buffer.mutableAudioBufferList
+        )
+        let bytesPerSample = MemoryLayout<Float>.size
+        let configuration = AdamSpeechSignal.Configuration.default
+
+        if buffer.format.isInterleaved {
+            let expectedSamples = frameLength * channelCount
+            guard audioBuffers.count == 1,
+                  Int(audioBuffers[0].mDataByteSize) >= expectedSamples * bytesPerSample,
+                  let data = audioBuffers[0].mData else { return false }
+            let samples = data.assumingMemoryBound(to: Float.self)
+            for index in 0..<expectedSamples {
+                samples[index] = AdamSpeechSignal.processSample(
+                    samples[index],
+                    configuration: configuration
+                )
+            }
+            return true
+        }
+
+        guard audioBuffers.count == channelCount else { return false }
+        for index in 0..<channelCount {
+            let audioBuffer = audioBuffers[index]
+            guard Int(audioBuffer.mDataByteSize) >= frameLength * bytesPerSample,
+                  let data = audioBuffer.mData else { return false }
+            let samples = data.assumingMemoryBound(to: Float.self)
+            for frame in 0..<frameLength {
+                samples[frame] = AdamSpeechSignal.processSample(
+                    samples[frame],
+                    configuration: configuration
+                )
+            }
+        }
+        return true
+    }
+
+    private func conditionInt16PCMBuffer(
+        _ buffer: AVAudioPCMBuffer,
+        frameLength: Int,
+        channelCount: Int
+    ) -> Bool {
+        let audioBuffers = UnsafeMutableAudioBufferListPointer(
+            buffer.mutableAudioBufferList
+        )
+        let bytesPerSample = MemoryLayout<Int16>.size
+        let configuration = AdamSpeechSignal.Configuration.default
+
+        if buffer.format.isInterleaved {
+            let expectedSamples = frameLength * channelCount
+            guard audioBuffers.count == 1,
+                  Int(audioBuffers[0].mDataByteSize) >= expectedSamples * bytesPerSample,
+                  let data = audioBuffers[0].mData else { return false }
+            let samples = data.assumingMemoryBound(to: Int16.self)
+            for index in 0..<expectedSamples {
+                samples[index] = AdamSpeechSignal.processInt16Sample(
+                    samples[index],
+                    configuration: configuration
+                )
+            }
+            return true
+        }
+
+        guard audioBuffers.count == channelCount else { return false }
+        for index in 0..<channelCount {
+            let audioBuffer = audioBuffers[index]
+            guard Int(audioBuffer.mDataByteSize) >= frameLength * bytesPerSample,
+                  let data = audioBuffer.mData else { return false }
+            let samples = data.assumingMemoryBound(to: Int16.self)
+            for frame in 0..<frameLength {
+                samples[frame] = AdamSpeechSignal.processInt16Sample(
+                    samples[frame],
+                    configuration: configuration
+                )
+            }
+        }
+        return true
+    }
+
+    private struct LowInputWarningUpdate {
+        var changed = false
+        var message: String?
+    }
+
+    /// Keep low-input state per active route. A route change clears a stale
+    /// warning immediately; a new warning appears only after several seconds
+    /// of genuinely quiet input.
+    private func updateLowInputWarning(
+        rawRMS: Float,
+        now: TimeInterval
+    ) -> LowInputWarningUpdate {
+        let route = micWarningRoute()
+        return tapLock.withLockUnchecked { state in
+            if state.lowInputRoute != route.key {
+                let wasActive = state.lowInputWarningActive
+                state.lowInputRoute = route.key
+                state.lowInputSince = nil
+                state.lowInputWarningActive = false
+                return LowInputWarningUpdate(
+                    changed: wasActive,
+                    message: nil
+                )
+            }
+
+            guard rawRMS.isFinite, rawRMS >= 0 else {
+                return LowInputWarningUpdate()
+            }
+
+            if rawRMS >= lowInputThreshold || rawRMS < lowInputActivityFloor {
+                let wasActive = state.lowInputWarningActive
+                state.lowInputSince = nil
+                state.lowInputWarningActive = false
+                return LowInputWarningUpdate(
+                    changed: wasActive,
+                    message: nil
+                )
+            }
+
+            if state.lowInputSince == nil {
+                state.lowInputSince = now
+                return LowInputWarningUpdate()
+            }
+
+            guard !state.lowInputWarningActive,
+                  let quietSince = state.lowInputSince,
+                  now - quietSince >= lowInputWarningDelay else {
+                return LowInputWarningUpdate()
+            }
+
+            state.lowInputWarningActive = true
+            return LowInputWarningUpdate(changed: true, message: route.message)
+        }
+    }
+
+    private func micWarningRoute() -> (key: String, message: String) {
+        let input = AVAudioSession.sharedInstance().currentRoute.inputs.first
+        guard let input else {
+            return (
+                "none",
+                "Microphone input is unavailable. Check the Ray-Ban Bluetooth connection."
+            )
+        }
+
+        let name = input.portName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isBluetooth = input.portType == .bluetoothHFP || input.portType == .bluetoothA2DP
+        if isBluetooth && Self.looksLikeGlasses(input) {
+            return (
+                "glasses:\(name)",
+                "Ray-Ban microphone input is very quiet. Move closer to the glasses or switch to the iPhone microphone."
+            )
+        }
+        if isBluetooth {
+            return (
+                "bluetooth:\(name)",
+                "Bluetooth microphone input is very quiet. Check the headset connection or switch to the iPhone microphone."
+            )
+        }
+        return (
+            "phone:\(name)",
+            "iPhone microphone input is very quiet. Move closer and speak toward the phone."
+        )
+    }
+
+    private func applyMaximumInputGainIfPossible() {
+        guard maximumInputGainEnabled else { return }
+        let session = AVAudioSession.sharedInstance()
+        guard session.isInputGainSettable else {
+            logger.info("Input gain is not settable on the active route")
+            return
+        }
+        do {
+            try session.setInputGain(1.0)
+            sendDebug("maximum input gain requested")
+        } catch {
+            logger.info("Maximum input gain unavailable: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     private enum VADTransition {
         case none
         case speechStarted
@@ -780,32 +1281,90 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
 
     /// RMS of the untouched buffer straight off the input, before conversion.
     ///
-    /// An engine tap hands over float buffers; the AiSee kit hands over Int16
-    /// ones, and an Int16 buffer's `floatChannelData` is nil. Without the
-    /// second branch this returned -1 for every AiSee buffer, so the UI level
-    /// meter (which clamps at 0) sat dead flat for the whole session and the
-    /// periodic "levels raw=..." diagnostic was meaningless.
+    /// Engine taps commonly hand over non-interleaved Float32 while external
+    /// kits and some HFP routes hand over interleaved or non-interleaved Int16.
+    /// Walk the audio-buffer-list layout explicitly so neither format reports
+    /// a permanently dead meter.
     private func rawFloatRMS(_ buffer: AVAudioPCMBuffer) -> Float {
-        guard buffer.frameLength > 0 else { return -1 }
-        let n = Int(buffer.frameLength)
+        let frameLength = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        guard frameLength > 0, channelCount > 0 else { return -1 }
+
+        // CoreAudio's iOS SDK does not provide UnsafeAudioBufferListPointer.
+        // Use its mutable wrapper for read-only iteration over this list.
+        let audioBuffers = UnsafeMutableAudioBufferListPointer(
+            UnsafeMutablePointer(mutating: buffer.audioBufferList)
+        )
         var sum: Float = 0
-        if let channels = buffer.floatChannelData {
-            for i in 0..<n {
-                let s = channels[0][i]
-                sum += s * s
+        var sampleCount = 0
+
+        switch buffer.format.commonFormat {
+        case .pcmFormatFloat32:
+            if buffer.format.isInterleaved {
+                let expectedSamples = frameLength * channelCount
+                guard audioBuffers.count == 1,
+                      Int(audioBuffers[0].mDataByteSize)
+                          >= expectedSamples * MemoryLayout<Float>.size,
+                      let data = audioBuffers[0].mData else { return -1 }
+                let samples = data.assumingMemoryBound(to: Float.self)
+                for index in 0..<expectedSamples {
+                    let sample = samples[index]
+                    guard sample.isFinite else { continue }
+                    sum += sample * sample
+                    sampleCount += 1
+                }
+            } else {
+                guard audioBuffers.count == channelCount else { return -1 }
+                for channel in 0..<channelCount {
+                    let audioBuffer = audioBuffers[channel]
+                    guard Int(audioBuffer.mDataByteSize)
+                              >= frameLength * MemoryLayout<Float>.size,
+                          let data = audioBuffer.mData else { return -1 }
+                    let samples = data.assumingMemoryBound(to: Float.self)
+                    for frame in 0..<frameLength {
+                        let sample = samples[frame]
+                        guard sample.isFinite else { continue }
+                        sum += sample * sample
+                        sampleCount += 1
+                    }
+                }
             }
-        } else if let channels = buffer.int16ChannelData {
-            // `stride` is 1 for non-interleaved and the channel count for
-            // interleaved, so this reads channel 0 either way.
-            let step = buffer.stride
-            for i in 0..<n {
-                let s = Float(channels[0][i * step]) / 32768.0
-                sum += s * s
+
+        case .pcmFormatInt16:
+            if buffer.format.isInterleaved {
+                let expectedSamples = frameLength * channelCount
+                guard audioBuffers.count == 1,
+                      Int(audioBuffers[0].mDataByteSize)
+                          >= expectedSamples * MemoryLayout<Int16>.size,
+                      let data = audioBuffers[0].mData else { return -1 }
+                let samples = data.assumingMemoryBound(to: Int16.self)
+                for index in 0..<expectedSamples {
+                    let sample = Float(samples[index]) / 32768
+                    sum += sample * sample
+                    sampleCount += 1
+                }
+            } else {
+                guard audioBuffers.count == channelCount else { return -1 }
+                for channel in 0..<channelCount {
+                    let audioBuffer = audioBuffers[channel]
+                    guard Int(audioBuffer.mDataByteSize)
+                              >= frameLength * MemoryLayout<Int16>.size,
+                          let data = audioBuffer.mData else { return -1 }
+                    let samples = data.assumingMemoryBound(to: Int16.self)
+                    for frame in 0..<frameLength {
+                        let sample = Float(samples[frame]) / 32768
+                        sum += sample * sample
+                        sampleCount += 1
+                    }
+                }
             }
-        } else {
+
+        default:
             return -1
         }
-        return sqrt(sum / Float(n))
+
+        guard sampleCount > 0 else { return -1 }
+        return sqrt(sum / Float(sampleCount))
     }
 
     private func computeRMS(_ samples: UnsafePointer<Int16>, frameLength: Int) -> Float {

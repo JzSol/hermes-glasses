@@ -9,17 +9,41 @@
 import Foundation
 import os
 
+enum HermesAPIClientError: LocalizedError, Equatable, Sendable {
+    case missingToken
+    case invalidEndpoint(HermesEndpointValidationError)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingToken:
+            return "Hermes bridge credentials are not configured."
+        case .invalidEndpoint(let error):
+            return error.localizedDescription
+        }
+    }
+}
+
+/// Capabilities advertised by the bridge in its first welcome frame.
+struct HermesBridgeCapabilities: Equatable, Sendable {
+    var vision = false
+}
+
 /// WebSocket-based client for Hermes Agent voice API
-final class HermesAPIClient: NSObject {
+final class HermesAPIClient: NSObject, @unchecked Sendable {
     // MARK: - Callbacks
 
     var onTranscript: ((String) -> Void)?
     /// (text, bridgeWillSendAudio) - when the second value is false, the
     /// app speaks the text itself with on-device TTS
     var onResponse: ((String, Bool) -> Void)?
+    /// Strict clients can correlate a reply to the command that produced it.
+    /// Older bridges omit the id, so it remains optional at this shared layer.
+    var onResponseWithRequestID: ((String, Bool, String?) -> Void)?
     var onAudioResponse: ((Data) -> Void)?
     var onPlaybackComplete: (() -> Void)?
     var onError: ((String) -> Void)?
+    /// Called after the welcome frame has been parsed.
+    var onCapabilities: ((HermesBridgeCapabilities) -> Void)?
     /// Called when the WebSocket disconnects
     var onDisconnected: (() -> Void)?
     /// Bridge asks the app to take a photo with the glasses
@@ -30,6 +54,9 @@ final class HermesAPIClient: NSObject {
     // MARK: - Private
 
     private let endpoint: String
+    private let token: String?
+    private let locale: VoiceLocale
+    private let validationMode: HermesEndpointValidationMode
     private var webSocket: URLSessionWebSocketTask?
     private var session: URLSession?
     /// Behind a lock because the receive loop clears it from a background
@@ -39,14 +66,156 @@ final class HermesAPIClient: NSObject {
     /// already read the stale value.
     private let connectedFlag = OSAllocatedUnfairLock(initialState: false)
     var isConnected: Bool { connectedFlag.withLock { $0 } }
+    private(set) var capabilities = HermesBridgeCapabilities()
+    /// The locale carried on every query frame.
+    var selectedLocale: VoiceLocale { locale }
     private var receiveTask: Task<Void, Never>?
     private var isFinalized: Bool = false
     /// TTS audio accumulated between audio_start and audio_end
     private var ttsBuffer = Data()
 
-    init(endpoint: String) {
+    /// Create a client with a Keychain-loaded bearer token. The token remains
+    /// in memory only; it is put in the Authorization header, never in the
+    /// endpoint URL or a query item.
+    init(
+        endpoint: String,
+        token: String,
+        locale: VoiceLocale = .englishUS,
+        validationMode: HermesEndpointValidationMode = HermesEndpointValidator.currentMode
+    ) {
         self.endpoint = endpoint
+        self.token = token
+        self.locale = locale
+        self.validationMode = validationMode
         super.init()
+    }
+
+    /// Compatibility initializer for the existing camera target. Older builds
+    /// stored `?token=` in the endpoint; consume that value in memory and strip
+    /// it before URLSession ever sees the URL. New settings use Keychain only.
+    convenience init(endpoint: String) {
+        let migrated = Self.migrateLegacyEndpoint(endpoint)
+        let scopedCredentials = BridgeCredentials(endpoint: migrated.endpoint)
+        var storedToken = (try? scopedCredentials.load()) ?? nil
+        if migrated.token != nil {
+            _ = try? Self.migrateLegacyEndpointToKeychain(endpoint)
+        } else if storedToken == nil,
+                  let legacyToken = (try? BridgeCredentials().load()) ?? nil {
+            // Builds between URL-token auth and endpoint-scoped Keychain auth
+            // used one global item. Move it once to the currently selected
+            // endpoint instead of copying that credential to every preset.
+            if (try? scopedCredentials.save(token: legacyToken)) != nil {
+                try? BridgeCredentials().delete()
+                storedToken = legacyToken
+            }
+        }
+        self.init(
+            endpoint: migrated.endpoint,
+            token: migrated.token ?? storedToken ?? ""
+        )
+    }
+
+    /// Pure migration helper kept visible to the standalone endpoint tests.
+    /// It never persists or logs the legacy credential.
+    static func migrateLegacyEndpoint(
+        _ endpoint: String
+    ) -> (endpoint: String, token: String?) {
+        guard var components = URLComponents(string: endpoint) else {
+            return (endpoint, nil)
+        }
+        let items = components.queryItems ?? []
+        let token = items.first {
+            $0.name == "token" && !($0.value ?? "").isEmpty
+        }?.value
+        guard token != nil else { return (endpoint, nil) }
+
+        let retained = items.filter { $0.name != "token" }
+        components.queryItems = retained.isEmpty ? nil : retained
+        return (components.string ?? endpoint, token)
+    }
+
+    /// One-time migration for old settings that embedded `?token=`. Persist
+    /// the credential first, then scrub both the active endpoint and any
+    /// matching preset. If Keychain fails, the caller keeps the original
+    /// value so it can retry without silently losing the credential.
+    static func migrateLegacyEndpointToKeychain(
+        _ endpoint: String
+    ) throws -> String {
+        let migrated = migrateLegacyEndpoint(endpoint)
+        guard let token = migrated.token else { return endpoint }
+        let scopedCredentials = BridgeCredentials(endpoint: migrated.endpoint)
+        try scopedCredentials.save(token: token)
+        if scopedCredentials.account != BridgeCredentials.defaultAccount {
+            // The former single global item is ambiguous once presets can use
+            // different bridges. A successfully imported endpoint token is
+            // now authoritative for this endpoint, so discard the old slot.
+            try? BridgeCredentials().delete()
+        }
+
+        let defaults = UserDefaults.standard
+        if defaults.string(forKey: "hermes_endpoint") == endpoint {
+            defaults.set(migrated.endpoint, forKey: "hermes_endpoint")
+        }
+        if var presets = defaults.dictionary(
+            forKey: "endpoint_presets"
+        ) as? [String: String] {
+            var changed = false
+            for (name, value) in presets where value == endpoint {
+                presets[name] = migrated.endpoint
+                changed = true
+            }
+            if changed { defaults.set(presets, forKey: "endpoint_presets") }
+        }
+        return migrated.endpoint
+    }
+
+    /// The URLRequest builder is public so endpoint/auth policy can be tested
+    /// without opening a real WebSocket.
+    func makeConnectRequest() throws -> URLRequest {
+        let url: URL
+        do {
+            url = try HermesEndpointValidator.validate(endpoint, mode: validationMode)
+        } catch let error as HermesEndpointValidationError {
+            throw HermesAPIClientError.invalidEndpoint(error)
+        }
+
+        guard let token else { throw HermesAPIClientError.missingToken }
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw HermesAPIClientError.missingToken }
+
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpShouldHandleCookies = false
+        return request
+    }
+
+    /// Build the exact query frame without requiring a connected socket.
+    func makeQueryData(
+        _ text: String,
+        bridgeTTS: Bool,
+        requestID: String? = nil
+    ) throws -> Data {
+        var payload: [String: Any] = [
+            "type": "query",
+            "text": text,
+            "locale": locale.rawValue,
+            "tts": bridgeTTS,
+        ]
+        if let requestID, !requestID.isEmpty {
+            payload["request_id"] = requestID
+        }
+        return try JSONSerialization.data(withJSONObject: payload)
+    }
+
+    /// Parse a welcome frame without exposing the raw JSON to UI code.
+    static func parseCapabilities(from data: Data) -> HermesBridgeCapabilities? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["type"] as? String == "welcome" else {
+            return nil
+        }
+        let capabilityJSON = json["capabilities"] as? [String: Any]
+        return HermesBridgeCapabilities(vision: capabilityJSON?["vision"] as? Bool ?? false)
     }
 
     // MARK: - Public API
@@ -55,8 +224,11 @@ final class HermesAPIClient: NSObject {
     /// Returns true once the bridge has confirmed the connection.
     @discardableResult
     func connect() async -> Bool {
-        guard let url = URL(string: endpoint) else {
-            await reportError("Invalid Hermes endpoint URL: \(endpoint)")
+        let request: URLRequest
+        do {
+            request = try makeConnectRequest()
+        } catch {
+            await reportError(error.localizedDescription)
             return false
         }
 
@@ -65,7 +237,7 @@ final class HermesAPIClient: NSObject {
         let urlSession = URLSession(configuration: config)
         session = urlSession
 
-        let ws = urlSession.webSocketTask(with: url)
+        let ws = urlSession.webSocketTask(with: request)
         webSocket = ws
         ws.resume()
 
@@ -130,11 +302,17 @@ final class HermesAPIClient: NSObject {
 
     /// Send an on-device-transcribed query. bridgeTTS asks the bridge to
     /// synthesize the reply voice (edge-tts); false = app speaks locally.
-    func sendQuery(_ text: String, bridgeTTS: Bool) {
+    func sendQuery(
+        _ text: String,
+        bridgeTTS: Bool,
+        requestID: String? = nil
+    ) {
         guard isConnected, let ws = webSocket else { return }
-        let payload: [String: Any] = ["type": "query", "text": text,
-                                      "tts": bridgeTTS]
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+        guard let data = try? makeQueryData(
+            text,
+            bridgeTTS: bridgeTTS,
+            requestID: requestID
+        ),
               let json = String(data: data, encoding: .utf8) else { return }
         ws.send(.string(json)) { [weak self] error in
             if let error {
@@ -233,7 +411,10 @@ final class HermesAPIClient: NSObject {
         await MainActor.run { [weak self] in
             switch type {
             case "welcome":
-                break
+                if let capabilities = Self.parseCapabilities(from: data) {
+                    self?.capabilities = capabilities
+                    self?.onCapabilities?(capabilities)
+                }
             case "transcript":
                 if let transcript = json["text"] as? String {
                     self?.onTranscript?(transcript)
@@ -243,7 +424,9 @@ final class HermesAPIClient: NSObject {
                     // Absent "tts" field = old bridge that always streams
                     // audio afterwards
                     let bridgeAudio = (json["tts"] as? Bool) ?? true
+                    let requestID = json["request_id"] as? String
                     self?.onResponse?(response, bridgeAudio)
+                    self?.onResponseWithRequestID?(response, bridgeAudio, requestID)
                 }
             case "audio_start":
                 self?.ttsBuffer.removeAll()

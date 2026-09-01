@@ -1,0 +1,5 @@
+// Copy to AdamVoice.local.xcconfig and fill in values for this Mac/iPhone.
+// Keep the $() URL escape: an xcconfig treats a literal // as a comment.
+ADAM_DEVELOPMENT_TEAM = YOUR_PERSONAL_TEAM_ID
+ADAM_BRIDGE_ALLOWED_HOST = your-mac.your-tailnet.ts.net
+ADAM_BRIDGE_DEFAULT_ENDPOINT = wss:/$()/your-mac.your-tailnet.ts.net:8443/voice

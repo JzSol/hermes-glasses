@@ -1,8 +1,13 @@
 import asyncio
 import base64
+import json
 import os
+import stat
+import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 import hermes_bridge as hb
 from hermes_bridge import (
@@ -65,6 +70,44 @@ class FakeWebSocket:
         self.sent.append(message)
 
 
+class AuthWebSocket:
+    """Minimal request surface used by the bridge auth tests."""
+
+    def __init__(self, authorization=None, path="/voice"):
+        headers = {}
+        if authorization is not None:
+            headers["Authorization"] = authorization
+        self.request = SimpleNamespace(path=path, headers=headers)
+
+
+class ConnectionWebSocket:
+    """Small async-iterable websocket for handshake tests."""
+
+    def __init__(self, messages=()):
+        self.messages = iter(messages)
+        self.sent = []
+        self.closed = None
+        self.request = SimpleNamespace(path="/voice", headers={
+            "Authorization": "Bearer test-token",
+        })
+        self.remote_address = ("127.0.0.1", 12345)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self.messages)
+        except StopIteration:
+            raise StopAsyncIteration
+
+    async def send(self, message):
+        self.sent.append(message)
+
+    async def close(self, code=None, reason=None):
+        self.closed = (code, reason)
+
+
 class TestAwaitPhoto(unittest.TestCase):
     def test_photo_message_returns_decoded_bytes(self):
         jpeg = b"\xff\xd8\xff\xe0fakejpeg"
@@ -117,7 +160,12 @@ class TestProcessQuery(unittest.TestCase):
              stored_session=None, bridge_tts=True):
         orig_ask, orig_tts = hb.ask_hermes, hb.synthesize_speech
         orig_bridge_tts = hb.BRIDGE_TTS
+        orig_bridge_vision = hb.BRIDGE_VISION
         hb.BRIDGE_TTS = bridge_tts
+        # The local development .env intentionally disables vision for Adam.
+        # These legacy-path tests must pin their own capability instead of
+        # changing behavior based on a developer's ignored runtime config.
+        hb.BRIDGE_VISION = True
         # Pin the brain so an exported HERMES_BRIDGE_BRAIN can't route this
         # around the fake ask_hermes (KeyError, or a real HTTP call).
         orig_brain = hb.BRAIN
@@ -144,6 +192,7 @@ class TestProcessQuery(unittest.TestCase):
         finally:
             hb.ask_hermes, hb.synthesize_speech = orig_ask, orig_tts
             hb.BRIDGE_TTS = orig_bridge_tts
+            hb.BRIDGE_VISION = orig_bridge_vision
             hb.BRAIN = orig_brain
             try:
                 os.unlink(tmp.name)
@@ -173,10 +222,11 @@ class TestProcessQuery(unittest.TestCase):
         self.assertTrue(any('"response"' in m for m in sent_types))
         self.assertTrue(any('"audio_end"' in m for m in sent_types))
 
-    def test_resumed_session_skips_persona(self):
+    def test_resumed_session_keeps_persona_and_locale(self):
         ws = FakeWebSocket([])
         calls = self._run("tell me a joke", ws, stored_session="sid123")
-        self.assertEqual(calls["query"], "tell me a joke")
+        self.assertTrue(calls["query"].endswith("tell me a joke"))
+        self.assertIn("Reply in English", calls["query"])
         self.assertEqual(calls["resume"], "sid123")
 
     def test_visual_query_requests_photo_and_passes_image(self):
@@ -368,6 +418,251 @@ class ProviderRequestTests(unittest.TestCase):
         url, _, _ = build_provider_request(
             "claude", "claude-opus-4-8", "https://api.anthropic.com", "k", "hi", None)
         self.assertTrue(url.endswith("/v1/messages"))
+
+
+class BridgeConfigurationTests(unittest.TestCase):
+    def test_supported_locales_and_unknown_locale_fallback(self):
+        self.assertEqual(hb.sanitize_locale("en-US"), "en-US")
+        self.assertEqual(hb.sanitize_locale("lv-LV"), "lv-LV")
+        self.assertEqual(hb.sanitize_locale("fr-FR"), "en-US")
+        self.assertEqual(hb.sanitize_locale(None), "en-US")
+
+    def test_startup_requires_non_blank_auth_token(self):
+        original = hb.AUTH_TOKEN
+        try:
+            hb.AUTH_TOKEN = "  "
+            with self.assertRaisesRegex(RuntimeError, "HERMES_BRIDGE_TOKEN"):
+                hb.validate_startup_config()
+        finally:
+            hb.AUTH_TOKEN = original
+
+    def test_startup_accepts_auth_token(self):
+        original = hb.AUTH_TOKEN
+        try:
+            hb.AUTH_TOKEN = "test-token"
+            self.assertIsNone(hb.validate_startup_config())
+        finally:
+            hb.AUTH_TOKEN = original
+
+
+class BridgeAuthenticationTests(unittest.TestCase):
+    def setUp(self):
+        self.original = hb.AUTH_TOKEN
+        hb.AUTH_TOKEN = "test-token"
+
+    def tearDown(self):
+        hb.AUTH_TOKEN = self.original
+
+    def test_missing_bearer_header_is_rejected(self):
+        self.assertFalse(hb.is_authorized(AuthWebSocket()))
+
+    def test_wrong_bearer_token_is_rejected(self):
+        self.assertFalse(hb.is_authorized(AuthWebSocket("Bearer wrong")))
+
+    def test_correct_bearer_token_is_accepted(self):
+        self.assertTrue(hb.is_authorized(AuthWebSocket("Bearer test-token")))
+
+    def test_query_string_token_is_rejected(self):
+        self.assertFalse(hb.is_authorized(
+            AuthWebSocket(path="/voice?token=test-token")))
+
+    def test_query_string_is_rejected_even_with_valid_bearer_header(self):
+        self.assertFalse(hb.is_authorized(AuthWebSocket(
+            "Bearer test-token",
+            path="/voice?token=test-token",
+        )))
+
+
+class BridgeVisionTests(unittest.TestCase):
+    def test_disabled_visual_query_never_requests_photo_or_calls_hermes(self):
+        original = hb.BRIDGE_VISION
+        hb.BRIDGE_VISION = False
+        ws = FakeWebSocket([])
+        with mock.patch.object(hb, "ask_hermes",
+                               side_effect=AssertionError("Hermes called")):
+            try:
+                asyncio.run(hb.process_query(ws, "what am I looking at"))
+            finally:
+                hb.BRIDGE_VISION = original
+        sent = [json.loads(item) for item in ws.sent if isinstance(item, str)]
+        self.assertEqual([item["type"] for item in sent], ["response"])
+        self.assertFalse(any(item.get("type") == "capture_photo" for item in sent))
+        self.assertEqual(sent[0]["text"], hb.VISION_DISABLED_RESPONSE)
+
+    def test_disabled_visual_query_uses_selected_locale(self):
+        original = hb.BRIDGE_VISION
+        hb.BRIDGE_VISION = False
+        ws = FakeWebSocket([])
+        try:
+            asyncio.run(hb.process_query(ws, "what am I looking at?",
+                                         locale="lv-LV"))
+        finally:
+            hb.BRIDGE_VISION = original
+        payload = json.loads(ws.sent[0])
+        self.assertEqual(payload["text"], "Kameras piekļuve ir atspējota.")
+
+class BridgeWelcomeTests(unittest.TestCase):
+    def test_welcome_advertises_vision_capability(self):
+        original = hb.BRIDGE_VISION
+        try:
+            hb.BRIDGE_VISION = False
+            payload = json.loads(hb.welcome_message())
+            self.assertFalse(payload["capabilities"]["vision"])
+            hb.BRIDGE_VISION = True
+            payload = json.loads(hb.welcome_message())
+            self.assertTrue(payload["capabilities"]["vision"])
+        finally:
+            hb.BRIDGE_VISION = original
+
+    def test_handler_sends_capabilities_in_welcome_frame(self):
+        original_token = hb.AUTH_TOKEN
+        original_vision = hb.BRIDGE_VISION
+        hb.AUTH_TOKEN = "test-token"
+        hb.BRIDGE_VISION = False
+        websocket = ConnectionWebSocket()
+        try:
+            asyncio.run(hb.handle_connection(websocket))
+        finally:
+            hb.AUTH_TOKEN = original_token
+            hb.BRIDGE_VISION = original_vision
+        self.assertFalse(json.loads(websocket.sent[0])["capabilities"]["vision"])
+
+
+class BridgeLocaleTests(unittest.TestCase):
+    def test_locale_instruction_is_sent_on_every_hermes_query(self):
+        original_ask = hb.ask_hermes
+        original_session_file = hb.SESSION_FILE
+        original_brain = hb.BRAIN
+        original_bridge_tts = hb.BRIDGE_TTS
+        original_vision = hb.BRIDGE_VISION
+        temp_path = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        temp_path.close()
+        os.unlink(temp_path.name)
+        calls = []
+
+        def fake_ask(query, image_path=None, resume=None):
+            calls.append((query, resume))
+            return "atbilde", "session-lv"
+
+        hb.ask_hermes = fake_ask
+        hb.SESSION_FILE = temp_path.name
+        hb.BRAIN = "hermes"
+        hb.BRIDGE_TTS = False
+        hb.BRIDGE_VISION = True
+        try:
+            asyncio.run(hb.process_query(FakeWebSocket([]), "cik ir pulkstenis?",
+                                         locale="lv-LV"))
+            asyncio.run(hb.process_query(FakeWebSocket([]), "un rīt?",
+                                         locale="lv-LV"))
+        finally:
+            hb.ask_hermes = original_ask
+            hb.SESSION_FILE = original_session_file
+            hb.BRAIN = original_brain
+            hb.BRIDGE_TTS = original_bridge_tts
+            hb.BRIDGE_VISION = original_vision
+            try:
+                os.unlink(temp_path.name)
+            except OSError:
+                pass
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all("Latvian" in query for query, _ in calls))
+        self.assertTrue(calls[0][0].endswith("cik ir pulkstenis?"))
+        self.assertEqual(calls[1][1], "session-lv")
+
+
+class BridgeHermesInvocationTests(unittest.TestCase):
+    def test_cli_contains_execution_bounds_and_workdir_without_yolo(self):
+        original = (hb.HERMES_BIN, hb.BRIDGE_WORKDIR,
+                    hb.HERMES_MAX_TURNS, hb.HERMES_RUN_BUDGET)
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return subprocess.CompletedProcess(cmd, 0, stdout="reply", stderr="")
+
+        hb.HERMES_BIN = "/tmp/hermes"
+        hb.BRIDGE_WORKDIR = "/tmp/adam-workdir"
+        hb.HERMES_MAX_TURNS = 7
+        hb.HERMES_RUN_BUDGET = 11
+        try:
+            with mock.patch("subprocess.run", side_effect=fake_run):
+                reply, session = hb.ask_hermes("hello")
+        finally:
+            (hb.HERMES_BIN, hb.BRIDGE_WORKDIR,
+             hb.HERMES_MAX_TURNS, hb.HERMES_RUN_BUDGET) = original
+        self.assertEqual(reply, "reply")
+        self.assertIsNone(session)
+        cmd = captured["cmd"]
+        self.assertIn("--no-restore-cwd", cmd)
+        self.assertEqual(cmd[cmd.index("--in") + 1], "/tmp/adam-workdir")
+        self.assertEqual(cmd[cmd.index("--max-turns") + 1], "7")
+        self.assertEqual(cmd[cmd.index("--run-budget") + 1], "11")
+        self.assertNotIn("--yolo", cmd)
+
+    def test_cli_failure_does_not_expose_stderr_in_voice_reply(self):
+        secret_detail = "provider failed at /private/path with token-shaped detail"
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                cmd, 2, stdout="", stderr=secret_detail
+            )
+
+        with mock.patch("subprocess.run", side_effect=fake_run):
+            reply, _ = hb.ask_hermes("hello")
+
+        self.assertEqual(reply, "Sorry, Hermes could not answer that right now.")
+        self.assertNotIn(secret_detail, reply)
+
+    def test_cli_exception_does_not_expose_details_in_log_or_reply(self):
+        secret_detail = "private prompt at /private/path"
+        with mock.patch("subprocess.run", side_effect=OSError(secret_detail)), \
+                mock.patch("builtins.print") as output:
+            reply, _ = hb.ask_hermes("hello")
+
+        self.assertEqual(reply, "Sorry, Hermes could not answer that right now.")
+        rendered = " ".join(str(call) for call in output.call_args_list)
+        self.assertNotIn(secret_detail, rendered)
+        self.assertNotIn("/private/path", rendered)
+
+
+class BridgeRequestIdentityTests(unittest.TestCase):
+    def test_response_echoes_request_id(self):
+        ws = FakeWebSocket([])
+        asyncio.run(hb.send_response(ws, "ok", False, "request-123"))
+        payload = json.loads(ws.sent[0])
+        self.assertEqual(payload["request_id"], "request-123")
+
+    def test_response_omits_absent_request_id_for_old_clients(self):
+        ws = FakeWebSocket([])
+        asyncio.run(hb.send_response(ws, "ok", False))
+        payload = json.loads(ws.sent[0])
+        self.assertNotIn("request_id", payload)
+
+
+class BridgeSessionStoreTests(unittest.TestCase):
+    def test_store_creates_parent_atomically_with_private_permissions(self):
+        root = tempfile.mkdtemp()
+        path = os.path.join(root, "nested", "adam-session.json")
+        original = hb.SESSION_FILE
+        hb.SESSION_FILE = path
+        try:
+            hb.store_session("sid")
+            self.assertEqual(hb.load_session(), "sid")
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+            self.assertTrue(os.path.isdir(os.path.dirname(path)))
+            self.assertFalse(os.path.exists(path + ".tmp"))
+        finally:
+            hb.SESSION_FILE = original
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            try:
+                os.rmdir(os.path.dirname(path))
+                os.rmdir(root)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

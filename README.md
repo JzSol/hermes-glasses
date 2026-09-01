@@ -165,6 +165,23 @@ addition to the default `hermes` (agentic CLI with tools + memory).
 
 ## Setup
 
+### Adam voice-only (no Meta camera toolkit)
+
+If you only want hands-free conversation through the Ray-Bans, build the
+separate **AdamVoice** scheme. It uses the glasses as a normal Bluetooth HFP
+headset, so it needs no Meta Wearables project, camera permission, App ID, or
+Client Token. Speech recognition and reply synthesis run on the iPhone; only
+the transcribed command and Hermes's text reply cross the private bridge.
+
+The voice loop wakes on **“Adam”**, keeps a 30-second follow-up window after
+each answer, plays generated flute/droplet listening feedback, prefers an
+installed British male voice for English replies, and improves quiet HFP input
+before on-device recognition. It supports English and Latvian, stores the
+bridge token in iPhone Keychain, and accepts a release endpoint only when it is
+`wss://` on a Tailscale `*.ts.net` host. See
+[Adam voice-only setup](docs/ADAM_VOICE_SETUP.md) for the bridge, Tailscale,
+free Apple-ID signing, and first-run steps.
+
 ### Requirements
 
 - iPhone with iOS 17+, Xcode 16+
@@ -217,18 +234,24 @@ on your Mac and point the app at it over WebSocket.
 2. Run the bridge:
    ```bash
    cd bridge
-   pip install websockets edge-tts
-   python hermes_bridge.py
-   # → listens on ws://0.0.0.0:8765/voice
+   python3 -m venv .venv
+   .venv/bin/pip install -r requirements.txt
+   cp .env.example .env
+   # Set a strong HERMES_BRIDGE_TOKEN in .env before starting.
+   .venv/bin/python hermes_bridge.py
+   # → listens on ws://127.0.0.1:8765/voice by default
    ```
    Copy `bridge/.env.example` to `bridge/.env` to configure it - in
-   particular, `HERMES_BRIDGE_TOKEN` is **required** if the bridge is
-   reachable from the internet (clients then connect with
-   `ws://host:8765/voice?token=<value>`).
-3. In the app: build to your iPhone, **Connect Glasses**, then
-   **Settings → Assistant → Backend: Bridge (server)** and set the endpoint
-   to `ws://<your-mac-ip>:8765/voice`. The "Bridge" chip in the banner turns
-   green when the bridge is reachable.
+   particular, `HERMES_BRIDGE_TOKEN` is **always required**. Current clients
+   send it in the WebSocket `Authorization: Bearer` handshake header. Tokens
+   in endpoint query strings are rejected.
+3. Keep the bridge bound to loopback and expose it privately with Tailscale
+   Serve (for example `tailscale serve --https=8443
+   http://127.0.0.1:8765`). In the app, choose **Settings → Assistant →
+   Backend: Bridge (server)** and set
+   `wss://<mac>.<tailnet>.ts.net:8443/voice`. The "Bridge" chip in the banner
+   turns green when the authenticated bridge is reachable. Insecure
+   `ws://localhost` is available only for a Debug simulator build.
 
 The bridge's `HERMES_BRIDGE_BRAIN` env var can also be set to `anthropic`,
 `openai`, or `gemini` to skip the Hermes CLI and call that provider's API

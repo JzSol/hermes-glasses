@@ -1,0 +1,10 @@
+// Safe defaults for the standalone AdamVoice target. Machine-specific values
+// live in the ignored sibling file so a tailnet hostname and Personal Team do
+// not become repository defaults.
+ADAM_DEVELOPMENT_TEAM =
+ADAM_BRIDGE_ALLOWED_HOST =
+ADAM_BRIDGE_DEFAULT_ENDPOINT =
+
+#include? "AdamVoice.local.xcconfig"
+
+DEVELOPMENT_TEAM = $(ADAM_DEVELOPMENT_TEAM)

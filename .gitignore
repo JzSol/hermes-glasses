@@ -15,9 +15,12 @@ build/
 
 # Secrets - real Meta DAT credentials (copy Config/Secrets.example.xcconfig)
 Config/Secrets.xcconfig
+Config/AdamVoice.local.xcconfig
 
 # Python
 bridge/__pycache__/
+bridge/.env
+bridge/.venv/
 *.pyc
 nohup.out
 
