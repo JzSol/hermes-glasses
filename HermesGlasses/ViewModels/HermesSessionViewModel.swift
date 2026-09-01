@@ -328,11 +328,9 @@ final class HermesSessionViewModel {
 
     /// Hermes Agent WebSocket endpoint
     var hermesEndpoint: String {
-        let stored = (UserDefaults.standard.string(forKey: "hermes_endpoint")
+        (UserDefaults.standard.string(forKey: "hermes_endpoint")
             ?? "ws://localhost:8765/voice")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (try? HermesAPIClient.migrateLegacyEndpointToKeychain(stored))
-            ?? stored
     }
 
     // MARK: - Constants
@@ -1054,14 +1052,6 @@ final class HermesSessionViewModel {
         audioManager.onRouteChanged = { [weak self] in
             Task { @MainActor [weak self] in
                 self?.speechRecognizer.restartCycle()
-            }
-        }
-        audioManager.onCaptureRecoveryFailed = { [weak self] message in
-            Task { @MainActor [weak self] in
-                guard let self,
-                      self.connectionState != .disconnected else { return }
-                self.endSession()
-                self.show(message)
             }
         }
 
@@ -2859,15 +2849,7 @@ final class HermesSessionViewModel {
 
     func setEndpoint(_ endpoint: String) {
         let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        do {
-            let sanitized = try HermesAPIClient
-                .migrateLegacyEndpointToKeychain(trimmed)
-            UserDefaults.standard.set(sanitized, forKey: "hermes_endpoint")
-        } catch {
-            errorMessage = error.localizedDescription
-            showError = true
-            return
-        }
+        UserDefaults.standard.set(trimmed, forKey: "hermes_endpoint")
         Task { await checkBridge() }
     }
 
@@ -2878,17 +2860,7 @@ final class HermesSessionViewModel {
         let dict = UserDefaults.standard
             .dictionary(forKey: Self.endpointPresetsKey) as? [String: String]
             ?? [:]
-        var sanitized = dict
-        for (name, value) in dict {
-            if let clean = try? HermesAPIClient
-                .migrateLegacyEndpointToKeychain(value) {
-                sanitized[name] = clean
-            }
-        }
-        if sanitized != dict {
-            UserDefaults.standard.set(sanitized, forKey: Self.endpointPresetsKey)
-        }
-        return sanitized.sorted { $0.key < $1.key }
+        return dict.sorted { $0.key < $1.key }
             .map { (name: $0.key, url: $0.value) }
     }
 
@@ -2896,19 +2868,10 @@ final class HermesSessionViewModel {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
         let trimmedURL = url.trimmingCharacters(in: .whitespaces)
         guard !trimmedName.isEmpty, !trimmedURL.isEmpty else { return }
-        let sanitizedURL: String
-        do {
-            sanitizedURL = try HermesAPIClient
-                .migrateLegacyEndpointToKeychain(trimmedURL)
-        } catch {
-            errorMessage = error.localizedDescription
-            showError = true
-            return
-        }
         var dict = UserDefaults.standard
             .dictionary(forKey: Self.endpointPresetsKey) as? [String: String]
             ?? [:]
-        dict[trimmedName] = sanitizedURL
+        dict[trimmedName] = trimmedURL
         UserDefaults.standard.set(dict, forKey: Self.endpointPresetsKey)
     }
 
@@ -3308,6 +3271,17 @@ final class HermesSessionViewModel {
         showNotice = true
     }
 }
+
+struct ConversationTurn: Identifiable {
+    let id = UUID()
+    let userText: String
+    let agentText: String
+    let timestamp: Date
+    var photo: Data? = nil
+    /// Which camera took `photo` ("AiSee camera", "Ray-Ban camera", "iPhone camera").
+    var photoSource: String? = nil
+}
+
 
 /// Thread-safe counter for `testAiSeeMic` - the kit delivers on its own thread.
 private final class AiSeeMicTally: @unchecked Sendable {

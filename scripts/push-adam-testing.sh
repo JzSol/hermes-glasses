@@ -52,7 +52,15 @@ invalid_paths=`
     git diff --name-only "${remote_ref}..HEAD" | while IFS= read -r path; do
         case "$path" in
             AdamVoice/*) : ;;
+            .gitignore) : ;;
+            bridge/.env.example) : ;;
+            bridge/hermes_bridge.py) : ;;
+            bridge/requirements.txt) : ;;
+            bridge/test_hermes_bridge.py) : ;;
+            Config/AdamVoice.example.xcconfig) : ;;
+            Config/AdamVoice.xcconfig) : ;;
             HermesGlasses.xcodeproj/project.pbxproj) : ;;
+            HermesGlasses/Info.plist) : ;;
             HermesGlasses/Models/AssistantConversation.swift) : ;;
             HermesGlasses/Services/HermesAudioManager.swift) : ;;
             HermesGlasses/Services/HermesAPIClient.swift) : ;;
@@ -69,10 +77,10 @@ invalid_paths=`
             HermesGlasses/Views/AssistantConversationSurface.swift) : ;;
             HermesGlasses/Views/ContentView.swift) : ;;
             HermesGlasses/Views/HermesDesign.swift) : ;;
-            Config/AdamVoice.xcconfig) : ;;
-            Config/AdamVoice.example.xcconfig) : ;;
             README.md) : ;;
             docs/ADAM_VOICE_SETUP.md) : ;;
+            docs/4-unit-tests/w36_v1.4.0_test.md) : ;;
+            docs/4-unit-tests/w36_v1.4.1_test.md) : ;;
             scripts/push-adam-testing.sh) : ;;
             tests/adam-signal/*) : ;;
             tests/adam-soundscape/*) : ;;
@@ -94,7 +102,16 @@ invalid_paths=`
     exit 1
 }
 
-printf 'Verifying AdamVoice before push...\n'
+printf 'Verifying HermesGlasses source target before push...\n'
+xcodebuild \
+    -project HermesGlasses.xcodeproj \
+    -scheme HermesGlasses \
+    -destination 'generic/platform=iOS' \
+    build \
+    CODE_SIGNING_ALLOWED=NO \
+    -quiet
+
+printf 'Verifying AdamVoice clone target before push...\n'
 xcodebuild \
     -project HermesGlasses.xcodeproj \
     -scheme AdamVoice \
