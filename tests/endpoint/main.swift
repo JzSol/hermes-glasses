@@ -124,5 +124,32 @@ expect(HermesAPIClient.parseCapabilities(from: noVisionKey)?.vision == false,
 expect(HermesAPIClient.parseCapabilities(from: Data("{}".utf8)) == nil,
        "non-welcome frame is not capabilities")
 
+// Adam's rolling pre-roll buffer trims old PCM with removeFirst(). Foundation
+// Data retains its original indices after that operation, so upload chunking
+// must use startIndex/endIndex rather than assuming a zero-based collection.
+var rollingAudio = Data(repeating: 0x5A, count: 50_000)
+rollingAudio.removeFirst(12_345)
+let uploadRanges = HermesAPIClient.audioUploadRanges(
+    for: rollingAudio,
+    chunkSize: 16_384
+)
+expect(rollingAudio.startIndex == 12_345,
+       "regression fixture has non-zero Data start index")
+expect(uploadRanges.first?.lowerBound == rollingAudio.startIndex,
+       "audio upload begins at the recording's actual start index")
+expect(uploadRanges.last?.upperBound == rollingAudio.endIndex,
+       "audio upload ends at the recording's actual end index")
+expect(uploadRanges.reduce(0) { $0 + $1.count } == rollingAudio.count,
+       "audio upload chunks cover every recorded byte exactly once")
+expect(uploadRanges.allSatisfy { $0.count <= 16_384 },
+       "audio upload chunks respect the WebSocket frame limit")
+expect(
+    uploadRanges.allSatisfy {
+        rollingAudio.indices.contains($0.lowerBound)
+            && $0.upperBound <= rollingAudio.endIndex
+    },
+    "every audio upload range is valid for the source Data"
+)
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

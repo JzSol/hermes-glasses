@@ -380,9 +380,8 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
             throw HermesAPIClientError.invalidAudioPayload
         }
         try await ws.send(.string(startText))
-        for offset in stride(from: 0, to: data.count, by: 16_384) {
-            let end = min(data.count, offset + 16_384)
-            try await ws.send(.data(data.subdata(in: offset..<end)))
+        for range in Self.audioUploadRanges(for: data) {
+            try await ws.send(.data(data.subdata(in: range)))
         }
         let end = try JSONSerialization.data(withJSONObject: [
             "type": "audio_end", "request_id": requestID,
@@ -392,6 +391,29 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
         }
         isFinalized = true
         try await ws.send(.string(endText))
+    }
+
+    /// Data indices are not guaranteed to start at zero. Adam's rolling
+    /// pre-roll buffer uses `removeFirst`, which preserves the original
+    /// indices; treating `count` as `endIndex` then traps in `subdata(in:)`.
+    /// Keep range construction separate so non-zero-index recordings remain
+    /// covered by a lightweight regression test.
+    static func audioUploadRanges(
+        for data: Data,
+        chunkSize: Int = 16_384
+    ) -> [Range<Data.Index>] {
+        guard chunkSize > 0, !data.isEmpty else { return [] }
+
+        var ranges: [Range<Data.Index>] = []
+        ranges.reserveCapacity((data.count + chunkSize - 1) / chunkSize)
+        var start = data.startIndex
+        while start < data.endIndex {
+            let remaining = data.distance(from: start, to: data.endIndex)
+            let end = data.index(start, offsetBy: min(chunkSize, remaining))
+            ranges.append(start..<end)
+            start = end
+        }
+        return ranges
     }
 
     /// Send a diagnostic message that the bridge prints to its log
