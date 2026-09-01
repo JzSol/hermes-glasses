@@ -1,0 +1,14 @@
+#!/bin/sh
+
+set -u
+
+branch_name=$(git branch --show-current 2>/dev/null || true)
+[ "$branch_name" = "adam-testing" ] || exit 0
+
+repo_root=$(git rev-parse --show-toplevel)
+if ! "$repo_root/scripts/push-adam-testing.sh"; then
+    printf '%s\n' \
+        'The commit is safe locally, but the Adam testing push was blocked. Fix the reported issue and rerun scripts/push-adam-testing.sh.' \
+        >&2
+    exit 1
+fi

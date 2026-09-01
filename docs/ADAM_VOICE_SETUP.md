@@ -182,6 +182,35 @@ Free personal signing is enough for this prototype, but iOS normally requires
 the app to be rebuilt periodically. The AdamVoice target has no Meta SDK,
 camera, location, or glasses-registration permission.
 
+### Fast Adam testing loop
+
+The repository has a guarded `adam-testing` branch for repeated device trials.
+Set up its project-local post-commit hook once after cloning:
+
+```bash
+git switch adam-testing
+git config core.hooksPath .githooks
+```
+
+After reviewing and committing an Adam change normally, the hook builds the
+unsigned `AdamVoice` scheme and pushes the commit to `origin/adam-testing`.
+It never stages or commits files. It refuses to push with leftover worktree
+changes, non-Adam paths, a failed build, a remote branch that is ahead, or a
+merge commit. The push is always a normal fast-forward push, never a force
+push.
+
+If a transient network failure blocks the automatic push, retry it without
+making another commit:
+
+```bash
+scripts/push-adam-testing.sh
+```
+
+Once the push reports `Adam testing is ready`, select the connected iPhone in
+Xcode, choose the **AdamVoice** scheme, and Run. The existing ignored
+`Config/AdamVoice.local.xcconfig` continues to provide signing and the pinned
+bridge host; the workflow never reads or commits its secrets.
+
 ## 5. First run
 
 1. Pair the Ray-Bans to the iPhone in the Meta AI app and confirm they can act
