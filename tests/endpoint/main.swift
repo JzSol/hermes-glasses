@@ -71,7 +71,7 @@ if let request = try? client.makeConnectRequest() {
 let missingTokenClient = HermesAPIClient(
     endpoint: "wss://bridge.example/voice",
     token: "   ",
-    locale: .englishUS,
+    locale: .englishGB,
     validationMode: strict
 )
 expect((try? missingTokenClient.makeConnectRequest()) == nil,

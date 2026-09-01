@@ -12,6 +12,7 @@ import os
 enum HermesAPIClientError: LocalizedError, Equatable, Sendable {
     case missingToken
     case invalidEndpoint(HermesEndpointValidationError)
+    case invalidAudioPayload
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +20,8 @@ enum HermesAPIClientError: LocalizedError, Equatable, Sendable {
             return "Hermes bridge credentials are not configured."
         case .invalidEndpoint(let error):
             return error.localizedDescription
+        case .invalidAudioPayload:
+            return "Adam could not encode the audio upload."
         }
     }
 }
@@ -26,6 +29,15 @@ enum HermesAPIClientError: LocalizedError, Equatable, Sendable {
 /// Capabilities advertised by the bridge in its first welcome frame.
 struct HermesBridgeCapabilities: Equatable, Sendable {
     var vision = false
+    var audioUpload = false
+    var serverSTT = false
+    var streamingTTS = false
+}
+
+struct HermesVoiceMetadata: Equatable, Sendable {
+    var provider: String?
+    var voice: String?
+    var sampleRate: Int = 24_000
 }
 
 /// WebSocket-based client for Hermes Agent voice API
@@ -33,13 +45,22 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
     // MARK: - Callbacks
 
     var onTranscript: ((String) -> Void)?
+    var onTranscriptWithRequestID: ((String, String?) -> Void)?
+    var onResponseStarted: ((String?) -> Void)?
+    var onResponseDelta: ((String, String?) -> Void)?
     /// (text, bridgeWillSendAudio) - when the second value is false, the
     /// app speaks the text itself with on-device TTS
     var onResponse: ((String, Bool) -> Void)?
     /// Strict clients can correlate a reply to the command that produced it.
     /// Older bridges omit the id, so it remains optional at this shared layer.
     var onResponseWithRequestID: ((String, Bool, String?) -> Void)?
+    var onResponseMetadata: ((String?, String?) -> Void)?
     var onAudioResponse: ((Data) -> Void)?
+    var onAudioResponseWithFormat: ((Data, HermesVoiceMetadata, String?) -> Void)?
+    /// A natural sentence/provider-piece boundary from protocol v2. Unlike
+    /// onAudioResponse, this fires before the whole reply has arrived.
+    var onAudioSegmentWithFormat: ((Data, HermesVoiceMetadata, String?) -> Void)?
+    var onAudioStreamEnded: ((String?) -> Void)?
     var onPlaybackComplete: (() -> Void)?
     var onError: ((String) -> Void)?
     /// Called after the welcome frame has been parsed.
@@ -50,6 +71,7 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
     var onCapturePhotoRequested: (() -> Void)?
     /// Bridge confirmed the conversation was reset
     var onSessionReset: (() -> Void)?
+    var onAttention: ((String) -> Void)?
 
     // MARK: - Private
 
@@ -73,6 +95,9 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
     private var isFinalized: Bool = false
     /// TTS audio accumulated between audio_start and audio_end
     private var ttsBuffer = Data()
+    private var ttsSegmentBuffer = Data()
+    private var ttsRequestID: String?
+    private var ttsMetadata = HermesVoiceMetadata()
 
     /// Create a client with a Keychain-loaded bearer token. The token remains
     /// in memory only; it is put in the Authorization header, never in the
@@ -80,7 +105,7 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
     init(
         endpoint: String,
         token: String,
-        locale: VoiceLocale = .englishUS,
+        locale: VoiceLocale = .englishGB,
         validationMode: HermesEndpointValidationMode = HermesEndpointValidator.currentMode
     ) {
         self.endpoint = endpoint
@@ -215,7 +240,12 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
             return nil
         }
         let capabilityJSON = json["capabilities"] as? [String: Any]
-        return HermesBridgeCapabilities(vision: capabilityJSON?["vision"] as? Bool ?? false)
+        return HermesBridgeCapabilities(
+            vision: capabilityJSON?["vision"] as? Bool ?? false,
+            audioUpload: capabilityJSON?["audio_upload"] as? Bool ?? false,
+            serverSTT: capabilityJSON?["server_stt"] as? Bool ?? false,
+            streamingTTS: capabilityJSON?["streaming_tts"] as? Bool ?? false
+        )
     }
 
     // MARK: - Public API
@@ -268,6 +298,9 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
         session = nil
         setConnected(false)
         isFinalized = false
+        ttsBuffer.removeAll()
+        ttsSegmentBuffer.removeAll()
+        ttsRequestID = nil
         Task { @MainActor in
             onDisconnected?()
         }
@@ -283,6 +316,82 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Open one protocol-v2 PCM upload. Binary frames sent after this marker
+    /// belong to `requestID` until `finishAudioCapture` closes the turn.
+    func startAudioCapture(
+        requestID: String,
+        vocabulary: [String] = []
+    ) {
+        guard isConnected, let ws = webSocket, !requestID.isEmpty else { return }
+        isFinalized = false
+        let words = Array(vocabulary.prefix(24)).map {
+            String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(48))
+        }.filter { !$0.isEmpty }
+        let payload: [String: Any] = [
+            "type": "audio_start",
+            "request_id": requestID,
+            "locale": locale.rawValue,
+            "format": "pcm_s16le",
+            "sample_rate": 16_000,
+            "channels": 1,
+            "vocabulary": words,
+            "wake_verified": true,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let text = String(data: data, encoding: .utf8) else { return }
+        ws.send(.string(text)) { [weak self] error in
+            if let error {
+                Task { @MainActor in
+                    self?.onError?("Audio start error: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    /// Serialize a complete recorded turn on one task. URLSession does not
+    /// promise ordering for several callback-based `send` calls started at
+    /// once, so protocol markers and PCM chunks use the async API here.
+    func uploadAudioCapture(
+        _ data: Data,
+        requestID: String,
+        vocabulary: [String] = []
+    ) async throws {
+        guard isConnected, let ws = webSocket, !requestID.isEmpty else {
+            throw URLError(.notConnectedToInternet)
+        }
+        isFinalized = false
+        let words = Array(vocabulary.prefix(24)).map {
+            String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(48))
+        }.filter { !$0.isEmpty }
+        let start: [String: Any] = [
+            "type": "audio_start",
+            "request_id": requestID,
+            "locale": locale.rawValue,
+            "format": "pcm_s16le",
+            "sample_rate": 16_000,
+            "channels": 1,
+            "vocabulary": words,
+            "wake_verified": true,
+        ]
+        let startData = try JSONSerialization.data(withJSONObject: start)
+        guard let startText = String(data: startData, encoding: .utf8) else {
+            throw HermesAPIClientError.invalidAudioPayload
+        }
+        try await ws.send(.string(startText))
+        for offset in stride(from: 0, to: data.count, by: 16_384) {
+            let end = min(data.count, offset + 16_384)
+            try await ws.send(.data(data.subdata(in: offset..<end)))
+        }
+        let end = try JSONSerialization.data(withJSONObject: [
+            "type": "audio_end", "request_id": requestID,
+        ])
+        guard let endText = String(data: end, encoding: .utf8) else {
+            throw HermesAPIClientError.invalidAudioPayload
+        }
+        isFinalized = true
+        try await ws.send(.string(endText))
     }
 
     /// Send a diagnostic message that the bridge prints to its log
@@ -349,11 +458,16 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
         ws.send(.string(text)) { _ in }
     }
 
-    func finalizeAudio() async {
+    func finalizeAudio(requestID: String? = nil) async {
         guard isConnected, let ws = webSocket, !isFinalized else { return }
         isFinalized = true
 
-        let endMarker = #"{"type":"end_of_audio"}"#
+        var payload: [String: String] = ["type": "audio_end"]
+        if let requestID, !requestID.isEmpty {
+            payload["request_id"] = requestID
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let endMarker = String(data: data, encoding: .utf8) else { return }
         ws.send(.string(endMarker)) { [weak self] error in
             if let error {
                 Task { @MainActor in
@@ -394,8 +508,11 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
         case .string(let text):
             await handleTextMessage(text)
         case .data(let data):
-            // Binary from the bridge is a TTS chunk; play only when complete
+            // Retain a compatibility copy for the original app and a
+            // sentence-sized copy Adam can play as soon as its boundary
+            // arrives.
             ttsBuffer.append(data)
+            ttsSegmentBuffer.append(data)
         @unknown default:
             break
         }
@@ -418,6 +535,15 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
             case "transcript":
                 if let transcript = json["text"] as? String {
                     self?.onTranscript?(transcript)
+                    self?.onTranscriptWithRequestID?(
+                        transcript, json["request_id"] as? String
+                    )
+                }
+            case "response_start":
+                self?.onResponseStarted?(json["request_id"] as? String)
+            case "response_delta":
+                if let delta = json["text"] as? String {
+                    self?.onResponseDelta?(delta, json["request_id"] as? String)
                 }
             case "response":
                 if let response = json["text"] as? String {
@@ -427,17 +553,52 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
                     let requestID = json["request_id"] as? String
                     self?.onResponse?(response, bridgeAudio)
                     self?.onResponseWithRequestID?(response, bridgeAudio, requestID)
+                    self?.onResponseMetadata?(
+                        json["provider"] as? String,
+                        json["voice"] as? String
+                    )
                 }
             case "audio_start":
                 self?.ttsBuffer.removeAll()
-            case "audio_end":
-                if let self, !self.ttsBuffer.isEmpty {
-                    let audio = self.ttsBuffer
-                    self.ttsBuffer.removeAll()
-                    self.onAudioResponse?(audio)
-                } else {
-                    self?.onPlaybackComplete?()
+                self?.ttsSegmentBuffer.removeAll()
+                self?.ttsRequestID = json["request_id"] as? String
+                self?.ttsMetadata = HermesVoiceMetadata(
+                    provider: json["provider"] as? String,
+                    voice: json["voice"] as? String,
+                    sampleRate: json["sample_rate"] as? Int ?? 24_000
+                )
+            case "audio_segment":
+                if let self, !self.ttsSegmentBuffer.isEmpty {
+                    let segment = self.ttsSegmentBuffer
+                    self.ttsSegmentBuffer.removeAll(keepingCapacity: true)
+                    self.onAudioSegmentWithFormat?(
+                        segment, self.ttsMetadata, self.ttsRequestID
+                    )
                 }
+            case "audio_end":
+                if let self {
+                    // Older bridges do not emit audio_segment. Flush the tail
+                    // here so Adam still gets one complete playable segment.
+                    if !self.ttsSegmentBuffer.isEmpty {
+                        let segment = self.ttsSegmentBuffer
+                        self.ttsSegmentBuffer.removeAll(keepingCapacity: true)
+                        self.onAudioSegmentWithFormat?(
+                            segment, self.ttsMetadata, self.ttsRequestID
+                        )
+                    }
+                    if !self.ttsBuffer.isEmpty {
+                        let audio = self.ttsBuffer
+                        self.ttsBuffer.removeAll()
+                        self.onAudioResponse?(audio)
+                        self.onAudioResponseWithFormat?(
+                            audio, self.ttsMetadata, self.ttsRequestID
+                        )
+                    } else if self.onAudioStreamEnded == nil {
+                        self.onPlaybackComplete?()
+                    }
+                    self.onAudioStreamEnded?(self.ttsRequestID)
+                }
+                self?.ttsRequestID = nil
                 self?.isFinalized = false
             case "error":
                 if let msg = json["message"] as? String {
@@ -447,6 +608,10 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
                 self?.onCapturePhotoRequested?()
             case "session_reset":
                 self?.onSessionReset?()
+            case "attention":
+                if let message = json["message"] as? String {
+                    self?.onAttention?(message)
+                }
             default:
                 break
             }

@@ -2,7 +2,8 @@
 // HermesAudioManager.swift
 //
 // Manages audio capture from Meta Ray-Ban glasses and playback of
-// Hermes Agent TTS responses. Uses AVAudioEngine for capture and playback.
+// Hermes Agent TTS responses. Uses AVAudioEngine for capture and reliable
+// AVAudioPlayer clips for Bluetooth-safe response playback.
 //
 
 import AVFoundation
@@ -127,6 +128,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     /// them and therefore keeps receiving the source buffers unchanged.
     private struct AdamAudioSettings {
         var recognitionConditioningEnabled = false
+        var bridgeConditioningEnabled = false
         var maximumInputGainEnabled = false
     }
 
@@ -139,6 +141,14 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     var recognitionConditioningEnabled: Bool {
         get { adamAudioSettingsLock.withLockUnchecked { $0.recognitionConditioningEnabled } }
         set { adamAudioSettingsLock.withLockUnchecked { $0.recognitionConditioningEnabled = newValue } }
+    }
+
+    /// Apply bounded adaptive gain to Adam's 16 kHz bridge upload. This is a
+    /// separate opt-in because recordings and the original Hermes target must
+    /// retain their source samples exactly.
+    var bridgeConditioningEnabled: Bool {
+        get { adamAudioSettingsLock.withLockUnchecked { $0.bridgeConditioningEnabled } }
+        set { adamAudioSettingsLock.withLockUnchecked { $0.bridgeConditioningEnabled = newValue } }
     }
 
     /// Request the highest input gain supported by the active audio route.
@@ -198,6 +208,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         var lowInputSince: TimeInterval?
         var lowInputRoute: String?
         var lowInputWarningActive = false
+        var ambientNoiseRMS: Float = 0.001
         // VAD
         var isSpeechActive: Bool = false
         var silenceCounter: Int = 0
@@ -208,7 +219,6 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     private let tapLock = OSAllocatedUnfairLock(uncheckedState: TapState())
 
     // VAD tuning
-    private let silenceThreshold: Float = 0.015
     private let silenceFrames: Int = 20
     private let vadDisabled: Bool = true
 
@@ -225,6 +235,14 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
 
     // Playback - a self-contained clip player, independent of the engine
     private var clipPlayer: AVAudioPlayer?
+    private struct QueuedResponseClip {
+        let data: Data
+        let sampleRate: Int
+    }
+    private var responseClipQueue: [QueuedResponseClip] = []
+    private var responseStreamActive = false
+    private var responseStreamOpen = false
+    private var responseStreamReady = false
 
     override init() {
         // 16 kHz mono PCM16 - the format the bridge expects. This
@@ -394,6 +412,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             state.lowInputSince = nil
             state.lowInputRoute = nil
             state.lowInputWarningActive = false
+            state.ambientNoiseRMS = 0.001
             // Defensive: an engine tap and `ingest` must never both feed the
             // pipeline. `stopCapture()` clears this, but a caller that switched
             // routes without one would otherwise leave `ingest` armed alongside
@@ -549,13 +568,16 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     // distinct SIGABRTs in the field). AVAudioPlayer owns its rendering,
     // survives route changes, and always calls its delegate on completion.
 
-    func playResponse(_ audioData: Data) async {
+    func playResponse(_ audioData: Data, sampleRate: Int = 24_000) async {
         guard !audioData.isEmpty else {
             onPlaybackComplete?()
             return
         }
 
-        let wav = Self.wavContainer(pcm16: audioData, sampleRate: 24000)
+        resetResponseStream()
+        let safeSampleRate = (8_000...96_000).contains(sampleRate)
+            ? sampleRate : 24_000
+        let wav = Self.wavContainer(pcm16: audioData, sampleRate: safeSampleRate)
         do {
             let player = try AVAudioPlayer(data: wav)
             player.delegate = self
@@ -569,12 +591,102 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Begin a reliable sentence queue. Clips use AVAudioPlayer (which
+    /// survives Bluetooth route changes) while natural TTS boundaries keep
+    /// the transitions quiet and let sentence one start before the reply is
+    /// fully generated.
+    func beginResponseStream() {
+        clipPlayer?.stop()
+        clipPlayer = nil
+        responseClipQueue.removeAll(keepingCapacity: true)
+        responseStreamActive = true
+        responseStreamOpen = true
+        responseStreamReady = false
+    }
+
+    func enqueueResponseSegment(_ data: Data, sampleRate: Int = 24_000) {
+        guard responseStreamActive, !data.isEmpty else { return }
+        let safeSampleRate = (8_000...96_000).contains(sampleRate)
+            ? sampleRate : 24_000
+        responseClipQueue.append(
+            QueuedResponseClip(data: data, sampleRate: safeSampleRate)
+        )
+        playNextResponseSegmentIfPossible()
+    }
+
+    /// Route preparation is asynchronous. Queued sentences remain silent
+    /// until Adam confirms the playback-only A2DP attempt has completed.
+    func startResponseStreamPlayback() {
+        guard responseStreamActive else { return }
+        responseStreamReady = true
+        playNextResponseSegmentIfPossible()
+    }
+
+    func finishResponseStream() {
+        guard responseStreamActive else {
+            onPlaybackComplete?()
+            return
+        }
+        responseStreamOpen = false
+        playNextResponseSegmentIfPossible()
+    }
+
+    private func playNextResponseSegmentIfPossible() {
+        guard responseStreamActive, responseStreamReady, clipPlayer == nil else {
+            return
+        }
+        guard !responseClipQueue.isEmpty else {
+            if !responseStreamOpen {
+                completeResponseStream()
+            }
+            return
+        }
+
+        let clip = responseClipQueue.removeFirst()
+        let wav = Self.wavContainer(
+            pcm16: clip.data, sampleRate: clip.sampleRate
+        )
+        do {
+            let player = try AVAudioPlayer(data: wav)
+            player.delegate = self
+            clipPlayer = player
+            logger.info(
+                "Playing streamed TTS segment: \(clip.data.count) bytes (\(String(format: "%.1f", player.duration))s)"
+            )
+            if !player.play() {
+                clipPlayer = nil
+                playNextResponseSegmentIfPossible()
+            }
+        } catch {
+            logger.error(
+                "Streamed TTS segment failed: \(error.localizedDescription, privacy: .public)"
+            )
+            clipPlayer = nil
+            playNextResponseSegmentIfPossible()
+        }
+    }
+
+    private func completeResponseStream() {
+        guard responseStreamActive else { return }
+        resetResponseStream()
+        onPlaybackComplete?()
+    }
+
+    private func resetResponseStream() {
+        responseClipQueue.removeAll(keepingCapacity: true)
+        responseStreamActive = false
+        responseStreamOpen = false
+        responseStreamReady = false
+    }
+
     /// Stop the current TTS clip (barge-in). AVAudioPlayer.stop() does not
     /// call the delegate, so completion is fired here.
     func stopPlayback() {
-        guard let player = clipPlayer else { return }
-        player.stop()
+        let hadPlayback = clipPlayer != nil || responseStreamActive
+        clipPlayer?.stop()
         clipPlayer = nil
+        resetResponseStream()
+        guard hadPlayback else { return }
         logger.info("Playback interrupted")
         DispatchQueue.main.async { [weak self] in
             self?.onPlaybackComplete?()
@@ -609,6 +721,14 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     func preparePlaybackOnly() throws {
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playback, mode: .default)
+        try session.setActive(true)
+    }
+
+    /// Switch from the bidirectional HFP call profile to playback-only audio.
+    /// iOS can then select the glasses' A2DP route for full-band TTS.
+    func prepareHighQualityPlayback() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playback, mode: .spokenAudio)
         try session.setActive(true)
     }
 
@@ -808,9 +928,8 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             let reusable = state.converterInputFormat == buffer.format
             return (reusable ? state.converter : nil, state.bufferCount, level, debug)
         }
-        let conditioningEnabled = adamAudioSettingsLock.withLockUnchecked {
-            $0.recognitionConditioningEnabled
-        }
+        let adamSettings = adamAudioSettingsLock.withLockUnchecked { $0 }
+        let conditioningEnabled = adamSettings.recognitionConditioningEnabled
 
         // (Re)build the converter whenever the incoming format changes -
         // route switches change the sample rate under our feet. Building one
@@ -887,7 +1006,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         guard let channelData = outputBuffer.int16ChannelData else { return }
         let frameLength = Int(outputBuffer.frameLength)
         guard frameLength > 0 else { return }
-        let data = Data(
+        let sourceData = Data(
             bytes: channelData[0],
             count: frameLength * MemoryLayout<Int16>.size
         )
@@ -895,10 +1014,48 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         // Straight to the recorder, on this thread, before any VAD gate: a
         // recording of a conversation must contain the quiet half of it.
         // Invoked under its own lock - see `onRecordChunk`.
-        recordChunkLock.withLockUnchecked { handler in handler?(data) }
+        recordChunkLock.withLockUnchecked { handler in handler?(sourceData) }
 
         let rms = computeRMS(channelData[0], frameLength: frameLength)
-        let isVoice = rms > silenceThreshold
+        let (isVoice, wasSpeechActive, transition) = tapLock.withLockUnchecked {
+            state -> (Bool, Bool, VADTransition) in
+            let wasSpeechActive = state.isSpeechActive
+            let threshold = AdamSpeechSignal.adaptiveSpeechThreshold(
+                noiseRMS: state.ambientNoiseRMS
+            )
+            let isVoice = rms > threshold
+
+            // Learn the local noise floor only while speech is inactive and
+            // the current buffer is near it. A slow EMA follows changing room
+            // ambience without teaching speech itself as the new baseline.
+            if !wasSpeechActive, rms < threshold * 1.35 {
+                state.ambientNoiseRMS = (
+                    state.ambientNoiseRMS * 0.96 + max(0, rms) * 0.04
+                )
+            }
+            if isVoice {
+                state.silenceCounter = 0
+                guard !wasSpeechActive else {
+                    return (isVoice, wasSpeechActive, .none)
+                }
+                state.isSpeechActive = true
+                return (isVoice, wasSpeechActive, .speechStarted)
+            }
+            guard wasSpeechActive else {
+                return (isVoice, wasSpeechActive, .none)
+            }
+            state.silenceCounter += 1
+            guard state.silenceCounter >= silenceFrames else {
+                return (isVoice, wasSpeechActive, .none)
+            }
+            state.isSpeechActive = false
+            state.silenceCounter = 0
+            return (isVoice, wasSpeechActive, .silenceStarted)
+        }
+
+        let bridgeData = adamSettings.bridgeConditioningEnabled
+            ? conditionedBridgePCM16(sourceData, rms: rms)
+            : sourceData
 
         // Periodic level diagnostics: raw float level straight off the mic
         // vs. level after conversion, plus the active input route
@@ -912,27 +1069,6 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
             ), to: callbacks.onDebug)
         }
 
-        // Advance the speech/silence state machine even when VAD gating is
-        // off, so end-of-utterance is still detected.
-        let (wasSpeechActive, transition) = tapLock.withLockUnchecked {
-            state -> (Bool, VADTransition) in
-            let wasSpeechActive = state.isSpeechActive
-            if isVoice {
-                state.silenceCounter = 0
-                guard !wasSpeechActive else { return (wasSpeechActive, .none) }
-                state.isSpeechActive = true
-                return (wasSpeechActive, .speechStarted)
-            }
-            guard wasSpeechActive else { return (wasSpeechActive, .none) }
-            state.silenceCounter += 1
-            guard state.silenceCounter >= silenceFrames else {
-                return (wasSpeechActive, .none)
-            }
-            state.isSpeechActive = false
-            state.silenceCounter = 0
-            return (wasSpeechActive, .silenceStarted)
-        }
-
         // Send audio whenever VAD is disabled or speech is in progress (the
         // gate reads the state as it was BEFORE this buffer advanced it).
         // The bridge's legacy audio path has no app-side consumer today, so
@@ -940,7 +1076,7 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
         // buffers a second an empty dispatch is pure overhead.
         if let onAudioChunk = callbacks.onAudioChunk,
            vadDisabled || isVoice || wasSpeechActive {
-            DispatchQueue.main.async { onAudioChunk(data) }
+            DispatchQueue.main.async { onAudioChunk(bridgeData) }
         }
 
         switch transition {
@@ -958,6 +1094,25 @@ final class HermesAudioManager: NSObject, @unchecked Sendable {
     }
 
     // MARK: - Adam recognition conditioning
+
+    private func conditionedBridgePCM16(_ data: Data, rms: Float) -> Data {
+        guard !data.isEmpty else { return data }
+        var samples = data.withUnsafeBytes { raw -> [Int16] in
+            guard let base = raw.bindMemory(to: Int16.self).baseAddress else {
+                return []
+            }
+            return Array(UnsafeBufferPointer(
+                start: base, count: raw.count / MemoryLayout<Int16>.size
+            ))
+        }
+        guard !samples.isEmpty else { return data }
+        var configuration = AdamSpeechSignal.Configuration.default
+        configuration.gain = AdamSpeechSignal.adaptiveGain(rms: rms)
+        AdamSpeechSignal.processInt16Samples(
+            &samples, configuration: configuration
+        )
+        return samples.withUnsafeBufferPointer { Data(buffer: $0) }
+    }
 
     /// Return a conditioned copy for Adam's speech recognizer. The source
     /// buffer is never modified: the same source continues through the
@@ -1386,7 +1541,11 @@ extension HermesAudioManager: AVAudioPlayerDelegate {
             guard let self else { return }
             self.logger.info("TTS playback finished (success=\(flag))")
             self.clipPlayer = nil
-            self.onPlaybackComplete?()
+            if self.responseStreamActive {
+                self.playNextResponseSegmentIfPossible()
+            } else {
+                self.onPlaybackComplete?()
+            }
         }
     }
 
@@ -1395,7 +1554,11 @@ extension HermesAudioManager: AVAudioPlayerDelegate {
             guard let self else { return }
             self.logger.error("TTS decode error: \(error?.localizedDescription ?? "?", privacy: .public)")
             self.clipPlayer = nil
-            self.onPlaybackComplete?()
+            if self.responseStreamActive {
+                self.playNextResponseSegmentIfPossible()
+            } else {
+                self.onPlaybackComplete?()
+            }
         }
     }
 }

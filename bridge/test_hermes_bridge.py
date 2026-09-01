@@ -108,6 +108,34 @@ class ConnectionWebSocket:
         self.closed = (code, reason)
 
 
+class StreamWebSocket:
+    """Queue-backed socket covering recv(), iteration, send(), and close()."""
+
+    def __init__(self, frames=()):
+        self.frames = list(frames)
+        self.sent = []
+        self.closed = False
+
+    async def recv(self):
+        if not self.frames:
+            raise RuntimeError("No frame available")
+        return self.frames.pop(0)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self.frames:
+            raise StopAsyncIteration
+        return self.frames.pop(0)
+
+    async def send(self, message):
+        self.sent.append(message)
+
+    async def close(self):
+        self.closed = True
+
+
 class TestAwaitPhoto(unittest.TestCase):
     def test_photo_message_returns_decoded_bytes(self):
         jpeg = b"\xff\xd8\xff\xe0fakejpeg"
@@ -226,7 +254,7 @@ class TestProcessQuery(unittest.TestCase):
         ws = FakeWebSocket([])
         calls = self._run("tell me a joke", ws, stored_session="sid123")
         self.assertTrue(calls["query"].endswith("tell me a joke"))
-        self.assertIn("Reply in English", calls["query"])
+        self.assertIn("Reply in British English", calls["query"])
         self.assertEqual(calls["resume"], "sid123")
 
     def test_visual_query_requests_photo_and_passes_image(self):
@@ -423,9 +451,10 @@ class ProviderRequestTests(unittest.TestCase):
 class BridgeConfigurationTests(unittest.TestCase):
     def test_supported_locales_and_unknown_locale_fallback(self):
         self.assertEqual(hb.sanitize_locale("en-US"), "en-US")
+        self.assertEqual(hb.sanitize_locale("en-GB"), "en-GB")
         self.assertEqual(hb.sanitize_locale("lv-LV"), "lv-LV")
-        self.assertEqual(hb.sanitize_locale("fr-FR"), "en-US")
-        self.assertEqual(hb.sanitize_locale(None), "en-US")
+        self.assertEqual(hb.sanitize_locale("fr-FR"), "en-GB")
+        self.assertEqual(hb.sanitize_locale(None), "en-GB")
 
     def test_startup_requires_non_blank_auth_token(self):
         original = hb.AUTH_TOKEN
@@ -507,7 +536,11 @@ class BridgeWelcomeTests(unittest.TestCase):
         try:
             hb.BRIDGE_VISION = False
             payload = json.loads(hb.welcome_message())
+            self.assertEqual(payload["protocol"], 2)
             self.assertFalse(payload["capabilities"]["vision"])
+            self.assertTrue(payload["capabilities"]["audio_upload"])
+            self.assertTrue(payload["capabilities"]["server_stt"])
+            self.assertTrue(payload["capabilities"]["streaming_tts"])
             hb.BRIDGE_VISION = True
             payload = json.loads(hb.welcome_message())
             self.assertTrue(payload["capabilities"]["vision"])
@@ -526,6 +559,171 @@ class BridgeWelcomeTests(unittest.TestCase):
             hb.AUTH_TOKEN = original_token
             hb.BRIDGE_VISION = original_vision
         self.assertFalse(json.loads(websocket.sent[0])["capabilities"]["vision"])
+
+
+class BridgeAudioProtocolTests(unittest.TestCase):
+    def setUp(self):
+        self.original_token = hb.AUTH_TOKEN
+        hb.AUTH_TOKEN = "test-token"
+
+    def tearDown(self):
+        hb.AUTH_TOKEN = self.original_token
+
+    def test_pcm_capture_is_bounded_and_routed_to_realtime_turn(self):
+        request_id = "turn-audio-1"
+        websocket = ConnectionWebSocket([
+            json.dumps({
+                "type": "audio_start",
+                "request_id": request_id,
+                "format": "pcm_s16le",
+                "sample_rate": 16_000,
+                "channels": 1,
+                "locale": "en-GB",
+                "vocabulary": ["Tailscale", "Ray-Ban Meta"],
+            }),
+            b"\x01\x00" * 320,
+            json.dumps({"type": "audio_end", "request_id": request_id}),
+        ])
+        realtime_turn = mock.AsyncMock()
+
+        with mock.patch.object(hb, "process_audio_turn", realtime_turn):
+            asyncio.run(hb.handle_connection(websocket))
+
+        realtime_turn.assert_awaited_once()
+        capture = realtime_turn.await_args.args[1]
+        self.assertEqual(capture["request_id"], request_id)
+        self.assertEqual(capture["locale"], "en-GB")
+        self.assertEqual(capture["vocabulary"], ["Tailscale", "Ray-Ban Meta"])
+        self.assertEqual(bytes(capture["pcm"]), b"\x01\x00" * 320)
+        payloads = [json.loads(item) for item in websocket.sent if isinstance(item, str)]
+        self.assertEqual(payloads[1], {"type": "audio_ready", "request_id": request_id})
+
+    def test_wrong_capture_format_is_rejected_without_starting_turn(self):
+        websocket = ConnectionWebSocket([json.dumps({
+            "type": "audio_start",
+            "request_id": "bad-format",
+            "format": "aac",
+            "sample_rate": 44_100,
+            "channels": 2,
+        })])
+        realtime_turn = mock.AsyncMock()
+
+        with mock.patch.object(hb, "process_audio_turn", realtime_turn):
+            asyncio.run(hb.handle_connection(websocket))
+
+        realtime_turn.assert_not_awaited()
+        error = json.loads(websocket.sent[1])
+        self.assertEqual(error["type"], "error")
+        self.assertEqual(error["request_id"], "bad-format")
+        self.assertIn("16000 Hz", error["message"])
+
+    def test_pcm_wav_wrapper_has_expected_wire_format(self):
+        import io
+        import wave
+
+        pcm = b"\x01\x00" * 320
+        with wave.open(io.BytesIO(hb.pcm16_wav(pcm)), "rb") as wav:
+            self.assertEqual(wav.getnchannels(), 1)
+            self.assertEqual(wav.getsampwidth(), 2)
+            self.assertEqual(wav.getframerate(), 16_000)
+            self.assertEqual(wav.readframes(wav.getnframes()), pcm)
+
+    def test_local_api_threads_locale_and_vocabulary_prompt(self):
+        api = hb.HermesLocalAPI("http://127.0.0.1:9119")
+        captured = {}
+
+        def fake_post(path, payload):
+            captured.update({"path": path, "payload": payload})
+            return {"success": True, "provider": "local", "transcript": "Adam, hello."}
+
+        api._post_json = fake_post
+        result = api.transcribe(b"\x00\x00" * 320, "en-GB", ["Vandret"])
+
+        self.assertEqual(result["transcript"], "hello.")
+        self.assertEqual(captured["path"], "/api/audio/transcribe")
+        self.assertEqual(captured["payload"]["language"], "en")
+        self.assertIn("Vandret", captured["payload"]["prompt"])
+        self.assertTrue(captured["payload"]["data_url"].startswith("data:audio/wav;base64,"))
+
+
+class BridgeStreamingTTSTests(unittest.TestCase):
+    def test_phone_playback_starts_on_first_pcm_and_always_ends(self):
+        async def run():
+            phone = FakeWebSocket([])
+            stream = hb.HermesTTSStream(
+                SimpleNamespace(), phone, "reply-1", asyncio.Lock()
+            )
+            stream.websocket = StreamWebSocket([
+                json.dumps({"type": "segment_start"}),
+                b"\x01\x00\x02\x00",
+                json.dumps({"type": "segment_end"}),
+                json.dumps({"type": "end"}),
+            ])
+            await stream._receive()
+            return phone.sent, stream
+
+        sent, stream = asyncio.run(run())
+        self.assertEqual(json.loads(sent[0])["type"], "audio_start")
+        self.assertEqual(sent[1], b"\x01\x00\x02\x00")
+        self.assertEqual(json.loads(sent[2]), {
+            "type": "audio_segment", "request_id": "reply-1"
+        })
+        self.assertEqual(json.loads(sent[3]), {
+            "type": "audio_end", "request_id": "reply-1"
+        })
+        self.assertEqual(stream.bytes_sent, 4)
+
+    def test_failure_cleanup_balances_started_phone_audio_once(self):
+        async def run():
+            phone = FakeWebSocket([])
+            stream = hb.HermesTTSStream(
+                SimpleNamespace(), phone, "reply-2", asyncio.Lock()
+            )
+            await stream._start_phone_audio()
+            await stream.close(end_phone=True)
+            await stream.close(end_phone=True)
+            return phone.sent
+
+        sent = asyncio.run(run())
+        self.assertEqual(
+            [json.loads(item)["type"] for item in sent],
+            ["audio_start", "audio_end"],
+        )
+
+
+class BridgeGatewayTests(unittest.TestCase):
+    def test_attention_event_interrupts_turn_and_closes_event_stream(self):
+        async def run():
+            api = SimpleNamespace()
+            gateway = hb.HermesGateway(api)
+            gateway.websocket = StreamWebSocket([json.dumps({
+                "method": "event",
+                "params": {
+                    "session_id": "session-1",
+                    "type": "approval.request",
+                    "payload": {},
+                },
+            })])
+            upstream = gateway.websocket
+            gateway.session_id = "session-1"
+            attention = []
+
+            async def on_delta(_delta):
+                return None
+
+            async def on_attention(kind):
+                attention.append(kind)
+
+            with self.assertRaises(hb.HermesAttentionRequired):
+                await gateway.ask("hello", on_delta, on_attention)
+            return upstream, gateway, attention
+
+        upstream, gateway, attention = asyncio.run(run())
+        methods = [json.loads(item).get("method") for item in upstream.sent]
+        self.assertEqual(methods, ["prompt.submit", "session.interrupt"])
+        self.assertEqual(attention, ["approval.request"])
+        self.assertTrue(upstream.closed)
+        self.assertIsNone(gateway.websocket)
 
 
 class BridgeLocaleTests(unittest.TestCase):

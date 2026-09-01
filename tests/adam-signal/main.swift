@@ -17,7 +17,7 @@ func expect(_ condition: Bool, _ label: String) {
 let defaults = AdamSpeechSignal.Configuration.default
 
 // Gain and noise floor are bounded and sign preserving.
-let quiet = AdamSpeechSignal.processSample(0.001, configuration: defaults)
+let quiet = AdamSpeechSignal.processSample(0.0002, configuration: defaults)
 let speech = AdamSpeechSignal.processSample(0.05, configuration: defaults)
 let negativeSpeech = AdamSpeechSignal.processSample(-0.05, configuration: defaults)
 let peak = AdamSpeechSignal.processSample(1, configuration: defaults)
@@ -29,7 +29,7 @@ expect(AdamSpeechSignal.processSample(.nan, configuration: defaults) == 0,
        "non-finite samples become silence")
 
 // Both source sample formats use the same conditioning behavior.
-var floatSamples: [Float] = [0.001, 0.05, -0.05, 0.9]
+var floatSamples: [Float] = [0.0002, 0.05, -0.05, 0.9]
 AdamSpeechSignal.processFloatSamples(&floatSamples, configuration: defaults)
 expect(floatSamples[0] == 0, "Float32 conditioning applies the noise floor")
 expect(floatSamples[1] > 0.05, "Float32 conditioning boosts speech")
@@ -37,7 +37,7 @@ expect(floatSamples[2] < -0.05, "Float32 conditioning preserves polarity")
 expect(floatSamples.allSatisfy { abs($0) <= defaults.limiterCeiling },
        "Float32 conditioning limits every sample")
 
-var int16Samples: [Int16] = [32, 2_000, -2_000, 30_000]
+var int16Samples: [Int16] = [8, 2_000, -2_000, 30_000]
 AdamSpeechSignal.processInt16Samples(&int16Samples, configuration: defaults)
 expect(int16Samples[0] == 0, "Int16 conditioning applies the noise floor")
 expect(int16Samples[1] > 2_000, "Int16 conditioning boosts speech")
@@ -66,6 +66,19 @@ expect(
     AdamSpeechSignal.smoothedMeterLevel(previous: 0.8, rms: 0.01) < 0.8,
     "smoothed meter releases toward a quieter signal"
 )
+
+// Quiet HFP utterances get enough adaptive gain for Whisper without boosting
+// already healthy input or allowing unbounded amplification.
+expect(AdamSpeechSignal.adaptiveGain(rms: 0.01) == 6,
+       "adaptive gain reaches its bound for a quiet microphone")
+expect(AdamSpeechSignal.adaptiveGain(rms: 0.2) == 1,
+       "adaptive gain leaves healthy speech unchanged")
+expect(AdamSpeechSignal.adaptiveGain(rms: 0) == 1,
+       "adaptive gain does not amplify digital silence")
+expect(abs(AdamSpeechSignal.adaptiveSpeechThreshold(noiseRMS: 0.001) - 0.003) < 0.0001,
+       "speech threshold follows a quiet room noise floor")
+expect(AdamSpeechSignal.adaptiveSpeechThreshold(noiseRMS: 0.02) == 0.02,
+       "speech threshold remains bounded in a noisy room")
 
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

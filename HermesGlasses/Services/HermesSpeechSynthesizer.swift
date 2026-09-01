@@ -81,7 +81,7 @@ struct HermesSpeechVoiceSelection: Codable, Equatable, Sendable {
 
 /// Voice-selection policy shared by the iPhone synthesizer and its standalone
 /// tests. English intentionally prefers British voices even though the speech
-/// recognizer/bridge locale remains `en-US`.
+/// recognizer/bridge locale remains `en-GB`.
 enum HermesSpeechVoicePolicy {
     static func select(
         for locale: VoiceLocale,
@@ -92,7 +92,7 @@ enum HermesSpeechVoicePolicy {
         guard !languageVoices.isEmpty else { return nil }
 
         switch locale {
-        case .englishUS:
+        case .englishGB:
             let british = languageVoices.filter { $0.normalizedLanguage == "en-gb" }
             if let male = best(british.filter { $0.gender == .male }) {
                 return HermesSpeechVoiceSelection(
@@ -190,7 +190,7 @@ final class HermesSpeechSynthesizer: NSObject, @unchecked Sendable {
     private var voiceSelection: HermesSpeechVoiceSelection?
     private(set) var lastError: HermesSpeechSynthesisError?
 
-    init(locale: VoiceLocale = .englishUS) {
+    init(locale: VoiceLocale = .englishGB) {
         self.locale = locale
         let resolution = Self.resolveVoice(for: locale)
         self.voice = resolution?.voice
@@ -233,7 +233,7 @@ final class HermesSpeechSynthesizer: NSObject, @unchecked Sendable {
     /// British-English guidance for the English voice picker. Latvian keeps
     /// its locale-only behavior and intentionally has no British notice.
     var britishVoiceNotice: String? {
-        guard locale == .englishUS else { return nil }
+        guard locale == .englishGB else { return nil }
         return voiceSelection?.britishVoiceNotice
     }
 
@@ -291,7 +291,7 @@ final class HermesSpeechSynthesizer: NSObject, @unchecked Sendable {
         }
         let utterance = AVSpeechUtterance(string: trimmed)
         utterance.voice = voice
-        if locale == .englishUS {
+        if locale == .englishGB {
             // A slightly slower, subtly lowered delivery keeps the selected
             // British voice calm and intelligible through Ray-Ban HFP.
             utterance.rate = 0.44

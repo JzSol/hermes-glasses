@@ -2,7 +2,7 @@
 
 Talk to your own AI through smart glasses - **Meta Ray-Ban**, or **AiSee**
 and other sub-$100 Realtek-based AI glasses (RTL8773D + RTL8735B reference
-design) - with hands-free voice conversations, live on-device transcription,
+design) - with hands-free voice conversations, live transcription,
 computer vision through the glasses camera ("what am I looking at?"),
 voice-started navigation on the lens, and a private, on-device memory of the
 people you meet. Bring your own
@@ -48,8 +48,9 @@ A standalone, MIT-licensed project.
 
 ### Talk
 
-- 🎙️ **Live transcription** - your words appear on screen as you speak, using
-  Apple's on-device speech recognition (no audio leaves the phone for STT)
+- 🎙️ **Live transcription** - Direct mode can use Apple's on-device speech
+  recognition; Adam bridge mode uses it only for the wake boundary and sends
+  the command audio to your Mac for a more accurate faster-whisper transcript
 - 🤖 **Ask anything** - finished utterances go straight to your chosen AI
   provider (Direct mode) or to a Hermes Agent running on your Mac (bridge
   mode), and the answer is spoken back through text-to-speech
@@ -125,24 +126,25 @@ memory), over a WebSocket:
 ```
 ┌─────────────┐   Bluetooth    ┌──────────────┐    WebSocket     ┌──────────────────┐
 │  Ray-Ban    │ ─────────────▶ │  iPhone app  │ ───────────────▶ │  Mac bridge      │
-│  glasses    │  (DAT SDK:     │  (SwiftUI)   │  text queries +  │  (Python)        │
-│             │   camera)      │              │  base64 photos   │                  │
-└─────────────┘                │  on-device   │ ◀─────────────── │  hermes chat CLI │
-                               │  live STT    │  responses + TTS │  + edge-tts      │
-                               └──────────────┘    (PCM 24 kHz)  └──────────────────┘
+│  glasses    │  (HFP audio /  │  (SwiftUI)   │  PCM utterance / │  (Python)        │
+│             │   DAT camera)  │              │  text / photos   │                  │
+└─────────────┘                │  Adam wake   │ ◀─────────────── │  Hermes gateway  │
+                               │  detection   │  deltas + PCM TTS│  Whisper + Kokoro│
+                               └──────────────┘                  └──────────────────┘
 ```
 
 - **iOS app** (`HermesGlasses/`) - SwiftUI app using the
   [Meta Wearables Device Access Toolkit](https://github.com/facebook/meta-wearables-dat-ios)
   0.8.0 for glasses registration, sessions, and camera capture, plus
-  `SFSpeechRecognizer` for live on-device transcription. In Direct mode,
+  `SFSpeechRecognizer` for live transcription and Adam wake detection. In Direct mode,
   `HermesGlasses/Services/Providers/` calls the provider API directly; in
   bridge mode, `HermesAPIClient` talks to the Mac bridge over WebSocket.
-- **Bridge** (`bridge/hermes_bridge.py`) - a small Python WebSocket server on
-  the Mac. Receives text queries, detects visual questions by keyword, requests
-  a photo from the app when needed, invokes `hermes chat -q ... [--image ...]`
-  (or calls a provider API directly), and streams back the reply text plus TTS
-  audio (Edge TTS with macOS `say` fallback).
+- **Bridge** (`bridge/hermes_bridge.py`) - a small authenticated WebSocket
+  server on the Mac. Protocol v2 accepts Adam's 16 kHz PCM utterance, asks
+  Hermes's configured local faster-whisper provider for the authoritative
+  transcript, keeps one Hermes gateway session alive, and pipelines response
+  deltas into local Kokoro MLX speech. The older text/photo protocol remains
+  available for the full app, with Edge TTS as a fallback.
 
 ### WebSocket protocol (app ⇄ bridge, port 8765)
 
@@ -151,15 +153,19 @@ connection.
 
 | Direction | Message | Meaning |
 |---|---|---|
-| app → bridge | `{"type":"query","text":...}` | Transcribed utterance (STT is on-device) |
+| bridge → app | `welcome` with `protocol: 2` capabilities | Advertises PCM upload, server STT and streaming TTS |
+| app → bridge | `audio_start` + binary PCM16 mono 16 kHz + `audio_end` | Adam command captured after the wake word |
+| bridge → app | `transcript` | Authoritative faster-whisper transcript |
+| bridge → app | `response_start` / `response_delta` / `response` | Correlated persistent-agent answer |
+| app → bridge | `{"type":"query","text":...}` | Legacy text-query path |
 | bridge → app | `{"type":"capture_photo"}` | Take a photo with the glasses now |
 | app → bridge | `{"type":"photo","data":"<base64 jpeg>"}` | Captured photo |
 | app → bridge | `{"type":"photo_error","message":...}` | Capture failed - answer text-only |
 | bridge → app | `{"type":"response","text":...}` | Hermes's answer |
-| bridge → app | `audio_start` / binary PCM16 24 kHz / `audio_end` | Spoken reply |
+| bridge → app | `audio_start` / binary PCM16 24 kHz / `audio_segment` / `audio_end` | Kokoro/Edge spoken reply, queued at natural sentence boundaries |
 
-Binary frames from the app are reserved for mic audio (legacy server-side STT
-path, still supported by the bridge). The bridge's `HERMES_BRIDGE_BRAIN` env
+Binary frames are accepted only inside a bounded, request-correlated audio
+capture. The bridge's `HERMES_BRIDGE_BRAIN` env
 var now supports `anthropic` / `openai` / `gemini` (direct provider call) in
 addition to the default `hermes` (agentic CLI with tools + memory).
 
@@ -170,15 +176,18 @@ addition to the default `hermes` (agentic CLI with tools + memory).
 If you only want hands-free conversation through the Ray-Bans, build the
 separate **AdamVoice** scheme. It uses the glasses as a normal Bluetooth HFP
 headset, so it needs no Meta Wearables project, camera permission, App ID, or
-Client Token. Speech recognition and reply synthesis run on the iPhone; only
-the transcribed command and Hermes's text reply cross the private bridge.
+Client Token. The iPhone performs wake/boundary detection, then sends the
+captured command over the private bridge. Hermes performs final STT and agent
+reasoning; Kokoro MLX generates the British male response locally on the Mac.
 
-The voice loop wakes on **“Adam”**, keeps a 30-second follow-up window after
-each answer, plays generated flute/droplet listening feedback, prefers an
-installed British male voice for English replies, and improves quiet HFP input
-before on-device recognition. It supports English and Latvian, stores the
+Every turn must begin with **“Adam”**; ambient and post-response speech is
+suppressed. A short generated flute cue marks the command window, recording is
+silent, and a droplet confirms upload. English replies use local Kokoro voice
+`bm_george`; Latvian uses the male Nils neural fallback. Adam applies bounded
+gain to quiet HFP wake audio and to the PCM copy sent to Whisper, stores the
 bridge token in iPhone Keychain, and accepts a release endpoint only when it is
-`wss://` on a Tailscale `*.ts.net` host. See
+`wss://` on the pinned Tailscale host. Sentence one begins playing while Hermes
+is still generating and synthesizing the rest of the answer. See
 [Adam voice-only setup](docs/ADAM_VOICE_SETUP.md) for the bridge, Tailscale,
 free Apple-ID signing, and first-run steps.
 

@@ -62,35 +62,33 @@ final class AdamVoiceSession {
     var isOnDeviceSpeechSupported = false
     var isVoiceSupported = false
     var selectedVoiceDescription: String {
-        [
-            speechSynthesizer.voiceName,
-            speechSynthesizer.voiceLanguage,
-            speechSynthesizer.voiceGender
-        ]
-        .compactMap { $0 }
-        .joined(separator: " · ")
+        [voiceProvider, voiceName].filter { !$0.isEmpty }.joined(separator: " · ")
     }
-    var voiceNotice: String? { speechSynthesizer.voiceNotice }
+    var voiceNotice: String? {
+        locale == .englishGB
+            ? "British male speech is generated locally on your Mac."
+            : "Latvian currently uses the Nils neural fallback voice."
+    }
+    var voiceProvider = "Kokoro MLX"
+    var voiceName = "George · British male"
+    var vocabulary = "Janis, Hermes, Ray-Ban, Tailscale"
     var reconnectAttempt = 0
     var isRunning = false
-    /// When enabled, Adam accepts follow-up questions for a short period
-    /// after each response without requiring the wake word again.
-    var continuousFollowUpsEnabled: Bool
     var listeningSoundsEnabled: Bool
 
     static let endpointKey = "hermes_endpoint"
     static let localeKey = "adam_voice_locale"
-    static let continuousFollowUpsKey = "adam_continuous_followups"
     static let listeningSoundsKey = "adam_listening_sounds"
+    static let vocabularyKey = "adam_voice_vocabulary"
     /// A neutral development value.  The real Tailscale host belongs in the
     /// user's settings and is deliberately not part of the source tree.
     static let defaultEndpoint = "ws://127.0.0.1:8765/voice"
 
     private static let commandWindow: TimeInterval = 8
-    private static let followUpWindow: TimeInterval = 30
     private static let reconnectDelays: [UInt64] = [1, 2, 4, 8, 16, 30]
     private static let speechResumeGrace: UInt64 = 700_000_000
-    private static let responseTimeout: UInt64 = 45_000_000_000
+    private static let responseTimeout: UInt64 = 110_000_000_000
+    private static let bridgeAudioTimeout: UInt64 = 30_000_000_000
 
     @ObservationIgnored private let audioManager = HermesAudioManager()
     @ObservationIgnored private let soundscape = AdamSoundscapeManager()
@@ -115,6 +113,15 @@ final class AdamVoiceSession {
     /// AVAudioPlayer. Count an interrupted callback so it cannot finish a
     /// newer reply if the wearer speaks again immediately.
     @ObservationIgnored private var ignoredOutputCompletions = 0
+    @ObservationIgnored private var preRollAudio = Data()
+    @ObservationIgnored private var utteranceAudio = Data()
+    @ObservationIgnored private var lastUtteranceAudio = Data()
+    @ObservationIgnored private var isCapturingUtterance = false
+    @ObservationIgnored private var playbackSampleRate = 24_000
+    @ObservationIgnored private var restoringCapture = false
+
+    private static let preRollBytes = 32_000
+    private static let maximumUtteranceBytes = 960_000
 
     private enum OutputKind {
         case localSpeech
@@ -124,7 +131,7 @@ final class AdamVoiceSession {
     init() {
         let defaults = UserDefaults.standard
         let savedLocale = defaults.string(forKey: Self.localeKey)
-            .flatMap(VoiceLocale.init(identifier:)) ?? .englishUS
+            .flatMap(VoiceLocale.init(identifier:)) ?? .englishGB
 
         let savedEndpoint = defaults.string(forKey: Self.endpointKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -137,12 +144,11 @@ final class AdamVoiceSession {
                 ? configuredEndpoint!
                 : Self.defaultEndpoint
         locale = savedLocale
-        continuousFollowUpsEnabled = defaults.object(
-            forKey: Self.continuousFollowUpsKey
-        ) as? Bool ?? true
         listeningSoundsEnabled = defaults.object(
             forKey: Self.listeningSoundsKey
         ) as? Bool ?? true
+        vocabulary = defaults.string(forKey: Self.vocabularyKey)
+            ?? "Janis, Hermes, Ray-Ban, Tailscale"
         speechRecognizer = HermesSpeechRecognizer(locale: savedLocale)
         speechSynthesizer = HermesSpeechSynthesizer(locale: savedLocale)
         tokenConfigured = (try? credentials.load())?.map {
@@ -150,6 +156,10 @@ final class AdamVoiceSession {
         } ?? false
         isOnDeviceSpeechSupported = speechRecognizer.supportsOnDeviceRecognition
         isVoiceSupported = speechSynthesizer.isVoiceSupported
+        if savedLocale == .latvianLV {
+            voiceProvider = "Microsoft Edge"
+            voiceName = "Nils · Latvian male"
+        }
 
         wireServices()
         refreshAudioRoute()
@@ -184,20 +194,6 @@ final class AdamVoiceSession {
 
     // MARK: - Settings
 
-    /// Persist the timed follow-up preference. Turning it off also closes an
-    /// already-open follow-up window so the next utterance must say Adam.
-    func setContinuousFollowUps(_ enabled: Bool) {
-        guard continuousFollowUpsEnabled != enabled else { return }
-        continuousFollowUpsEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: Self.continuousFollowUpsKey)
-
-        guard !enabled else { return }
-        closeFollowUpWindow()
-        if isRunning, status == .awaitingCommand {
-            status = bridgeConnected ? .listening : .reconnecting
-        }
-    }
-
     func setListeningSounds(_ enabled: Bool) {
         guard listeningSoundsEnabled != enabled else { return }
         listeningSoundsEnabled = enabled
@@ -208,6 +204,11 @@ final class AdamVoiceSession {
         } else if !enabled {
             soundscape.stopImmediately()
         }
+    }
+
+    func saveVocabulary(_ value: String) {
+        vocabulary = value
+        UserDefaults.standard.set(value, forKey: Self.vocabularyKey)
     }
 
     /// Persist only a validated endpoint. The exact private Tailscale host is
@@ -304,6 +305,14 @@ final class AdamVoiceSession {
         }
 
         locale = newLocale
+        switch newLocale {
+        case .englishGB:
+            voiceProvider = "Kokoro MLX"
+            voiceName = "George · British male"
+        case .latvianLV:
+            voiceProvider = "Microsoft Edge"
+            voiceName = "Nils · Latvian male"
+        }
         UserDefaults.standard.set(newLocale.rawValue, forKey: Self.localeKey)
         isOnDeviceSpeechSupported = speechRecognizer.supportsOnDeviceRecognition
         isVoiceSupported = speechSynthesizer.isVoiceSupported
@@ -365,9 +374,12 @@ final class AdamVoiceSession {
         pendingRequestID = nil
         reconnectAttempt = 0
         wakeGate = WakeWordGate(
-            commandWindow: Self.commandWindow,
-            followUpWindow: Self.followUpWindow
+            commandWindow: Self.commandWindow
         )
+        preRollAudio.removeAll(keepingCapacity: true)
+        utteranceAudio.removeAll(keepingCapacity: true)
+        lastUtteranceAudio.removeAll(keepingCapacity: true)
+        isCapturingUtterance = false
         wireServices()
 
         let generation = runGeneration
@@ -405,6 +417,7 @@ final class AdamVoiceSession {
         audioManager.stopCapture()
         clearAudioCallbacks()
         audioManager.recognitionConditioningEnabled = false
+        audioManager.bridgeConditioningEnabled = false
         audioManager.maximumInputGainEnabled = false
 
         _ = wakeGate.cancel()
@@ -412,6 +425,11 @@ final class AdamVoiceSession {
         outputKind = nil
         cancellingOutput = false
         ignoredOutputCompletions = 0
+        restoringCapture = false
+        isCapturingUtterance = false
+        preRollAudio.removeAll(keepingCapacity: true)
+        utteranceAudio.removeAll(keepingCapacity: true)
+        lastUtteranceAudio.removeAll(keepingCapacity: true)
         bridgeConnected = false
         status = .idle
         liveTranscript = ""
@@ -448,6 +466,7 @@ final class AdamVoiceSession {
             // best-effort hardware gain. The original Hermes target leaves
             // both manager settings at their safe defaults.
             audioManager.recognitionConditioningEnabled = true
+            audioManager.bridgeConditioningEnabled = true
             audioManager.maximumInputGainEnabled = true
             _ = try await audioManager.startCapture(route: .glassesMic)
             refreshAudioRoute()
@@ -558,13 +577,35 @@ final class AdamVoiceSession {
     }
 
     private func installBridgeCallbacks(on client: HermesAPIClient, generation: Int) {
-        client.onTranscript = { [weak self, weak client] text in
+        client.onTranscriptWithRequestID = { [weak self, weak client] text, requestID in
             Task { @MainActor [weak self, weak client] in
                 guard let self, let client,
-                      self.isCurrentBridge(client, generation: generation) else { return }
-                // The app owns STT.  A transcript from an older/legacy bridge
-                // is useful as diagnostics but must never enter the wake gate.
+                      self.isCurrentBridge(client, generation: generation),
+                      requestID == nil || requestID == self.pendingRequestID else { return }
                 self.liveTranscript = text
+                self.lastCommand = text
+            }
+        }
+        client.onResponseStarted = { [weak self, weak client] requestID in
+            Task { @MainActor [weak self, weak client] in
+                guard let self, let client,
+                      self.isCurrentBridge(client, generation: generation),
+                      requestID == nil || requestID == self.pendingRequestID else { return }
+                self.status = .processing
+                // Protocol v2 can stream Kokoro PCM before the final response
+                // frame. Mark it expected at response_start so early audio is
+                // never discarded while Hermes is still generating text.
+                self.pendingBridgeAudio = true
+                self.lastResponse = ""
+                self.liveTranscript = ""
+            }
+        }
+        client.onResponseDelta = { [weak self, weak client] delta, requestID in
+            Task { @MainActor [weak self, weak client] in
+                guard let self, let client,
+                      self.isCurrentBridge(client, generation: generation),
+                      requestID == nil || requestID == self.pendingRequestID else { return }
+                self.lastResponse += delta
             }
         }
         client.onResponseWithRequestID = {
@@ -577,12 +618,35 @@ final class AdamVoiceSession {
                 self.handleResponse(text, bridgeWillSendAudio: bridgeWillSendAudio)
             }
         }
-        client.onAudioResponse = { [weak self, weak client] data in
+        client.onAudioSegmentWithFormat = {
+            [weak self, weak client] data, metadata, requestID in
             Task { @MainActor [weak self, weak client] in
                 guard let self, let client,
-                      self.isCurrentBridge(client, generation: generation) else { return }
-                self.handleBridgeAudio(data)
+                      self.isCurrentBridge(client, generation: generation),
+                      requestID == nil || requestID == self.pendingRequestID else { return }
+                self.handleBridgeAudio(data, metadata: metadata)
             }
+        }
+        client.onAudioStreamEnded = { [weak self, weak client] requestID in
+            Task { @MainActor [weak self, weak client] in
+                guard let self, let client,
+                      self.isCurrentBridge(client, generation: generation),
+                      requestID == nil || requestID == self.pendingRequestID else { return }
+                if self.outputKind == .bridgeAudio {
+                    self.audioManager.finishResponseStream()
+                } else if self.pendingBridgeAudio {
+                    self.pendingBridgeAudio = false
+                    self.finishResponse()
+                }
+            }
+        }
+        client.onResponseMetadata = { [weak self] provider, voice in
+            Task { @MainActor [weak self] in
+                self?.applyVoiceMetadata(provider: provider, voice: voice)
+            }
+        }
+        client.onAttention = { [weak self] message in
+            Task { @MainActor [weak self] in self?.errorMessage = message }
         }
         client.onPlaybackComplete = { [weak self, weak client] in
             Task { @MainActor [weak self, weak client] in
@@ -600,12 +664,22 @@ final class AdamVoiceSession {
             Task { @MainActor [weak self, weak client] in
                 guard let self, let client,
                       self.isCurrentBridge(client, generation: generation) else { return }
-                self.errorMessage = message
+                if self.pendingRequestID != nil, self.outputKind == nil {
+                    self.failResponse(message)
+                } else {
+                    self.errorMessage = message
+                }
             }
         }
-        client.onCapabilities = { _ in
-            // This target intentionally has no visual path, regardless of
-            // what the bridge advertises.
+        client.onCapabilities = { [weak self] capabilities in
+            Task { @MainActor [weak self] in
+                guard capabilities.audioUpload,
+                      capabilities.serverSTT,
+                      capabilities.streamingTTS else {
+                    self?.errorMessage = "Update the Adam bridge on your Mac for server speech."
+                    return
+                }
+            }
         }
         client.onCapturePhotoRequested = { [weak self, weak client] in
             Task { @MainActor [weak self, weak client] in
@@ -637,21 +711,8 @@ final class AdamVoiceSession {
         isRunning && bridgeClient === client && bridgeGeneration == generation
     }
 
-    /// Close only the automatic post-response window. An ordinary wake
-    /// command window remains intact when the bridge reconnects, but a
-    /// follow-up must never survive a bridge failure or transport rotation.
-    private func closeFollowUpWindow() {
-        guard wakeGate.isFollowUpWindow else { return }
-        soundscape.stopImmediately()
-        commandWindowTask?.cancel()
-        commandWindowTask = nil
-        _ = wakeGate.cancel()
-        liveTranscript = ""
-    }
-
     private func handleBridgeDisconnect(_ client: HermesAPIClient, generation: Int) {
         guard isCurrentBridge(client, generation: generation) else { return }
-        closeFollowUpWindow()
         bridgeConnected = false
         client.onDisconnected = nil
         bridgeClient = nil
@@ -675,19 +736,26 @@ final class AdamVoiceSession {
     }
 
     private func invalidateBridge() {
-        closeFollowUpWindow()
         bridgeGeneration += 1
         if let client = bridgeClient {
             client.onDisconnected = nil
             client.onTranscript = nil
+            client.onTranscriptWithRequestID = nil
+            client.onResponseStarted = nil
+            client.onResponseDelta = nil
             client.onResponse = nil
             client.onResponseWithRequestID = nil
+            client.onResponseMetadata = nil
             client.onAudioResponse = nil
+            client.onAudioResponseWithFormat = nil
+            client.onAudioSegmentWithFormat = nil
+            client.onAudioStreamEnded = nil
             client.onPlaybackComplete = nil
             client.onError = nil
             client.onCapabilities = nil
             client.onCapturePhotoRequested = nil
             client.onSessionReset = nil
+            client.onAttention = nil
             client.disconnect()
         }
         bridgeClient = nil
@@ -733,27 +801,11 @@ final class AdamVoiceSession {
 
     private func handlePartial(_ text: String) {
         guard isRunning else { return }
-
-        if wakeGate.state.isAwaitingCommand {
-            liveTranscript = text
-        }
-
+        // Partial recognition is used only to keep Apple's on-device wake
+        // cycle alive. It is deliberately not shown as "Heard" because the
+        // authoritative command transcript comes from Hermes/faster-whisper.
         let action = wakeGate.handlePartial(text)
-        if action == .interrupt {
-            // The gate remains in its speaking state until the final wake
-            // transcript arrives.  Stopping early makes the command audible;
-            // setting it back to armed here prevents a stale state if Speech
-            // emits only a partial and then rotates its recognition cycle.
-            stopOutputForInterruption()
-            wakeGate.setSpeaking(false)
-            status = .listening
-            liveTranscript = ""
-        } else if action == .extended {
-            // A continuous follow-up remains open while the wearer is still
-            // speaking. Reset the task from the gate's new deadline rather
-            // than using the initial eight-second wake window.
-            armCommandWindowTimeout()
-        } else if action == .rearmed || wakeGate.timeout() {
+        if action == .rearmed || wakeGate.timeout() {
             finishListeningSoundscape()
             commandWindowTask?.cancel()
             commandWindowTask = nil
@@ -763,7 +815,7 @@ final class AdamVoiceSession {
     }
 
     private func handleFinal(_ text: String) {
-        guard isRunning else { return }
+        guard isRunning, outputKind == nil else { return }
         liveTranscript = ""
         let action = wakeGate.handleFinal(text)
 
@@ -771,33 +823,26 @@ final class AdamVoiceSession {
         case .suppressed:
             break
         case .prompt:
+            isCapturingUtterance = false
+            utteranceAudio.removeAll(keepingCapacity: true)
+            preRollAudio.removeAll(keepingCapacity: true)
+            lastUtteranceAudio.removeAll(keepingCapacity: true)
             status = .awaitingCommand
             startListeningSoundscape()
             armCommandWindowTimeout()
             // Deliberately do not speak "Yes?" here.  Keeping recognition
             // live makes the immediately-following command reliable and
             // avoids the prompt being recognized as that command.
-        case .submit(let command):
+        case .submit:
             commandWindowTask?.cancel()
             commandWindowTask = nil
-            submitCommand(command)
+            submitRecordedUtterance()
         case .interrupt:
-            stopOutputForInterruption()
-            status = .awaitingCommand
-            startListeningSoundscape()
-            armCommandWindowTimeout()
-        case .interruptAndSubmit(let command):
-            stopOutputForInterruption()
-            commandWindowTask?.cancel()
-            commandWindowTask = nil
-            submitCommand(command)
+            break
+        case .interruptAndSubmit:
+            break
         case .rearmed:
             status = bridgeConnected ? .listening : .reconnecting
-        case .extended:
-            // `handleFinal` never extends a window, but keep this branch
-            // explicit so the action remains exhaustively handled if the
-            // gate gains another final-transcript path.
-            break
         }
     }
 
@@ -820,6 +865,9 @@ final class AdamVoiceSession {
             if self.wakeGate.timeout() {
                 self.finishListeningSoundscape()
                 self.liveTranscript = ""
+                self.isCapturingUtterance = false
+                self.utteranceAudio.removeAll(keepingCapacity: true)
+                self.lastUtteranceAudio.removeAll(keepingCapacity: true)
                 self.status = self.bridgeConnected ? .listening : .reconnecting
             } else if self.wakeGate.state.isAwaitingCommand {
                 // A clock tick can wake a fraction before the deadline. Keep
@@ -829,11 +877,16 @@ final class AdamVoiceSession {
         }
     }
 
-    private func submitCommand(_ command: String) {
-        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+    private func submitRecordedUtterance() {
+        let audio = takeRecordedUtterance()
+        guard audio.count >= 640 else {
+            _ = wakeGate.failed()
+            errorMessage = "I did not receive enough audio. Say Adam and try again."
+            status = bridgeConnected ? .listening : .reconnecting
+            return
+        }
         finishListeningSoundscape(playCompletionIfIdle: true)
-        lastCommand = trimmed
+        lastCommand = ""
         lastResponse = ""
         liveTranscript = ""
 
@@ -843,7 +896,7 @@ final class AdamVoiceSession {
             scheduleReconnect()
             let feedback: String
             switch locale {
-            case .englishUS:
+            case .englishGB:
                 feedback = "Adam is offline. I am reconnecting."
             case .latvianLV:
                 feedback = "Adam nav sasniedzams. Mēģinu savienoties vēlreiz."
@@ -868,33 +921,74 @@ final class AdamVoiceSession {
         // Do not feed trailing words from the command back into the wake
         // loop while the bridge is thinking.
         speechRecognizer.isSuspended = true
-        client.sendQuery(trimmed, bridgeTTS: false, requestID: requestID)
+        let terms = vocabulary.split(separator: ",").map {
+            String($0).trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty }
+        Task { @MainActor [weak self, weak client] in
+            guard let self, let client,
+                  self.isRunning, self.pendingRequestID == requestID else { return }
+            do {
+                try await client.uploadAudioCapture(
+                    audio, requestID: requestID, vocabulary: terms
+                )
+            } catch {
+                guard self.pendingRequestID == requestID else { return }
+                self.failResponse("Adam could not send the recording. Please try again.")
+            }
+        }
     }
 
     private func handleResponse(_ text: String, bridgeWillSendAudio: Bool) {
         responseTimeoutTask?.cancel()
         responseTimeoutTask = nil
-        pendingRequestID = nil
         lastResponse = text
-        pendingBridgeAudio = bridgeWillSendAudio
+        pendingBridgeAudio = bridgeWillSendAudio && outputKind != .bridgeAudio
 
         if bridgeWillSendAudio {
-            // Old bridges may still send PCM despite the app request.  Keep
-            // support for that protocol, while the normal Adam path uses
-            // on-device TTS (`tts: false`).
+            // The PCM stream can begin before Hermes sends its final text.
+            // Preserve the speaking state when that happens instead of
+            // briefly regressing the UI to "thinking" mid-sentence.
+            guard outputKind != .bridgeAudio else { return }
             status = .processing
+            responseTimeoutTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: Self.bridgeAudioTimeout)
+                guard !Task.isCancelled, let self, self.isRunning,
+                      self.pendingBridgeAudio, self.outputKind == nil else { return }
+                self.failResponse("Adam's voice audio did not arrive. Please try again.")
+            }
             return
         }
         speakLocally(text)
     }
 
-    private func handleBridgeAudio(_ data: Data) {
-        guard pendingBridgeAudio else { return }
+    private func handleBridgeAudio(
+        _ data: Data,
+        metadata: HermesVoiceMetadata
+    ) {
+        guard pendingRequestID != nil else { return }
         pendingBridgeAudio = false
-        beginOutput(.bridgeAudio)
-        Task { @MainActor [weak self] in
-            guard let self, self.isRunning else { return }
-            await self.audioManager.playResponse(data)
+        playbackSampleRate = metadata.sampleRate
+        applyVoiceMetadata(provider: metadata.provider, voice: metadata.voice)
+        if outputKind == .bridgeAudio {
+            audioManager.enqueueResponseSegment(
+                data, sampleRate: metadata.sampleRate
+            )
+            return
+        }
+        beginHighQualityBridgeOutput(data, sampleRate: metadata.sampleRate)
+    }
+
+    private func applyVoiceMetadata(provider: String?, voice: String?) {
+        if let provider, !provider.isEmpty {
+            voiceProvider = provider == "kokoro-mlx" ? "Kokoro MLX" : provider
+        }
+        if let voice, !voice.isEmpty {
+            switch voice {
+            case "bm_george": voiceName = "George · British male"
+            case "en-GB-RyanNeural": voiceName = "Ryan · British male"
+            case "lv-LV-NilsNeural": voiceName = "Nils · Latvian male"
+            default: voiceName = voice
+            }
         }
     }
 
@@ -902,6 +996,46 @@ final class AdamVoiceSession {
         pendingBridgeAudio = false
         beginOutput(.localSpeech)
         _ = speechSynthesizer.speak(text)
+    }
+
+    private func beginHighQualityBridgeOutput(
+        _ data: Data,
+        sampleRate: Int
+    ) {
+        soundscape.stopImmediately()
+        responseTimeoutTask?.cancel()
+        responseTimeoutTask = nil
+        outputKind = .bridgeAudio
+        cancellingOutput = false
+        wakeGate.setSpeaking(true)
+        status = .speaking
+        speechRecognizer.isSuspended = true
+
+        audioManager.beginResponseStream()
+        audioManager.enqueueResponseSegment(data, sampleRate: sampleRate)
+
+        // Release HFP before playback so iOS can route full-band audio over
+        // A2DP. The physical route transition is allowed up to 1.5 seconds;
+        // if it does not appear we still play, but report the fallback.
+        audioManager.stopCapture()
+        Task { @MainActor [weak self] in
+            guard let self, self.isRunning,
+                  self.outputKind == .bridgeAudio else { return }
+            do {
+                try self.audioManager.prepareHighQualityPlayback()
+                for _ in 0..<15 where !self.audioManager.outputIsBluetooth {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                }
+            } catch {
+                self.micWarning = "High-quality playback was unavailable; using the current output."
+            }
+            guard self.isRunning, self.outputKind == .bridgeAudio else { return }
+            self.refreshAudioRoute()
+            if !self.audioManager.outputIsBluetooth {
+                self.micWarning = "Ray-Ban A2DP did not connect; Adam is using \(self.outputRoute)."
+            }
+            self.audioManager.startResponseStreamPlayback()
+        }
     }
 
     private func beginOutput(_ kind: OutputKind) {
@@ -937,23 +1071,52 @@ final class AdamVoiceSession {
             return
         }
 
-        // A prompt is not represented as an output kind in this prototype;
-        // this branch remains defensive for future earcon/TTS prompts.
-        _ = kind
-        finishResponse()
+        if case .bridgeAudio = kind {
+            restoreCaptureAfterPlayback()
+        } else {
+            finishResponse()
+        }
+    }
+
+    private func restoreCaptureAfterPlayback() {
+        guard !restoringCapture else { return }
+        restoringCapture = true
+        Task { @MainActor [weak self] in
+            guard let self, self.isRunning else { return }
+            do {
+                _ = try await self.audioManager.startCapture(route: .glassesMic)
+                guard self.isRunning else {
+                    self.audioManager.stopCapture()
+                    self.restoringCapture = false
+                    return
+                }
+                self.refreshAudioRoute()
+                self.speechRecognizer.restartCycle()
+                self.micWarning = nil
+                self.restoringCapture = false
+                self.finishResponse()
+            } catch {
+                self.restoringCapture = false
+                self.failResponse(
+                    "Adam spoke, but the Ray-Ban microphone did not reconnect. Start Adam again."
+                )
+                self.status = .failed
+            }
+        }
     }
 
     private func finishResponse() {
         pendingBridgeAudio = false
         responseTimeoutTask?.cancel()
         responseTimeoutTask = nil
+        pendingRequestID = nil
         if case .speaking = wakeGate.state {
             _ = wakeGate.completed()
         } else {
             wakeGate.setSpeaking(false)
         }
         status = bridgeConnected ? .listening : .reconnecting
-        scheduleSpeechResume(openFollowUp: continuousFollowUpsEnabled && bridgeConnected)
+        scheduleSpeechResume()
         if !bridgeConnected { scheduleReconnect() }
     }
 
@@ -1005,32 +1168,21 @@ final class AdamVoiceSession {
         pendingBridgeAudio = false
     }
 
-    private func scheduleSpeechResume(openFollowUp: Bool = false) {
+    private func scheduleSpeechResume() {
         speechResumeTask?.cancel()
         speechResumeTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: Self.speechResumeGrace)
             guard !Task.isCancelled, let self, self.isRunning else { return }
             self.speechResumeTask = nil
             self.speechRecognizer.isSuspended = false
-
-            // Recognition resumes first, then the follow-up gate opens. This
-            // preserves the existing 700 ms grace period that prevents the
-            // tail of Adam's response from becoming the next command.
-            guard openFollowUp,
-                  self.continuousFollowUpsEnabled,
-                  self.bridgeConnected,
-                  self.outputKind == nil,
-                  self.status == .listening,
-                  self.wakeGate.openFollowUpWindow() else { return }
-            self.status = .awaitingCommand
-            self.startListeningSoundscape()
-            self.armCommandWindowTimeout()
         }
     }
 
     private func startListeningSoundscape() {
         guard listeningSoundsEnabled else { return }
-        soundscape.startListening(loop: audioManager.isUsingBluetoothInput)
+        // One short flute cue marks the opened command window. Silence while
+        // the user speaks avoids contaminating the Ray-Ban HFP microphone.
+        soundscape.startListening(loop: false)
     }
 
     private func finishListeningSoundscape(
@@ -1049,6 +1201,44 @@ final class AdamVoiceSession {
 
     // MARK: - Service wiring and route status
 
+    private func handleAudioChunk(_ data: Data) {
+        guard isRunning, !data.isEmpty else { return }
+        preRollAudio.append(data)
+        if preRollAudio.count > Self.preRollBytes {
+            preRollAudio.removeFirst(preRollAudio.count - Self.preRollBytes)
+        }
+        guard isCapturingUtterance,
+              utteranceAudio.count < Self.maximumUtteranceBytes else { return }
+        let remaining = Self.maximumUtteranceBytes - utteranceAudio.count
+        utteranceAudio.append(data.prefix(remaining))
+    }
+
+    private func handleSpeechStarted() {
+        guard isRunning, outputKind == nil,
+              status == .listening || status == .awaitingCommand else { return }
+        utteranceAudio = preRollAudio
+        isCapturingUtterance = true
+    }
+
+    private func handleSpeechEnded() {
+        guard isCapturingUtterance else { return }
+        isCapturingUtterance = false
+        lastUtteranceAudio = utteranceAudio
+        utteranceAudio.removeAll(keepingCapacity: true)
+    }
+
+    private func takeRecordedUtterance() -> Data {
+        if isCapturingUtterance {
+            isCapturingUtterance = false
+            lastUtteranceAudio = utteranceAudio
+            utteranceAudio.removeAll(keepingCapacity: true)
+        }
+        let result = lastUtteranceAudio
+        lastUtteranceAudio.removeAll(keepingCapacity: true)
+        preRollAudio.removeAll(keepingCapacity: true)
+        return result
+    }
+
     private func wireServices() {
         let recognizer = speechRecognizer
         audioManager.onRawBuffer = { [weak recognizer] buffer in
@@ -1058,6 +1248,15 @@ final class AdamVoiceSession {
             Task { @MainActor [weak self] in
                 self?.micLevel = level
             }
+        }
+        audioManager.onAudioChunk = { [weak self] data in
+            Task { @MainActor [weak self] in self?.handleAudioChunk(data) }
+        }
+        audioManager.onSpeechDetected = { [weak self] in
+            Task { @MainActor [weak self] in self?.handleSpeechStarted() }
+        }
+        audioManager.onSilenceDetected = { [weak self] in
+            Task { @MainActor [weak self] in self?.handleSpeechEnded() }
         }
         audioManager.onMicWarning = { [weak self] warning in
             Task { @MainActor [weak self] in
@@ -1115,6 +1314,9 @@ final class AdamVoiceSession {
 
     private func clearAudioCallbacks() {
         audioManager.onRawBuffer = nil
+        audioManager.onAudioChunk = nil
+        audioManager.onSpeechDetected = nil
+        audioManager.onSilenceDetected = nil
         audioManager.onLevel = nil
         audioManager.onMicWarning = nil
         audioManager.onRouteChanged = nil

@@ -1,7 +1,7 @@
 //
 // AdamSpeechSignal.swift
 //
-// Pure signal helpers for Adam's optional speech-recognition path.  The
+// Pure signal helpers for Adam's wake recognition and bridge-upload paths. The
 // production buffer adapter lives in HermesAudioManager because it needs
 // AVAudioPCMBuffer; keeping the math here Foundation-only makes it possible
 // to exercise the gain, limiter, and meter behavior with plain swiftc tests.
@@ -11,15 +11,18 @@ import Foundation
 
 /// Bounded, Adam-only conditioning for quiet microphone input.
 ///
-/// The defaults are intentionally conservative.  They are applied only to
-/// the copy sent to on-device speech recognition; bridge audio, recordings,
+/// The defaults are intentionally conservative. They are applied only to
+/// Adam-owned copies sent to wake recognition or the Hermes bridge; recordings
 /// and the original Hermes target continue to receive the source samples.
 enum AdamSpeechSignal {
     struct Configuration: Equatable, Sendable {
         /// Maximum linear pre-amplification for quiet HFP speech.
         var gain: Float = 3.5
         /// Per-sample noise floor, expressed as normalized PCM amplitude.
-        var noiseFloor: Float = 0.0025
+        // Ray-Ban HFP speech can contain useful consonants below 0.0025. Keep
+        // only true near-digital noise below the floor; server VAD handles
+        // sustained room ambience after the utterance is uploaded.
+        var noiseFloor: Float = 0.0005
         /// Start of the soft limiter in normalized PCM amplitude.
         var limiterThreshold: Float = 0.86
         /// Absolute output ceiling, below full-scale to leave a little headroom.
@@ -90,6 +93,27 @@ enum AdamSpeechSignal {
                 configuration: configuration
             )
         }
+    }
+
+    /// Gain needed to bring a quiet utterance toward a healthy Whisper input
+    /// level. The bound prevents room noise from being amplified without
+    /// limit, while already-loud speech remains unity gain.
+    static func adaptiveGain(
+        rms: Float,
+        targetRMS: Float = 0.10,
+        maximum: Float = 6
+    ) -> Float {
+        guard rms.isFinite, rms > 0,
+              targetRMS.isFinite, targetRMS > 0 else { return 1 }
+        let ceiling = max(1, maximum.isFinite ? maximum : 1)
+        return min(ceiling, max(1, targetRMS / rms))
+    }
+
+    /// Speech threshold derived from recent ambient noise. This replaces the
+    /// old fixed 0.015 RMS gate that missed quiet Ray-Ban HFP microphones.
+    static func adaptiveSpeechThreshold(noiseRMS: Float) -> Float {
+        let noise = noiseRMS.isFinite ? max(0, noiseRMS) : 0
+        return min(0.02, max(0.0025, noise * 3))
     }
 
     /// Process one signed PCM16 sample without allocating. This is used by

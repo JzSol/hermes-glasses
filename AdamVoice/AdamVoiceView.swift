@@ -11,10 +11,12 @@ struct AdamVoiceView: View {
 
     @State private var endpointDraft: String
     @State private var tokenDraft = ""
+    @State private var vocabularyDraft: String
 
     init(session: AdamVoiceSession) {
         self.session = session
         _endpointDraft = State(initialValue: session.endpoint)
+        _vocabularyDraft = State(initialValue: session.vocabulary)
     }
 
     var body: some View {
@@ -102,15 +104,6 @@ struct AdamVoiceView: View {
                 .foregroundStyle(.orange)
             }
 
-            if !session.isVoiceSupported {
-                Label(
-                    "Install the selected system speech voice to hear Adam locally.",
-                    systemImage: "speaker.slash"
-                )
-                .font(.caption)
-                .foregroundStyle(.orange)
-            }
-
             if let message = session.errorMessage, !message.isEmpty {
                 Text(message)
                     .font(.footnote)
@@ -143,7 +136,7 @@ struct AdamVoiceView: View {
             }
             if !session.lastCommand.isEmpty {
                 transcriptBubble(
-                    label: "You",
+                    label: "Heard",
                     text: session.lastCommand,
                     tint: Color.accentColor.opacity(0.12)
                 )
@@ -241,18 +234,6 @@ struct AdamVoiceView: View {
             }
 
             Toggle(
-                "Continuous follow-ups",
-                isOn: Binding(
-                    get: { session.continuousFollowUpsEnabled },
-                    set: { session.setContinuousFollowUps($0) }
-                )
-            )
-
-            Text("After Adam answers, ask another question for 30 seconds without repeating the wake word.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Toggle(
                 "Listening sounds",
                 isOn: Binding(
                     get: { session.listeningSoundsEnabled },
@@ -260,9 +241,22 @@ struct AdamVoiceView: View {
                 )
             )
 
-            Text("A quiet flute plays while Adam accepts a command, followed by a droplet cue when listening ends.")
+            Text("A short flute cue opens listening, then silence protects your recording. A droplet confirms the end.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Speech vocabulary")
+                    .font(.subheadline.weight(.medium))
+                TextField("Names and terms, separated by commas", text: $vocabularyDraft)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(.roundedBorder)
+                Button("Save vocabulary") {
+                    session.saveVocabulary(vocabularyDraft)
+                }
+                .buttonStyle(.bordered)
+            }
 
             Text("The bridge endpoint is stored in app settings. The token is stored only in Keychain.")
                 .font(.caption)

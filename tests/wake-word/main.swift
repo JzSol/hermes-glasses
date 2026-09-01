@@ -93,42 +93,17 @@ expectEqual(gate.state, .armed, "interrupt-and-submit rearms")
 gate.setSpeaking(false)
 expectEqual(gate.state, .armed, "speaking false leaves gate armed")
 
-// Continuous follow-up windows last 30 seconds, accept a final without Adam,
-// and extend while partial speech is changing.
-var followUpGate = WakeWordGate(commandWindow: 8, followUpWindow: 30)
-expect(followUpGate.openFollowUpWindow(now: t0),
-       "response opens a follow-up window")
-expect(followUpGate.isFollowUpWindow, "follow-up window is marked")
-let originalDeadline = followUpGate.commandDeadline
-expectEqual(followUpGate.handlePartial("and also", now: t0.addingTimeInterval(10)),
-            .extended, "partial follow-up extends its deadline")
-expect(
-    followUpGate.commandDeadline != nil,
-    "extended follow-up retains a deadline"
-)
-if let originalDeadline, let extendedDeadline = followUpGate.commandDeadline {
-    expect(extendedDeadline > originalDeadline,
-           "partial follow-up moves the deadline forward")
-}
-expectEqual(
-    followUpGate.handleFinal("what about tomorrow?", now: t0.addingTimeInterval(11)),
-    .submit("what about tomorrow?"),
-    "follow-up final submits without Adam"
-)
-expectEqual(followUpGate.state, .armed, "follow-up submission rearms")
-expect(!followUpGate.isFollowUpWindow, "submitted follow-up closes its window")
-
-expect(followUpGate.openFollowUpWindow(now: t0),
-       "each response can open a fresh follow-up window")
-expect(
-    followUpGate.timeout(now: t0.addingTimeInterval(30.1)),
-    "follow-up timeout rearms after 30 seconds"
-)
-expectEqual(
-    followUpGate.handleFinal("late follow-up", now: t0.addingTimeInterval(30.1)),
-    .suppressed,
-    "follow-up after timeout requires Adam"
-)
+// Completing a response never opens a hands-free follow-up window. Every new
+// turn must begin with Adam.
+var responseGate = WakeWordGate()
+responseGate.setSpeaking(true)
+expectEqual(responseGate.completed(), .rearmed,
+            "response completion rearms wake-only mode")
+expectEqual(responseGate.handleFinal("what about tomorrow?", now: t0), .suppressed,
+            "post-response speech without Adam is suppressed")
+expectEqual(responseGate.handleFinal("Adam, what about tomorrow?", now: t0),
+            .submit("what about tomorrow?"),
+            "post-response command still works when prefixed by Adam")
 
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

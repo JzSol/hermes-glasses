@@ -74,7 +74,7 @@ final class HermesSpeechRecognizer: NSObject, @unchecked Sendable {
     private let lock: OSAllocatedUnfairLock<State>
 
     init(
-        locale: VoiceLocale = .englishUS,
+        locale: VoiceLocale = .englishGB,
         contextualWakePhrases: [String]? = nil
     ) {
         let phrases = contextualWakePhrases ?? locale.contextualWakePhrases

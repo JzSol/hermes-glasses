@@ -11,7 +11,6 @@ import Foundation
 /// Whether a finalized or partial transcript should reach the agent.
 struct WakeWordGate: Sendable {
     static let defaultCommandWindow: TimeInterval = 8
-    static let defaultFollowUpWindow: TimeInterval = 30
 
     enum State: Equatable, Sendable {
         case armed
@@ -38,9 +37,6 @@ struct WakeWordGate: Sendable {
         case interruptAndSubmit(String)
         /// The command window expired before a command arrived.
         case rearmed
-        /// Speech is in a continuous follow-up window; keep listening and
-        /// extend the deadline while the wearer is still talking.
-        case extended
     }
 
     private struct Token {
@@ -49,12 +45,7 @@ struct WakeWordGate: Sendable {
     }
 
     private(set) var state: State = .armed
-    /// Whether the current command window was opened automatically after a
-    /// response. Kept separate from `State` so the existing state shape stays
-    /// small and callers can still compare its timing in pure tests.
-    private(set) var isFollowUpWindow = false
     private let commandWindow: TimeInterval
-    private let followUpWindow: TimeInterval
     private let aliases: [[String]]
 
     /// Create a gate with the single Adam wake word. Custom aliases are
@@ -62,11 +53,9 @@ struct WakeWordGate: Sendable {
     /// matched by whole tokens at the beginning of an utterance.
     init(
         commandWindow: TimeInterval = WakeWordGate.defaultCommandWindow,
-        followUpWindow: TimeInterval = WakeWordGate.defaultFollowUpWindow,
         aliases: [String] = ["Adam"]
     ) {
         self.commandWindow = max(0, commandWindow)
-        self.followUpWindow = max(0, followUpWindow)
         self.aliases = aliases.compactMap { Self.tokenValues(in: $0) }
             .filter { !$0.isEmpty }
     }
@@ -76,26 +65,6 @@ struct WakeWordGate: Sendable {
     var commandDeadline: Date? {
         guard case .awaitingCommand(let deadline) = state else { return nil }
         return deadline
-    }
-
-    /// Open the post-response follow-up window. A caller should invoke this
-    /// only after local/bridge TTS has finished and recognition has had its
-    /// resume grace period.
-    @discardableResult
-    mutating func openFollowUpWindow(now: Date = Date()) -> Bool {
-        guard case .armed = state else { return false }
-        state = .awaitingCommand(until: now.addingTimeInterval(followUpWindow))
-        isFollowUpWindow = true
-        return true
-    }
-
-    /// Extend an active follow-up while a partial transcript is changing.
-    @discardableResult
-    mutating func extendFollowUpWindow(now: Date = Date()) -> Bool {
-        guard isFollowUpWindow,
-              case .awaitingCommand = state else { return false }
-        state = .awaitingCommand(until: now.addingTimeInterval(followUpWindow))
-        return true
     }
 
     /// Seconds remaining in the active command window.
@@ -110,7 +79,6 @@ struct WakeWordGate: Sendable {
     mutating func handleFinal(_ text: String, now: Date = Date()) -> Action {
         if case .awaitingCommand(let deadline) = state, now >= deadline {
             state = .armed
-            isFollowUpWindow = false
             return .suppressed
         }
 
@@ -120,27 +88,22 @@ struct WakeWordGate: Sendable {
         switch state {
         case .awaitingCommand:
             state = .armed
-            isFollowUpWindow = false
             return .submit(trimmed)
         case .speaking:
             guard let match = prefixMatch(in: text) else { return .suppressed }
             if let tail = match.tail, !tail.isEmpty {
                 state = .armed
-                isFollowUpWindow = false
                 return .interruptAndSubmit(tail)
             }
             state = .awaitingCommand(until: now.addingTimeInterval(commandWindow))
-            isFollowUpWindow = false
             return .interrupt
         case .armed:
             guard let match = prefixMatch(in: text) else { return .suppressed }
             if let tail = match.tail, !tail.isEmpty {
                 state = .armed
-                isFollowUpWindow = false
                 return .submit(tail)
             }
             state = .awaitingCommand(until: now.addingTimeInterval(commandWindow))
-            isFollowUpWindow = false
             return .prompt
         }
     }
@@ -153,14 +116,7 @@ struct WakeWordGate: Sendable {
     mutating func handlePartial(_ text: String, now: Date = Date()) -> Action {
         if case .awaitingCommand(let deadline) = state, now >= deadline {
             state = .armed
-            isFollowUpWindow = false
             return .rearmed
-        }
-        if isFollowUpWindow,
-           case .awaitingCommand = state,
-           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           extendFollowUpWindow(now: now) {
-            return .extended
         }
         guard case .speaking = state, prefixMatch(in: text) != nil else {
             return .suppressed
@@ -172,26 +128,22 @@ struct WakeWordGate: Sendable {
     /// produce `.interrupt` for the view model to stop the synthesizer.
     mutating func setSpeaking(_ speaking: Bool) {
         state = speaking ? .speaking : .armed
-        isFollowUpWindow = false
     }
 
     /// Re-arm after a user cancellation, a completed command, or an agent
     /// failure. Returning an action makes lifecycle transitions easy to test.
     mutating func cancel() -> Action {
         state = .armed
-        isFollowUpWindow = false
         return .rearmed
     }
 
     mutating func completed() -> Action {
         state = .armed
-        isFollowUpWindow = false
         return .rearmed
     }
 
     mutating func failed() -> Action {
         state = .armed
-        isFollowUpWindow = false
         return .rearmed
     }
 
@@ -202,7 +154,6 @@ struct WakeWordGate: Sendable {
             return false
         }
         state = .armed
-        isFollowUpWindow = false
         return true
     }
 

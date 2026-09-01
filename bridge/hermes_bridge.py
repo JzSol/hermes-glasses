@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
 Hermes Glasses Bridge - WebSocket server connecting the Hermes Glasses iOS
-app to a Hermes Agent. STT happens on the phone; this bridge handles text
-queries, photo requests, conversation memory, and TTS.
+app to a Hermes Agent. The phone performs low-power wake detection and sends
+the captured utterance to Hermes for final STT, agent reasoning, and TTS.
 
 Protocol (JSON text frames):
-  app → bridge: {"type":"query","text":...,"request_id":...,
-                 "locale":"en-US"|"lv-LV"}      transcribed utterance
+  app → bridge: {"type":"audio_start","request_id":...,
+                 "format":"pcm_s16le","sample_rate":16000,"channels":1,
+                 "locale":"en-GB"|"lv-LV"}     begin captured utterance
+  app → bridge: binary PCM16 frames, then {"type":"audio_end",...}
+  app → bridge: {"type":"query","text":...}   legacy text client
   app → bridge: {"type":"new_session"}           forget the conversation
   app → bridge: {"type":"photo","data":<b64>}    reply to capture_photo
   app → bridge: {"type":"photo_error", ...}
@@ -14,13 +17,16 @@ Protocol (JSON text frames):
                 {"type":"capture_photo"} /
                 {"type":"response","text":...,"request_id":...} /
                 {"type":"session_reset"} /
-                audio_start + binary PCM16 mono 24kHz TTS + audio_end
+                transcript / response deltas / response +
+                audio_start + binary PCM16 mono TTS + audio_end
 """
 
 import asyncio
 import base64
+import contextlib
 import datetime
 import hmac
+import io
 import json
 import os
 import re
@@ -32,6 +38,7 @@ import tempfile
 import time
 import wave
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -59,7 +66,7 @@ HOST = os.environ.get("HERMES_BRIDGE_HOST", "0.0.0.0")
 PORT = int(os.environ.get("HERMES_BRIDGE_PORT", "8765"))
 HERMES_BIN = os.environ.get(
     "HERMES_BIN",
-    os.path.expanduser("~/.hermes/hermes-agent/venv/bin/hermes"),
+    os.path.expanduser("~/.hermes/hermes-agent/.venv/bin/hermes"),
 )
 
 # Shared-secret auth. This is required at startup - Hermes has tool access, so
@@ -93,6 +100,25 @@ BRIDGE_VISION = _env_bool("HERMES_BRIDGE_VISION", True)
 BRIDGE_WORKDIR = os.environ.get("HERMES_BRIDGE_WORKDIR") or os.getcwd()
 HERMES_MAX_TURNS = _env_int("HERMES_BRIDGE_MAX_TURNS", 20)
 HERMES_RUN_BUDGET = _env_int("HERMES_BRIDGE_RUN_BUDGET", 90)
+
+# Hermes's local dashboard API is the low-latency path for Adam.  It keeps one
+# agent session alive, runs final STT with the configured faster-whisper
+# provider, and streams the configured TTS provider as raw PCM.
+HERMES_API_BASE = os.environ.get(
+    "HERMES_BRIDGE_API_BASE", "http://127.0.0.1:9119"
+).rstrip("/")
+HERMES_AUDIO_SAMPLE_RATE = 16_000
+HERMES_AUDIO_CHANNELS = 1
+HERMES_AUDIO_FORMAT = "pcm_s16le"
+HERMES_AUDIO_MAX_SECONDS = _env_int("HERMES_BRIDGE_AUDIO_MAX_SECONDS", 30)
+HERMES_AUDIO_MAX_BYTES = (
+    HERMES_AUDIO_SAMPLE_RATE * HERMES_AUDIO_CHANNELS * 2
+    * HERMES_AUDIO_MAX_SECONDS
+)
+HERMES_STT_PROMPT = (
+    "Adam, Hermes, Janis, Ray-Ban Meta, Tailscale. Preserve names, product "
+    "terms, and punctuation exactly."
+)
 
 # Bridge-side TTS (edge-tts/say → PCM streaming). Default OFF: the app
 # speaks replies on-device with AVSpeechSynthesizer. Set HERMES_BRIDGE_TTS=1
@@ -218,7 +244,7 @@ def ask_provider(
     image_b64 = base64.b64encode(photo).decode() if photo else None
     url, headers, body = build_provider_request(
         brain, CLAUDE_MODEL, base_url, api_key, text, image_b64,
-        system=adam_persona(locale or "en-US"))
+        system=adam_persona(locale or "en-GB"))
 
     request = urllib.request.Request(
         url, data=json.dumps(body).encode(), headers=headers, method="POST")
@@ -304,9 +330,10 @@ def should_capture_photo(text: str, last_photo_at: float, now: float) -> bool:
 
 
 # ── Adam voice persona and locale ──────────────────────────────────────────
-SUPPORTED_LOCALES = {"en-US", "lv-LV"}
-DEFAULT_LOCALE = "en-US"
+SUPPORTED_LOCALES = {"en-GB", "en-US", "lv-LV"}
+DEFAULT_LOCALE = "en-GB"
 LOCALE_LANGUAGE_NAMES = {
+    "en-GB": "British English",
     "en-US": "English",
     "lv-LV": "Latvian",
 }
@@ -334,6 +361,7 @@ def adam_persona(locale: str = DEFAULT_LOCALE) -> str:
 VOICE_PERSONA = adam_persona()
 VISION_DISABLED_RESPONSE = "Camera access is disabled."
 VISION_DISABLED_RESPONSES = {
+    "en-GB": VISION_DISABLED_RESPONSE,
     "en-US": VISION_DISABLED_RESPONSE,
     "lv-LV": "Kameras piekļuve ir atspējota.",
 }
@@ -620,9 +648,595 @@ def ask_hermes(
         return "Sorry, Hermes could not answer that right now.", None
 
 
+# ── Hermes local realtime API ──────────────────────────────────────────────
+
+_TOKEN_RE = re.compile(
+    r"window\.__HERMES_SESSION_TOKEN__\s*=\s*(\"(?:\\.|[^\"\\])*\")"
+)
+_WAKE_PREFIX_RE = re.compile(
+    r"^\s*adam\b[\s,.:;!?\-\u2013\u2014]*", re.IGNORECASE
+)
+
+
+def extract_dashboard_token(html: str) -> str | None:
+    """Extract Hermes's JSON-escaped loopback session token from root HTML."""
+    match = _TOKEN_RE.search(html or "")
+    if not match:
+        return None
+    try:
+        value = json.loads(match.group(1))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def pcm16_wav(
+    pcm: bytes,
+    sample_rate: int = HERMES_AUDIO_SAMPLE_RATE,
+    channels: int = HERMES_AUDIO_CHANNELS,
+) -> bytes:
+    """Wrap little-endian signed PCM16 in an in-memory WAV container."""
+    output = io.BytesIO()
+    with wave.open(output, "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm)
+    return output.getvalue()
+
+
+def strip_adam_wake_word(text: str) -> str:
+    """Remove a leading wake word if Whisper included it in the command."""
+    return _WAKE_PREFIX_RE.sub("", (text or "").strip(), count=1).strip()
+
+
+def _stt_language(locale: str) -> str:
+    return "lv" if sanitize_locale(locale) == "lv-LV" else "en"
+
+
+def _safe_vocabulary(value) -> list[str]:
+    """Bound user vocabulary before it is appended to Whisper's prompt."""
+    if not isinstance(value, list):
+        return []
+    result = []
+    for item in value[:24]:
+        if not isinstance(item, str):
+            continue
+        cleaned = " ".join(item.strip().split())[:48]
+        if cleaned and cleaned not in result:
+            result.append(cleaned)
+    return result
+
+
+class HermesLocalAPI:
+    """Small loopback-only adapter for Hermes HTTP and WebSocket APIs."""
+
+    def __init__(self, base_url: str = HERMES_API_BASE):
+        self.base_url = base_url.rstrip("/")
+        self._token: str | None = None
+
+    def invalidate_token(self) -> None:
+        self._token = None
+
+    def token(self, refresh: bool = False) -> str:
+        if self._token and not refresh:
+            return self._token
+        request = urllib.request.Request(
+            self.base_url + "/",
+            headers={"Accept": "text/html", "Cache-Control": "no-cache"},
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            html = response.read().decode("utf-8", errors="replace")
+        token = extract_dashboard_token(html)
+        if not token:
+            raise RuntimeError("Hermes did not expose a loopback session token")
+        self._token = token
+        return token
+
+    def _post_json(self, path: str, payload: dict) -> dict:
+        """POST JSON, refreshing Hermes's ephemeral token once on a 401."""
+        for attempt in range(2):
+            token = self.token(refresh=attempt > 0)
+            request = urllib.request.Request(
+                self.base_url + path,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "X-Hermes-Session-Token": token,
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=90) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as error:
+                if error.code == 401 and attempt == 0:
+                    self.invalidate_token()
+                    continue
+                detail = ""
+                with contextlib.suppress(Exception):
+                    body = json.loads(error.read().decode("utf-8"))
+                    detail = str(body.get("detail") or "")
+                raise RuntimeError(detail or f"Hermes HTTP {error.code}") from None
+        raise RuntimeError("Hermes authentication failed")
+
+    def transcribe(self, pcm: bytes, locale: str, vocabulary=None) -> dict:
+        words = _safe_vocabulary(vocabulary)
+        prompt = HERMES_STT_PROMPT
+        if words:
+            prompt += " Vocabulary: " + ", ".join(words) + "."
+        wav_bytes = pcm16_wav(pcm)
+        result = self._post_json("/api/audio/transcribe", {
+            "data_url": "data:audio/wav;base64," + base64.b64encode(wav_bytes).decode("ascii"),
+            "mime_type": "audio/wav",
+            "language": _stt_language(locale),
+            "prompt": prompt,
+        })
+        result["transcript"] = strip_adam_wake_word(
+            str(result.get("transcript") or "")
+        )
+        return result
+
+    def websocket_url(self, path: str) -> str:
+        parsed = urllib.parse.urlsplit(self.base_url)
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        token = self.token()
+        query = urllib.parse.urlencode({"token": token})
+        return urllib.parse.urlunsplit(
+            (scheme, parsed.netloc, path, query, "")
+        )
+
+
+class HermesGateway:
+    """Persistent Hermes JSON-RPC chat session for one glasses connection."""
+
+    def __init__(self, api: HermesLocalAPI):
+        self.api = api
+        self.websocket = None
+        self.session_id: str | None = None
+        self._rpc_id = 0
+        self._turn_lock = asyncio.Lock()
+
+    async def close(self) -> None:
+        if self.websocket is not None:
+            with contextlib.suppress(Exception):
+                await self.websocket.close()
+        self.websocket = None
+        self.session_id = None
+
+    async def reset(self) -> None:
+        await self.close()
+        clear_session()
+
+    async def _receive_json(self, timeout: float = 30) -> dict:
+        if self.websocket is None:
+            raise RuntimeError("Hermes gateway is not connected")
+        raw = await asyncio.wait_for(self.websocket.recv(), timeout=timeout)
+        if isinstance(raw, bytes):
+            raise RuntimeError("Unexpected binary frame from Hermes gateway")
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise RuntimeError("Invalid Hermes gateway frame")
+        return value
+
+    async def _rpc(self, method: str, params: dict, timeout: float = 30) -> dict:
+        if self.websocket is None:
+            raise RuntimeError("Hermes gateway is not connected")
+        self._rpc_id += 1
+        request_id = f"adam-{self._rpc_id}"
+        await self.websocket.send(json.dumps({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": method,
+            "params": params,
+        }))
+        deadline = time.monotonic() + timeout
+        while True:
+            frame = await self._receive_json(max(0.1, deadline - time.monotonic()))
+            if frame.get("id") != request_id:
+                continue
+            if frame.get("error"):
+                message = frame["error"].get("message") if isinstance(frame["error"], dict) else None
+                raise RuntimeError(message or f"Hermes RPC {method} failed")
+            result = frame.get("result")
+            return result if isinstance(result, dict) else {}
+
+    async def _connect(self, force_new: bool = False) -> None:
+        if self.websocket is not None and self.session_id:
+            return
+        url = await asyncio.to_thread(self.api.websocket_url, "/api/ws")
+        try:
+            self.websocket = await websockets.connect(
+                url,
+                open_timeout=10,
+                ping_interval=20,
+                ping_timeout=20,
+                max_size=4 * 1024 * 1024,
+            )
+            ready = await self._receive_json(15)
+            params = ready.get("params") if isinstance(ready, dict) else None
+            if not isinstance(params, dict) or params.get("type") != "gateway.ready":
+                raise RuntimeError("Hermes gateway did not become ready")
+
+            stored = None if force_new else load_session()
+            if stored:
+                try:
+                    result = await self._rpc("session.resume", {
+                        "session_id": stored,
+                        "source": "adam_voice",
+                        "defer_history": True,
+                    })
+                except Exception:
+                    clear_session()
+                    result = {}
+                self.session_id = result.get("session_id")
+
+            if not self.session_id:
+                result = await self._rpc("session.create", {
+                    "title": "Adam Voice",
+                    "source": "adam_voice",
+                    "cwd": BRIDGE_WORKDIR,
+                    "cols": 100,
+                    "close_on_disconnect": False,
+                })
+                self.session_id = str(result.get("session_id") or "") or None
+                stored = str(result.get("stored_session_id") or "")
+                if stored:
+                    store_session(stored)
+            if not self.session_id:
+                raise RuntimeError("Hermes did not create a voice session")
+        except Exception:
+            await self.close()
+            raise
+
+    async def ask(self, text: str, on_delta, on_attention=None) -> str:
+        """Submit one prompt and deliver assistant text deltas as they arrive."""
+        async with self._turn_lock:
+            for attempt in range(2):
+                try:
+                    await self._connect(force_new=attempt > 0)
+                    return await self._ask_connected(text, on_delta, on_attention)
+                except HermesAttentionRequired:
+                    await self.close()
+                    raise
+                except Exception:
+                    await self.close()
+                    if attempt:
+                        raise
+            raise RuntimeError("Hermes gateway turn failed")
+
+    async def _ask_connected(self, text: str, on_delta, on_attention=None) -> str:
+        if self.websocket is None or not self.session_id:
+            raise RuntimeError("Hermes gateway session is unavailable")
+
+        self._rpc_id += 1
+        request_id = f"adam-turn-{self._rpc_id}"
+        await self.websocket.send(json.dumps({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "prompt.submit",
+            "params": {"session_id": self.session_id, "text": text},
+        }))
+
+        collected = []
+        deadline = time.monotonic() + max(30, HERMES_RUN_BUDGET + 15)
+        attention_types = {"approval.request", "clarify.request", "sudo.request"}
+        while True:
+            frame = await self._receive_json(max(0.1, deadline - time.monotonic()))
+            if frame.get("id") == request_id and frame.get("error"):
+                error = frame.get("error")
+                message = error.get("message") if isinstance(error, dict) else None
+                raise RuntimeError(message or "Hermes rejected the prompt")
+
+            if frame.get("method") != "event":
+                continue
+            params = frame.get("params")
+            if not isinstance(params, dict) or params.get("session_id") != self.session_id:
+                continue
+            event_type = params.get("type")
+            payload = params.get("payload")
+            payload = payload if isinstance(payload, dict) else {}
+            if event_type == "message.delta":
+                delta = str(payload.get("text") or "")
+                if delta:
+                    collected.append(delta)
+                    await on_delta(delta)
+            elif event_type in attention_types:
+                if on_attention is not None:
+                    await on_attention(event_type)
+                # A voice-only surface cannot safely approve tools or answer a
+                # clarification prompt. Interrupt the pending turn and close
+                # this socket so the next wake reconnects to a clean event
+                # stream instead of consuming the old turn's completion.
+                self._rpc_id += 1
+                with contextlib.suppress(Exception):
+                    await self.websocket.send(json.dumps({
+                        "jsonrpc": "2.0",
+                        "id": f"adam-attention-{self._rpc_id}",
+                        "method": "session.interrupt",
+                        "params": {"session_id": self.session_id},
+                    }))
+                raise HermesAttentionRequired(event_type)
+            elif event_type == "message.complete":
+                final = str(payload.get("text") or "").strip()
+                return final or "".join(collected).strip()
+
+
+class HermesAttentionRequired(RuntimeError):
+    """The desktop Hermes session needs a human action unavailable by voice."""
+
+
+class HermesTTSStream:
+    """Pipe Hermes's configured sentence streamer to the phone WebSocket."""
+
+    def __init__(self, api, phone, request_id, send_lock):
+        self.api = api
+        self.phone = phone
+        self.request_id = request_id
+        self.send_lock = send_lock
+        self.websocket = None
+        self.receiver: asyncio.Task | None = None
+        self.phone_started = False
+        self.ended = False
+        self.bytes_sent = 0
+        self.sample_rate = 24_000
+        self.channels = 1
+        self.provider = "kokoro-mlx"
+        self.voice = "bm_george"
+
+    async def _phone_send(self, value) -> None:
+        async with self.send_lock:
+            await self.phone.send(value)
+
+    async def open(self) -> bool:
+        try:
+            url = await asyncio.to_thread(
+                self.api.websocket_url, "/api/audio/speak-stream"
+            )
+            self.websocket = await websockets.connect(
+                url, open_timeout=10, ping_interval=20, ping_timeout=20
+            )
+            first = json.loads(await asyncio.wait_for(self.websocket.recv(), 15))
+            if first.get("type") != "start":
+                await self.close(stop=True, end_phone=True)
+                return False
+            self.sample_rate = int(first.get("sample_rate") or 24_000)
+            self.channels = int(first.get("channels") or 1)
+            self.receiver = asyncio.create_task(self._receive())
+            return True
+        except Exception:
+            await self.close(stop=True, end_phone=True)
+            return False
+
+    async def _start_phone_audio(self) -> None:
+        """Switch the phone to playback only when real PCM is ready."""
+        if self.phone_started:
+            return
+        self.phone_started = True
+        await self._phone_send(json.dumps({
+            "type": "audio_start",
+            "request_id": self.request_id,
+            "sample_rate": self.sample_rate,
+            "channels": self.channels,
+            "format": "pcm_s16le",
+            "provider": self.provider,
+            "voice": self.voice,
+        }))
+
+    async def _end_phone_audio(self) -> None:
+        if not self.phone_started or self.ended:
+            return
+        self.ended = True
+        await self._phone_send(json.dumps({
+            "type": "audio_end",
+            "request_id": self.request_id,
+        }))
+
+    async def _end_phone_segment(self) -> None:
+        """Expose a natural sentence boundary without closing the response."""
+        if not self.phone_started or self.ended:
+            return
+        await self._phone_send(json.dumps({
+            "type": "audio_segment",
+            "request_id": self.request_id,
+        }))
+
+    async def feed(self, text: str) -> None:
+        if self.websocket is not None and text:
+            await self.websocket.send(json.dumps({"text": text}))
+
+    async def finish(self) -> bool:
+        if self.websocket is None:
+            return False
+        with contextlib.suppress(Exception):
+            await self.websocket.send(json.dumps({"done": True}))
+        if self.receiver is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self.receiver, timeout=90)
+        await self._end_phone_audio()
+        await self.close()
+        return self.bytes_sent > 0
+
+    async def _receive(self) -> None:
+        if self.websocket is None:
+            return
+        try:
+            async for frame in self.websocket:
+                if isinstance(frame, bytes):
+                    if not frame:
+                        continue
+                    await self._start_phone_audio()
+                    await self._phone_send(frame)
+                    self.bytes_sent += len(frame)
+                    continue
+                value = json.loads(frame)
+                if value.get("type") == "segment_end":
+                    await self._end_phone_segment()
+                    continue
+                if value.get("type") == "end":
+                    await self._end_phone_audio()
+                    return
+        except Exception:
+            pass
+
+    async def close(self, stop: bool = False, end_phone: bool = False) -> None:
+        upstream, self.websocket = self.websocket, None
+        if upstream is not None:
+            if stop:
+                with contextlib.suppress(Exception):
+                    await upstream.send(json.dumps({"stop": True}))
+            with contextlib.suppress(Exception):
+                await upstream.close()
+        receiver, self.receiver = self.receiver, None
+        current = asyncio.current_task()
+        if receiver is not None and receiver is not current and not receiver.done():
+            receiver.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await receiver
+        if end_phone:
+            with contextlib.suppress(Exception):
+                await self._end_phone_audio()
+
+
+async def process_audio_turn(
+    websocket,
+    capture: dict,
+    conn_state: dict,
+) -> None:
+    """Transcribe one phone capture, ask persistent Hermes, and stream TTS."""
+    request_id = capture["request_id"]
+    locale = sanitize_locale(capture.get("locale"))
+    pcm = bytes(capture["pcm"])
+    send_lock = conn_state.setdefault("send_lock", asyncio.Lock())
+    api = conn_state.setdefault("hermes_api", HermesLocalAPI())
+    gateway = conn_state.setdefault("gateway", HermesGateway(api))
+    tts = None
+    fallback_audio_open = False
+
+    async def phone_send(payload) -> None:
+        async with send_lock:
+            await websocket.send(payload)
+
+    try:
+        transcription = await asyncio.to_thread(
+            api.transcribe, pcm, locale, capture.get("vocabulary")
+        )
+        transcript = str(transcription.get("transcript") or "").strip()
+        await phone_send(json.dumps({
+            "type": "transcript",
+            "text": transcript,
+            "request_id": request_id,
+            "provider": transcription.get("provider"),
+        }))
+        if not transcript:
+            await phone_send(json.dumps({
+                "type": "error",
+                "request_id": request_id,
+                "message": "I did not catch that. Say Adam and try again.",
+            }))
+            return
+
+        await phone_send(json.dumps({
+            "type": "response_start",
+            "request_id": request_id,
+            "tts": True,
+        }))
+
+        # Kokoro is English-only. Latvian deliberately uses the British/male
+        # bridge fallback path until a local Latvian provider is available.
+        tts = HermesTTSStream(api, websocket, request_id, send_lock)
+        streaming_tts = locale != "lv-LV" and await tts.open()
+        delta_text = []
+
+        async def on_delta(delta: str) -> None:
+            delta_text.append(delta)
+            await phone_send(json.dumps({
+                "type": "response_delta",
+                "text": delta,
+                "request_id": request_id,
+            }))
+            if streaming_tts:
+                await tts.feed(delta)
+
+        async def on_attention(kind: str) -> None:
+            await phone_send(json.dumps({
+                "type": "attention",
+                "request_id": request_id,
+                "kind": kind,
+                "message": "Adam needs attention in Hermes on your Mac.",
+            }))
+
+        try:
+            response = await gateway.ask(
+                build_adam_query(transcript, locale), on_delta, on_attention
+            )
+        except HermesAttentionRequired:
+            response = (
+                "Man vajadzīga tava uzmanība Hermes lietotnē Mac datorā."
+                if locale == "lv-LV"
+                else "I need your attention in Hermes on the Mac before I can continue."
+            )
+        if streaming_tts and not delta_text and response:
+            await tts.feed(response)
+        response_text = response or "I'm not sure what to say."
+
+        await phone_send(json.dumps({
+            "type": "response",
+            "text": response_text,
+            "request_id": request_id,
+            "tts": True,
+            "provider": tts.provider if streaming_tts else "edge",
+            "voice": tts.voice if streaming_tts else (
+                "lv-LV-NilsNeural" if locale == "lv-LV" else "en-GB-RyanNeural"
+            ),
+        }))
+
+        if streaming_tts:
+            produced_audio = await tts.finish()
+            if not produced_audio:
+                streaming_tts = False
+        if not streaming_tts:
+            audio = await asyncio.to_thread(
+                synthesize_speech, response_text, locale
+            )
+            await phone_send(json.dumps({
+                "type": "audio_start",
+                "request_id": request_id,
+                "sample_rate": 24_000,
+                "channels": 1,
+                "format": "pcm_s16le",
+                "provider": "edge",
+                "voice": "lv-LV-NilsNeural" if locale == "lv-LV" else "en-GB-RyanNeural",
+            }))
+            fallback_audio_open = True
+            if audio:
+                for index in range(0, len(audio), 16_384):
+                    await phone_send(audio[index:index + 16_384])
+            await phone_send(json.dumps({
+                "type": "audio_end", "request_id": request_id
+            }))
+            fallback_audio_open = False
+    except Exception as error:
+        print(f"[Bridge] Realtime turn failed ({type(error).__name__})")
+        await phone_send(json.dumps({
+            "type": "error",
+            "request_id": request_id,
+            "message": "Adam could not complete that turn. Please try again.",
+        }))
+    finally:
+        if tts is not None:
+            await tts.close(stop=True, end_phone=True)
+        if fallback_audio_open:
+            with contextlib.suppress(Exception):
+                await phone_send(json.dumps({
+                    "type": "audio_end", "request_id": request_id
+                }))
+
+
 # ── Text-to-Speech ─────────────────────────────────────────────────────────
 
-def synthesize_speech(text: str) -> bytes | None:
+def synthesize_speech(text: str, locale: str = DEFAULT_LOCALE) -> bytes | None:
     """Convert text to speech. Always returns raw PCM16 mono 24kHz -
     the only format the app can play."""
     # Try Edge TTS first (better quality)
@@ -635,7 +1249,12 @@ def synthesize_speech(text: str) -> bytes | None:
         wav_tmp.close()
         try:
             async def _synth():
-                communicate = edge_tts.Communicate(text, "en-US-AriaNeural")
+                voice = (
+                    "lv-LV-NilsNeural"
+                    if sanitize_locale(locale) == "lv-LV"
+                    else "en-GB-RyanNeural"
+                )
+                communicate = edge_tts.Communicate(text, voice)
                 await communicate.save(mp3_tmp.name)
 
             asyncio.run(_synth())
@@ -938,8 +1557,28 @@ def welcome_message() -> str:
     """Return the handshake payload, including server capabilities."""
     return json.dumps({
         "type": "welcome",
-        "capabilities": {"vision": BRIDGE_VISION},
+        "protocol": 2,
+        "capabilities": {
+            "vision": BRIDGE_VISION,
+            "audio_upload": True,
+            "server_stt": True,
+            "streaming_tts": True,
+        },
     })
+
+
+def _validated_request_id(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value if value and len(value) <= 128 else None
+
+
+async def _send_protocol_error(websocket, message: str, request_id=None) -> None:
+    payload = {"type": "error", "message": message}
+    if request_id:
+        payload["request_id"] = request_id
+    await websocket.send(json.dumps(payload))
 
 
 async def handle_connection(websocket):
@@ -955,13 +1594,31 @@ async def handle_connection(websocket):
     # Send welcome to confirm connection and advertise optional capabilities.
     await websocket.send(welcome_message())
     # Per-connection context for photo-recency suppression
-    conn_state = {"last_photo_at": 0.0}
+    conn_state = {
+        "last_photo_at": 0.0,
+        "audio_capture": None,
+        "send_lock": asyncio.Lock(),
+    }
 
     try:
         async for message in websocket:
             if isinstance(message, bytes):
-                # Binary frames were the legacy mic-audio path; the app
-                # transcribes on-device now. Ignore them.
+                capture = conn_state.get("audio_capture")
+                if not capture:
+                    await _send_protocol_error(
+                        websocket, "Audio arrived before audio_start."
+                    )
+                    continue
+                if len(capture["pcm"]) + len(message) > HERMES_AUDIO_MAX_BYTES:
+                    request_id = capture.get("request_id")
+                    conn_state["audio_capture"] = None
+                    await _send_protocol_error(
+                        websocket,
+                        f"Audio is limited to {HERMES_AUDIO_MAX_SECONDS} seconds.",
+                        request_id,
+                    )
+                    continue
+                capture["pcm"].extend(message)
                 continue
 
             try:
@@ -974,7 +1631,67 @@ async def handle_connection(websocket):
                 continue
             msg_type = data.get("type")
 
-            if msg_type == "query":
+            if msg_type == "audio_start":
+                if conn_state.get("audio_capture") is not None:
+                    await _send_protocol_error(
+                        websocket, "An audio capture is already active."
+                    )
+                    continue
+                request_id = _validated_request_id(data.get("request_id"))
+                if request_id is None:
+                    await _send_protocol_error(
+                        websocket, "audio_start requires a valid request_id."
+                    )
+                    continue
+                if (
+                    data.get("format") != HERMES_AUDIO_FORMAT
+                    or data.get("sample_rate") != HERMES_AUDIO_SAMPLE_RATE
+                    or data.get("channels") != HERMES_AUDIO_CHANNELS
+                ):
+                    await _send_protocol_error(
+                        websocket,
+                        "Adam expects mono PCM16 audio at 16000 Hz.",
+                        request_id,
+                    )
+                    continue
+                conn_state["audio_capture"] = {
+                    "request_id": request_id,
+                    "locale": sanitize_locale(data.get("locale")),
+                    "vocabulary": _safe_vocabulary(data.get("vocabulary")),
+                    "pcm": bytearray(),
+                    "started_at": time.monotonic(),
+                }
+                await websocket.send(json.dumps({
+                    "type": "audio_ready", "request_id": request_id
+                }))
+
+            elif msg_type in {"audio_end", "end_of_audio"}:
+                capture = conn_state.get("audio_capture")
+                request_id = _validated_request_id(data.get("request_id"))
+                if not capture:
+                    await _send_protocol_error(
+                        websocket, "audio_end arrived without audio_start.", request_id
+                    )
+                    continue
+                if request_id and request_id != capture["request_id"]:
+                    await _send_protocol_error(
+                        websocket, "audio_end request_id does not match.", request_id
+                    )
+                    continue
+                conn_state["audio_capture"] = None
+                if len(capture["pcm"]) < 640 or len(capture["pcm"]) % 2:
+                    await _send_protocol_error(
+                        websocket,
+                        "The audio capture was empty or malformed.",
+                        capture["request_id"],
+                    )
+                    continue
+                print(
+                    f"[Bridge] Audio turn received ({len(capture['pcm'])} bytes)"
+                )
+                await process_audio_turn(websocket, capture, conn_state)
+
+            elif msg_type == "query":
                 # App transcribed on-device and sends text directly
                 text = (data.get("text") or "").strip()
                 if text:
@@ -996,6 +1713,9 @@ async def handle_connection(websocket):
                 # Forget the conversation; next query starts fresh
                 clear_session()
                 clear_claude_history()
+                gateway = conn_state.get("gateway")
+                if gateway is not None:
+                    await gateway.reset()
                 conn_state["last_photo_at"] = 0.0
                 print("[Bridge] Conversation reset by app")
                 await websocket.send(json.dumps({"type": "session_reset"}))
@@ -1013,6 +1733,9 @@ async def handle_connection(websocket):
         # diagnostics. Keep the launchd log metadata-only.
         print(f"[Bridge] Connection handler failed ({type(e).__name__})")
     finally:
+        gateway = conn_state.get("gateway")
+        if gateway is not None:
+            await gateway.close()
         print("[Bridge] Connection closed")
 
 
@@ -1041,7 +1764,7 @@ async def main():
 ║              Hermes Glasses Bridge Server                ║
 ║                                                          ║
 ║  Listening on ws://{HOST}:{PORT}/voice                       ║
-║  STT: on the phone - the app sends text queries          ║
+║  Wake: on iPhone · final STT: Hermes faster-whisper      ║
 ║  Brain: {BRAIN} {f"({CLAUDE_MODEL})" if _canon_brain(BRAIN) in ("anthropic", "openai", "gemini") else "(CLI agent)":<30}  ║
 ║                                                          ║
 ║  {connection_hint:<54}║

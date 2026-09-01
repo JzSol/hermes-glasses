@@ -35,7 +35,7 @@ func voice(
 // A British male wins even when a non-male British voice has a better quality
 // tier. Gender is a higher-level preference than quality.
 let malePriority = HermesSpeechVoicePolicy.select(
-    for: .englishUS,
+    for: .englishGB,
     voices: [
         voice("British Premium", "en-GB", quality: 3, gender: .female),
         voice("British Default", "en-GB", quality: 1, gender: .male),
@@ -51,7 +51,7 @@ expect(malePriority?.britishVoiceNotice == nil,
 
 // Quality decides within the British-male tier.
 let qualityPriority = HermesSpeechVoicePolicy.select(
-    for: .englishUS,
+    for: .englishGB,
     voices: [
         voice("British Enhanced", "en-GB", quality: 2, gender: .male),
         voice("British Premium", "en-GB", quality: 3, gender: .male)
@@ -62,7 +62,7 @@ expect(qualityPriority?.descriptor.name == "British Premium",
 
 // When no male British voice exists, the best exact en-GB voice is retained.
 let britishFallback = HermesSpeechVoicePolicy.select(
-    for: .englishUS,
+    for: .englishGB,
     voices: [
         voice("British Enhanced", "en-GB", quality: 2, gender: .female),
         voice("British Premium", "en-GB", quality: 3, gender: .unspecified)
@@ -77,23 +77,22 @@ expect(britishFallback?.britishVoiceNotice?.contains("British male") == true,
 
 // An underscore and case variation still represent exact en-GB.
 let normalizedBritish = HermesSpeechVoicePolicy.select(
-    for: .englishUS,
+    for: .englishGB,
     voices: [voice("British Male", "EN_gb", quality: 2, gender: .male)]
 )
 expect(normalizedBritish?.kind == .britishMale,
        "British locale matching normalizes case and separators")
 
-// With no British voices, preserve en-US before considering another English
-// region, even if the other region has a higher quality tier.
+// With no British voices, use the best available English fallback.
 let englishFallback = HermesSpeechVoicePolicy.select(
-    for: .englishUS,
+    for: .englishGB,
     voices: [
         voice("Australian Premium", "en-AU", quality: 3),
         voice("US Enhanced", "en-US", quality: 2)
     ]
 )
-expect(englishFallback?.descriptor.name == "US Enhanced",
-       "English fallback preserves the requested en-US locale")
+expect(englishFallback?.descriptor.name == "Australian Premium",
+       "English fallback uses the best installed English voice")
 expect(englishFallback?.kind == .sameLanguageFallback,
        "English fallback is classified correctly")
 expect(englishFallback?.britishVoiceNotice?.contains("not installed") == true,
@@ -101,7 +100,7 @@ expect(englishFallback?.britishVoiceNotice?.contains("not installed") == true,
 
 // Quality wins first and the localized name is the deterministic tie-break.
 let tieBreak = HermesSpeechVoicePolicy.select(
-    for: .englishUS,
+    for: .englishGB,
     voices: [
         voice("Zed", "en-US", quality: 3),
         voice("Alice", "en-US", quality: 3)

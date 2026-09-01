@@ -14,22 +14,24 @@ func expect(_ condition: Bool, _ label: String) {
     }
 }
 
-expect(VoiceLocale.allCases.map(\.rawValue) == ["en-US", "lv-LV"],
+expect(VoiceLocale.allCases.map(\.rawValue) == ["en-GB", "lv-LV"],
        "supported locale identifiers are stable")
-expect(VoiceLocale.englishUS.label == "English (US)", "English label")
+expect(VoiceLocale.englishGB.label == "English (UK)", "English label")
 expect(VoiceLocale.latvianLV.label == "Latvian", "Latvian label")
-expect(VoiceLocale(identifier: "en_US") == .englishUS,
-       "underscore identifier normalizes to English")
+expect(VoiceLocale(identifier: "en_US") == .englishGB,
+       "legacy US identifier migrates to British English")
+expect(VoiceLocale(identifier: "en-GB") == .englishGB,
+       "British English identifier parses")
 expect(VoiceLocale(identifier: "LV-lv") == .latvianLV,
        "identifier matching is case insensitive")
 expect(VoiceLocale(identifier: "de-DE") == nil,
        "unsupported locale is rejected")
-expect(VoiceLocale.englishUS.replyLanguageDirective.localizedCaseInsensitiveContains("English"),
+expect(VoiceLocale.englishGB.replyLanguageDirective.localizedCaseInsensitiveContains("English"),
        "English reply directive names English")
 expect(VoiceLocale.latvianLV.replyLanguageDirective.localizedCaseInsensitiveContains("latviešu"),
        "Latvian reply directive names Latvian")
-expect(VoiceLocale.englishUS.speechLocale.identifier == "en-US",
-       "English speech locale")
+expect(VoiceLocale.englishGB.speechLocale.identifier == "en-GB",
+       "British English speech locale")
 expect(VoiceLocale.latvianLV.speechLocale.identifier == "lv-LV",
        "Latvian speech locale")
 

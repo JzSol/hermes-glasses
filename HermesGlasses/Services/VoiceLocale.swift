@@ -10,14 +10,14 @@ import Foundation
 
 /// A supported recognition and reply language.
 enum VoiceLocale: String, CaseIterable, Codable, Sendable {
-    case englishUS = "en-US"
+    case englishGB = "en-GB"
     case latvianLV = "lv-LV"
 
     /// Short name suitable for a language picker.
     var label: String {
         switch self {
-        case .englishUS:
-            return "English (US)"
+        case .englishGB:
+            return "English (UK)"
         case .latvianLV:
             return "Latvian"
         }
@@ -40,8 +40,8 @@ enum VoiceLocale: String, CaseIterable, Codable, Sendable {
     /// in the language chosen by the wearer.
     var replyLanguageDirective: String {
         switch self {
-        case .englishUS:
-            return "Reply in English (US)."
+        case .englishGB:
+            return "Reply in British English."
         case .latvianLV:
             return "Atbildi latviešu valodā."
         }
@@ -67,8 +67,10 @@ enum VoiceLocale: String, CaseIterable, Codable, Sendable {
             .lowercased()
 
         switch normalized {
-        case "en-us":
-            self = .englishUS
+        case "en-gb", "en-us", "en":
+            // Migrate the prototype's previous en-US setting to the British
+            // recognition/reply contract without making the user reset it.
+            self = .englishGB
         case "lv-lv":
             self = .latvianLV
         default:

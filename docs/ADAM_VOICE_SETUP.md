@@ -8,15 +8,19 @@ a paid Apple Developer membership for a personal prototype.
 ## What runs where
 
 - Ray-Bans: Bluetooth HFP microphone and speaker.
-- iPhone: the `Adam` wake word, English/Latvian speech recognition, generated
-  listening cues, and local speech synthesis.
-- Mac: authenticated Hermes bridge and Hermes Agent.
+- iPhone: the `Adam` wake word and utterance-boundary detection, generated
+  listening cues, bounded HFP gain, and high-quality PCM playback.
+- Mac: authenticated Hermes bridge, faster-whisper final transcription,
+  persistent Hermes Agent session, and Kokoro MLX speech synthesis.
 - Tailscale: private TLS WebSocket from the iPhone to the loopback-only bridge.
 
-Audio is not sent to the Mac. The app sends only finalized command text and
-receives reply text. Apple Speech may use Apple's service when the selected
-language is not available for on-device recognition; the app shows that
-capability explicitly.
+After `Adam` opens a command window, the captured mono PCM command is sent to
+the Mac over the private Tailscale WebSocket. Apple's recognizer is used only
+for wake/boundary detection; Hermes's local faster-whisper transcript is the
+text shown as **Heard** and sent to the agent. English reply audio is generated
+locally on the Mac and streamed back as PCM. Natural sentence boundaries are
+queued on the iPhone, so George can begin the first sentence while Hermes is
+still generating the rest of the answer.
 
 ## 1. Configure the bridge
 
@@ -37,7 +41,7 @@ HERMES_BRIDGE_HOST=127.0.0.1
 HERMES_BRIDGE_PORT=8765
 HERMES_BRIDGE_VISION=false
 HERMES_BRIDGE_BRAIN=hermes
-HERMES_BRIDGE_TTS=0
+HERMES_BRIDGE_API_BASE=http://127.0.0.1:9119
 ```
 
 The bridge refuses to bind without a token. Keep it on loopback and expose it
@@ -69,8 +73,8 @@ The bridge-local `.env` remains the source of its secret and runtime settings.
 
 ## 2. Provider subscriptions
 
-The bridge invokes the normal Hermes CLI, so subscription authentication lives
-in Hermes rather than in the iPhone app.
+The bridge uses Hermes's local dashboard/gateway APIs, so subscription
+authentication lives in Hermes rather than in the iPhone app.
 
 - Authenticate OpenAI/Codex in Hermes and use `openai-codex` as the primary
   provider.
@@ -81,7 +85,59 @@ Hermes can also discover a valid Claude Code subscription credential in the
 user's standard Claude configuration. Do not paste either provider's token
 into Adam or `bridge/.env`.
 
-## 3. Build with a free Apple ID
+## 3. Install local speech on the Mac
+
+Install and enable the Kokoro MLX plugin, then install its two runtime
+dependencies into the same virtual environment as Hermes:
+
+```bash
+hermes plugins install JzSol/hermes-kokoro-mlx --enable
+uv pip install --python ~/.hermes/hermes-agent/.venv/bin/python \
+  "kokoro-mlx>=0.1.2,<0.2" \
+  "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+hermes plugins doctor kokoro-mlx
+```
+
+Configure the relevant voice sections in `~/.hermes/config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+    - kokoro-mlx
+tts:
+  provider: kokoro-mlx
+  voice: bm_george
+  speed: 1.0
+  streaming:
+    provider: kokoro-mlx
+  kokoro-mlx:
+    voice: bm_george
+    speed: 1.0
+    sample_rate: 24000
+  edge:
+    voice: en-GB-RyanNeural
+stt:
+  provider: local
+  local:
+    model: small
+    language: ''
+    device: cpu
+    compute_type: int8
+    vad: true
+    vad_min_silence_ms: 350
+```
+
+Restart the loopback Hermes service after changing plugins or voice
+configuration:
+
+```bash
+hermes serve --host 127.0.0.1 --port 9119
+```
+
+The plugin warms George in the background; its first start downloads the
+local model weights. Hermes also downloads faster-whisper `small` once.
+
+## 4. Build with a free Apple ID
 
 Create the ignored machine-local build configuration first:
 
@@ -105,7 +161,7 @@ Free personal signing is enough for this prototype, but iOS normally requires
 the app to be rebuilt periodically. The AdamVoice target has no Meta SDK,
 camera, location, or glasses-registration permission.
 
-## 4. First run
+## 5. First run
 
 1. Pair the Ray-Bans to the iPhone in the Meta AI app and confirm they can act
    as a Bluetooth call device.
@@ -117,22 +173,21 @@ camera, location, or glasses-registration permission.
 6. Confirm the Input row says `Ray-Ban HFP`. If it says iPhone microphone,
    reconnect the glasses' Bluetooth audio and restart the session.
 7. Say “Adam, what time is it?” or say “Adam”, wait for the flute/listening
-   state, then speak the command. Adam answers with the best installed British
-   male voice when English is selected.
-8. For the next 30 seconds after an answer, ask follow-up questions without
-   repeating `Adam`. Partial speech extends that window; after it closes, say
-   `Adam` again.
+   state, then speak the command. The **Heard** line is Hermes's final local
+   transcript and English replies use George, a British male Kokoro voice.
+8. Say `Adam` again for every new turn. Post-response conversation without the
+   wake word is ignored.
 
-The **Continuous follow-ups** and **Listening sounds** switches are enabled by
-default. Listening sounds use a quiet generated flute loop on the Ray-Ban HFP
-route and a short opening cue on the iPhone-mic fallback. A droplet confirms
-that the command was accepted. No recorded or licensed audio assets are used.
+The **Listening sounds** switch is enabled by default. One short, quiet
+generated flute cue marks the open command window; recording itself stays
+silent so the cue cannot contaminate Whisper. A droplet confirms that the
+command was accepted. No recorded or licensed cue assets are used.
 
 If Adam reports that the input is very quiet, confirm the Input row still names
 the Ray-Bans. The app requests the route's highest supported hardware gain and
-applies bounded recognition-only amplification; unsupported HFP gain controls
-are handled automatically. To install a different British voice, use iPhone
-**Settings → Accessibility → Spoken Content → Voices → English (UK)**.
+applies bounded amplification to separate wake-recognition and bridge-upload
+copies; unsupported HFP gain controls are handled automatically. The original
+recording buffer is not modified.
 
 ## Prototype limits
 
@@ -144,6 +199,6 @@ are handled automatically. To install a different British voice, use iPhone
 - Ray-Ban HFP uses call-quality audio. If another Bluetooth call device wins
   the route, Adam reports the actual input instead of claiming it is the
   glasses.
-- The generated flute is deliberately quiet and runs only while Adam is
-  actively accepting a command, not while merely waiting for the wake word,
+- The generated flute is deliberately quiet and plays once when Adam begins
+  accepting a command, not while merely waiting for the wake word, recording,
   processing, or speaking.
