@@ -48,37 +48,37 @@ if git rev-list --min-parents=2 "${remote_ref}..HEAD" | grep -q .; then
     fail "merge commits require a manual review and push"
 fi
 
-invalid_paths=$(
+invalid_paths=`
     git diff --name-only "${remote_ref}..HEAD" | while IFS= read -r path; do
         case "$path" in
-            AdamVoice/* | \
-            HermesGlasses/Services/HermesAudioManager.swift | \
-            HermesGlasses/Services/HermesAPIClient.swift | \
-            HermesGlasses/Services/HermesSpeechRecognizer.swift | \
-            HermesGlasses/Services/HermesSpeechSynthesizer.swift | \
-            HermesGlasses/Services/VoiceLocale.swift | \
-            HermesGlasses/Services/WakeWordGate.swift | \
-            HermesGlasses/Services/HermesEndpointPolicy.swift | \
-            HermesGlasses/Services/BridgeCredentials.swift | \
-            HermesGlasses/Services/AdamSpeechSignal.swift | \
-            HermesGlasses/Services/AdamSoundscapeWaveform.swift | \
-            HermesGlasses/Services/AdamSoundscapeManager.swift | \
-            Config/AdamVoice.xcconfig | \
-            Config/AdamVoice.example.xcconfig | \
-            docs/ADAM_VOICE_SETUP.md | \
-            tests/adam-signal/* | \
-            tests/adam-soundscape/* | \
-            tests/endpoint/* | \
-            tests/speech-voice/* | \
-            tests/voice-locale/* | \
-            tests/wake-word/*)
-                ;;
+            AdamVoice/*) : ;;
+            HermesGlasses/Services/HermesAudioManager.swift) : ;;
+            HermesGlasses/Services/HermesAPIClient.swift) : ;;
+            HermesGlasses/Services/HermesSpeechRecognizer.swift) : ;;
+            HermesGlasses/Services/HermesSpeechSynthesizer.swift) : ;;
+            HermesGlasses/Services/VoiceLocale.swift) : ;;
+            HermesGlasses/Services/WakeWordGate.swift) : ;;
+            HermesGlasses/Services/HermesEndpointPolicy.swift) : ;;
+            HermesGlasses/Services/BridgeCredentials.swift) : ;;
+            HermesGlasses/Services/AdamSpeechSignal.swift) : ;;
+            HermesGlasses/Services/AdamSoundscapeWaveform.swift) : ;;
+            HermesGlasses/Services/AdamSoundscapeManager.swift) : ;;
+            Config/AdamVoice.xcconfig) : ;;
+            Config/AdamVoice.example.xcconfig) : ;;
+            docs/ADAM_VOICE_SETUP.md) : ;;
+            scripts/push-adam-testing.sh) : ;;
+            tests/adam-signal/*) : ;;
+            tests/adam-soundscape/*) : ;;
+            tests/endpoint/*) : ;;
+            tests/speech-voice/*) : ;;
+            tests/voice-locale/*) : ;;
+            tests/wake-word/*) : ;;
             *)
                 printf '%s\n' "$path"
                 ;;
         esac
     done
-)
+`
 
 [ -z "$invalid_paths" ] || {
     printf 'Adam test push blocked: commit contains paths outside the Adam test allowlist:\n%s\n' \
