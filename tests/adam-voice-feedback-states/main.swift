@@ -43,11 +43,59 @@ expectEqual(AdamVoiceFeedbackPolicy.phase(for: .failed), .failure, "failure maps
 expect(AdamVoiceFeedbackPolicy.phase(for: .hearingSpeech).usesWaveform, "hearing uses waveform")
 expect(!AdamVoiceFeedbackPolicy.phase(for: .thinking).usesWaveform, "thinking uses pulse instead")
 
-for phrase in ["That's it", "Thats it!", "THAT IS IT.", "That’s it…", "Thatʼs it", "ＴＨＡＴＳ ＩＴ"] {
+for phrase in [
+    "That's it", "Thats it!", "THAT IS IT.", "That’s it…", "Thatʼs it",
+    "ＴＨＡＴＳ ＩＴ", "that s it", "thatsit", "that'sit",
+] {
     expect(AdamFinishPhrasePolicy.isStandaloneFinishPhrase(phrase), "finish phrase normalizes \(phrase)")
 }
 for phrase in ["do that's it", "that's it please", "that is it now", "that's"] {
     expect(!AdamFinishPhrasePolicy.isStandaloneFinishPhrase(phrase), "finish phrase rejects \(phrase)")
 }
+
+var finishGate = AdamFinishPhraseGate()
+expect(!finishGate.consumeIfMatched("that's"), "incremental prefix does not finish early")
+expect(finishGate.consumeIfMatched("that's it"), "first complete partial finishes immediately")
+expect(!finishGate.consumeIfMatched("That's it!"), "later final is a harmless duplicate")
+finishGate.reset()
+expect(!finishGate.consumeIfMatched("I think that's it"), "embedded conversation does not finish")
+expect(finishGate.consumeIfMatched("that is it"), "reset accepts the next finish marker")
+
+for (transcript, expected) in [
+    ("open gates That's it", "open gates"),
+    ("close gates that s it!", "close gates"),
+    ("open gates thatsit", "open gates"),
+    ("close gates that is it…", "close gates"),
+    ("That's it", ""),
+] {
+    expectEqual(
+        AdamFinishPhrasePolicy.strippingTrailingFinishPhrase(from: transcript),
+        expected,
+        "finish marker strips from \(transcript)"
+    )
+}
+expectEqual(
+    AdamFinishPhrasePolicy.strippingTrailingFinishPhrase(
+        from: "tell me why that's it please"
+    ),
+    "tell me why that's it please",
+    "ordinary conversational phrase is preserved"
+)
+
+var ready = AdamReadyCueGate()
+let readyTicket = ready.arm()
+expect(!ready.isBlockingCapture, "ready cue does not block before capture restore")
+expect(ready.beginIfCaptureReady(ticket: readyTicket), "restored capture begins ready cue")
+expect(ready.isBlockingCapture, "playing ready cue blocks recognition and VAD")
+expect(!ready.beginIfCaptureReady(ticket: readyTicket), "ready cue plays only once")
+expect(ready.complete(ticket: readyTicket), "ready cue completes once")
+expect(!ready.complete(ticket: readyTicket), "duplicate completion is rejected")
+
+let staleReady = ready.arm()
+ready.cancel()
+expect(!ready.beginIfCaptureReady(ticket: staleReady), "cancel invalidates stale ready cue")
+let failedReady = ready.arm()
+ready.cancel()
+expect(!ready.beginIfCaptureReady(ticket: failedReady), "failure path cannot play ready cue")
 
 exit(failures == 0 ? 0 : 1)

@@ -33,6 +33,7 @@ struct AdamVoiceView: View {
             }
 
             statusNotices
+            manualListeningControl
             capabilityStrip
 
             sessionBar
@@ -58,7 +59,7 @@ struct AdamVoiceView: View {
         AssistantSessionBar(
             isRunning: session.isRunning,
             micLevel: session.micLevel,
-            statusLabel: session.status.label,
+            statusLabel: session.statusLabel,
             isError: session.status == .failed,
             startTitle: "Start listening",
             canStart: session.tokenConfigured,
@@ -135,7 +136,7 @@ struct AdamVoiceView: View {
                     .kerning(-0.5)
                     .multilineTextAlignment(.center)
 
-                Text("Say “Adam”, wait for the rising cue, then ask your question. Replies play through your Ray-Ban speakers.")
+                Text(welcomeInstructions)
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -146,6 +147,46 @@ struct AdamVoiceView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 20)
+    }
+
+    private var welcomeInstructions: String {
+        if session.wakeWordEnabled {
+            return "Say “Adam”, wait for the rising cue, then ask your question. Replies play through your Ray-Ban speakers."
+        }
+        return "Tap Start listening, wait for the rising cue, then ask your question. Replies play through your Ray-Ban speakers."
+    }
+
+    @ViewBuilder
+    private var manualListeningControl: some View {
+        if session.isRunning, !session.wakeWordEnabled {
+            Button {
+                session.startManualListening()
+            } label: {
+                HStack(spacing: 8) {
+                    if session.isManualListeningStarting {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "mic.fill")
+                    }
+                    Text(manualListeningTitle)
+                        .fontWeight(.semibold)
+                }
+                .frame(maxWidth: .infinity, minHeight: 48)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!session.canStartManualListening)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
+            .accessibilityLabel(manualListeningTitle)
+            .accessibilityHint(session.canStartManualListening
+                ? "Starts the Ray-Ban microphone and opens one Adam command window."
+                : "Wait until Adam is ready.")
+        }
+    }
+
+    private var manualListeningTitle: String {
+        session.manualListeningControlState.title
     }
 
     @ViewBuilder
@@ -188,7 +229,9 @@ struct AdamVoiceView: View {
         case .wakeAcknowledged, .hearingSpeech, .awaitingCommand:
             return "Listening through the Ray-Ban microphone…"
         default:
-            return "Recognizing the wake phrase on this iPhone…"
+            return session.wakeWordEnabled
+                ? "Recognizing the wake phrase on this iPhone…"
+                : "Tap Start listening when you are ready…"
         }
     }
 
@@ -242,7 +285,7 @@ private struct AdamSettingsView: View {
                 HermesDeviceCard(
                     title: "Ray-Ban audio",
                     status: session.isRunning ? session.micRoute : "Ready when Adam starts",
-                    dot: session.isRunning ? HermesTheme.online : .gray,
+                    dot: session.isMicrophoneCaptureActive ? HermesTheme.online : .gray,
                     chips: [
                         (label: "Audio", available: true),
                         (label: "History", available: true),
@@ -354,7 +397,9 @@ private struct AdamSettingsView: View {
     private var voiceSection: some View {
         HermesSection(
             header: "Voice & microphone",
-            footer: "The wake recognizer runs on this iPhone. Command audio is transcribed by the configured Hermes bridge."
+            footer: session.wakeWordEnabled
+                ? "The wake recognizer runs on this iPhone. Command audio is transcribed by the configured Hermes bridge."
+                : "Manual mode keeps the microphone and speech recognizer off until you tap Start listening."
         ) {
             Picker(
                 "Language",
@@ -369,6 +414,24 @@ private struct AdamSettingsView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
+
+            HermesDivider()
+
+            Toggle(
+                "Listen for “Adam”",
+                isOn: Binding(
+                    get: { session.wakeWordEnabled },
+                    set: { session.setWakeWordEnabled($0) }
+                )
+            )
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .disabled(!session.canChangeActivationMode)
+            .accessibilityHint(
+                session.canChangeActivationMode
+                    ? "Turns background Adam wake-word listening on or off."
+                    : "Available after the current voice turn finishes."
+            )
 
             HermesDivider()
 

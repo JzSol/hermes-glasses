@@ -149,7 +149,60 @@ final class AdamVoiceSession {
     var isRunning = false
     var listeningSoundsEnabled: Bool
     var hapticsEnabled: Bool
+    var wakeWordEnabled: Bool
+    var isManualListeningStarting = false
+    var isManualListeningActive = false
     var isWakeCueCaptureGuardActive: Bool { wakeCueCaptureGate.isBlocking }
+    var activationMode: AdamVoiceActivationMode {
+        wakeWordEnabled ? .wakeWord : .manual
+    }
+    var isMicrophoneCaptureActive: Bool { capturePipelineActive }
+    var canStartManualListening: Bool {
+        !wakeWordEnabled
+            && isRunning
+            && bridgeConnected
+            && manualListeningGate.isIdle
+            && pendingRequestID == nil
+            && outputKind == nil
+            && status != .failed
+    }
+    var manualListeningControlState: AdamManualListeningControlState {
+        let isVoiceWindow: Bool
+        switch status {
+        case .wakeAcknowledged, .hearingSpeech, .paused, .awaitingCommand:
+            isVoiceWindow = true
+        default:
+            isVoiceWindow = false
+        }
+        return AdamVoiceActivationPolicy.controlState(
+            isStarting: isManualListeningStarting,
+            isListening: isManualListeningActive,
+            isVoiceWindow: isVoiceWindow
+        )
+    }
+    var canChangeActivationMode: Bool {
+        guard !isManualListeningStarting, !isManualListeningActive else {
+            return false
+        }
+        switch status {
+        case .idle, .armed, .listening, .reconnecting, .failed:
+            return true
+        default:
+            return false
+        }
+    }
+    var statusLabel: String {
+        if !wakeWordEnabled, isManualListeningStarting {
+            return "Starting microphone…"
+        }
+        if !wakeWordEnabled, isRunning, manualListeningGate.isIdle,
+           pendingRequestID == nil, outputKind == nil, status != .failed {
+            return bridgeConnected
+                ? "Ready — tap Start listening"
+                : Status.reconnecting.label
+        }
+        return status.label
+    }
 
     private var feedbackState: AdamVoiceFeedbackState {
         switch status {
@@ -191,6 +244,7 @@ final class AdamVoiceSession {
     static let localeKey = "adam_voice_locale"
     static let listeningSoundsKey = "adam_listening_sounds"
     static let hapticsKey = "adam_haptics"
+    static let wakeWordEnabledKey = "adam_wake_word_enabled"
     static let vocabularyKey = "adam_voice_vocabulary"
     /// A neutral development value.  The real Tailscale host belongs in the
     /// user's settings and is deliberately not part of the source tree.
@@ -220,10 +274,17 @@ final class AdamVoiceSession {
     @ObservationIgnored private let credentials = BridgeCredentials()
     @ObservationIgnored private var wakeGate = WakeWordGate()
     @ObservationIgnored private var wakeCueCaptureGate = WakeCueCaptureGate()
+    @ObservationIgnored private var finishPhraseGate = AdamFinishPhraseGate()
+    @ObservationIgnored private var readyCueGate = AdamReadyCueGate()
+    @ObservationIgnored private var readyCueTicket: UInt64?
+    @ObservationIgnored private var manualListeningGate = AdamManualListeningGate()
+    @ObservationIgnored private var capturePipelineActive = false
+    @ObservationIgnored private var activationTask: Task<Void, Never>?
     @ObservationIgnored private var startTask: Task<Void, Never>?
     @ObservationIgnored private var reconnectTask: Task<Void, Never>?
     @ObservationIgnored private var commandWindowTask: Task<Void, Never>?
     @ObservationIgnored private var wakeCueResumeTask: Task<Void, Never>?
+    @ObservationIgnored private var readyCueTask: Task<Void, Never>?
     @ObservationIgnored private var responseTimeoutTask: Task<Void, Never>?
     @ObservationIgnored private var pendingRequestID: String?
     @ObservationIgnored private var speechResumeTask: Task<Void, Never>?
@@ -246,7 +307,6 @@ final class AdamVoiceSession {
     @ObservationIgnored private var lastUtteranceAudio = Data()
     @ObservationIgnored private var isCapturingUtterance = false
     @ObservationIgnored private var commandCaptureOpen = false
-    @ObservationIgnored private var finishPhraseSent = false
     @ObservationIgnored private var playbackSampleRate = 24_000
     @ObservationIgnored private var captureRestoreTask: Task<Void, Never>?
     @ObservationIgnored private var captureRestoreSerial = 0
@@ -281,6 +341,11 @@ final class AdamVoiceSession {
             forKey: Self.listeningSoundsKey
         ) as? Bool ?? true
         hapticsEnabled = defaults.object(forKey: Self.hapticsKey) as? Bool ?? true
+        wakeWordEnabled = AdamVoiceActivationPolicy.mode(
+            storedWakeWordEnabled: defaults.object(
+                forKey: Self.wakeWordEnabledKey
+            ) as? Bool
+        ) == .wakeWord
         vocabulary = defaults.string(forKey: Self.vocabularyKey)
             ?? "Janis, Hermes, Ray-Ban, Tailscale"
         speechRecognizer = HermesSpeechRecognizer(locale: savedLocale)
@@ -348,6 +413,121 @@ final class AdamVoiceSession {
         guard hapticsEnabled != enabled else { return }
         hapticsEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.hapticsKey)
+    }
+
+    func setWakeWordEnabled(_ enabled: Bool) {
+        guard wakeWordEnabled != enabled else { return }
+        wakeWordEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.wakeWordEnabledKey)
+        guard canChangeActivationMode else {
+            // The persisted choice takes effect as the current turn settles.
+            // Disabling wake mode also prevents a new automatic follow-up.
+            resetManualListeningGate()
+            return
+        }
+        let previousActivation = activationTask
+        previousActivation?.cancel()
+        activationTask = nil
+        resetManualListeningGate()
+        commandWindowTask?.cancel()
+        commandWindowTask = nil
+        invalidatePauseWork()
+        resetCommandCapture()
+        _ = wakeGate.cancel()
+        cancelReadyCueWork(resumeRecognizer: false)
+
+        guard isRunning else { return }
+        if enabled {
+            if capturePipelineActive {
+                if pendingRequestID == nil, outputKind == nil {
+                    status = bridgeConnected ? .armed : .reconnecting
+                }
+                return
+            }
+            let generation = runGeneration
+            if pendingRequestID == nil, outputKind == nil {
+                status = .connecting
+            }
+            activationTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let previousActivation {
+                    await previousActivation.value
+                }
+                guard !Task.isCancelled else { return }
+                do {
+                    try await self.startCapturePipeline(generation: generation)
+                    guard !Task.isCancelled, self.isRunning,
+                          self.runGeneration == generation,
+                          self.wakeWordEnabled else {
+                        self.activationTask = nil
+                        self.stopCapturePipeline()
+                        return
+                    }
+                    self.activationTask = nil
+                    if self.pendingRequestID == nil, self.outputKind == nil {
+                        self.status = self.bridgeConnected ? .armed : .reconnecting
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    self.activationTask = nil
+                    self.errorMessage = error.localizedDescription
+                    self.status = .failed
+                }
+            }
+        } else if pendingRequestID == nil, outputKind == nil {
+            stopCapturePipeline()
+            status = bridgeConnected ? .armed : .reconnecting
+        }
+    }
+
+    /// Begin one manual turn with the exact same command window and capture
+    /// path as the wake phrase. The small pure gate rejects double taps while
+    /// microphone authorization and route setup are still in flight.
+    func startManualListening() {
+        guard canStartManualListening,
+              let ticket = manualListeningGate.begin() else { return }
+        isManualListeningStarting = true
+        isManualListeningActive = false
+        let generation = runGeneration
+        errorMessage = nil
+        let previousActivation = activationTask
+        previousActivation?.cancel()
+        activationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let previousActivation {
+                await previousActivation.value
+            }
+            guard !Task.isCancelled else { return }
+            do {
+                try await self.startCapturePipeline(generation: generation)
+                guard !Task.isCancelled, self.isRunning,
+                      self.runGeneration == generation,
+                      !self.wakeWordEnabled,
+                      self.manualListeningGate.markListening(ticket: ticket) else {
+                    self.activationTask = nil
+                    self.resetManualListeningGate()
+                    self.stopCapturePipeline()
+                    return
+                }
+                self.activationTask = nil
+                self.isManualListeningStarting = false
+                self.isManualListeningActive = true
+                self.finishPhraseGate.reset()
+                _ = self.wakeGate.beginCommandWindow()
+                self.status = .wakeAcknowledged
+                self.startListeningSoundscape()
+                self.armCommandWindowTimeout()
+            } catch is CancellationError {
+                return
+            } catch {
+                self.activationTask = nil
+                self.resetManualListeningGate()
+                self.stopCapturePipeline()
+                self.errorMessage = error.localizedDescription
+                self.status = .failed
+            }
+        }
     }
 
     func saveVocabulary(_ value: String) {
@@ -486,9 +666,10 @@ final class AdamVoiceSession {
 
     func resetConversation() {
         invalidatePauseWork()
+        cancelReadyCueWork(resumeRecognizer: false)
         let requestID = pendingRequestID
-        let shouldRestoreCapture = outputKind == .bridgeAudio
-            || captureRestoreTask != nil
+        let shouldRestoreCapture = (wakeWordEnabled || !manualListeningGate.isIdle)
+            && (outputKind == .bridgeAudio || captureRestoreTask != nil)
         if let requestID {
             _ = bridgeClient?.sendCancelTurn(requestID: requestID)
         }
@@ -502,7 +683,7 @@ final class AdamVoiceSession {
         pendingRequestID = nil
         activeCaptureIsFollowUp = false
         commandCaptureOpen = false
-        finishPhraseSent = false
+        finishPhraseGate.reset()
         commandWindowTask?.cancel()
         commandWindowTask = nil
         pendingBridgeAudio = false
@@ -515,9 +696,14 @@ final class AdamVoiceSession {
         preRollAudio.removeAll(keepingCapacity: true)
         bridgeClient?.sendNewSession()
         if isRunning, shouldRestoreCapture {
-            restoreCaptureAfterPlayback(generation: turnGeneration)
+            status = bridgeConnected ? .armed : .reconnecting
+            restoreCaptureAfterPlayback(
+                generation: turnGeneration,
+                completeTurn: false
+            )
         } else if isRunning {
             status = bridgeConnected ? .armed : .reconnecting
+            stopManualCaptureIfIdle()
         }
         lastCommand = ""
         lastResponse = ""
@@ -540,10 +726,15 @@ final class AdamVoiceSession {
         wakeCueResumeTask?.cancel()
         wakeCueResumeTask = nil
         wakeCueCaptureGate.cancel()
+        activationTask?.cancel()
+        activationTask = nil
+        resetManualListeningGate()
+        cancelReadyCueWork(resumeRecognizer: false)
         invalidatePauseWork()
         audioManager.setSpeechDetectionSuppressed(false)
         runGeneration += 1
         isRunning = true
+        refreshAudioRoute()
         sensoryFeedbackEvent = .idle
         status = .connecting
         bridgeConnected = false
@@ -565,7 +756,7 @@ final class AdamVoiceSession {
         lastUtteranceAudio.removeAll(keepingCapacity: true)
         isCapturingUtterance = false
         commandCaptureOpen = false
-        finishPhraseSent = false
+        finishPhraseGate.reset()
         wireServices()
 
         let generation = runGeneration
@@ -595,6 +786,10 @@ final class AdamVoiceSession {
         wakeCueResumeTask?.cancel()
         wakeCueResumeTask = nil
         wakeCueCaptureGate.cancel()
+        activationTask?.cancel()
+        activationTask = nil
+        resetManualListeningGate()
+        cancelReadyCueWork(resumeRecognizer: false)
         invalidatePauseWork()
         audioManager.setSpeechDetectionSuppressed(false)
         responseTimeoutTask?.cancel()
@@ -610,6 +805,7 @@ final class AdamVoiceSession {
         soundscape.stopImmediately()
         speechRecognizer.stop()
         audioManager.stopCapture()
+        capturePipelineActive = false
         clearAudioCallbacks()
         audioManager.recognitionConditioningEnabled = false
         audioManager.bridgeConditioningEnabled = false
@@ -620,7 +816,7 @@ final class AdamVoiceSession {
         pendingBridgeAudio = false
         activeCaptureIsFollowUp = false
         commandCaptureOpen = false
-        finishPhraseSent = false
+        finishPhraseGate.reset()
         outputKind = nil
         cancellingOutput = false
         ignoredOutputCompletions = 0
@@ -659,40 +855,18 @@ final class AdamVoiceSession {
             return
         }
 
-        // Open HFP first, so the actual route is visible before speech starts.
-        // HermesAudioManager returns false when it had to use the iPhone mic;
-        // this is reported honestly in the UI instead of being called glasses.
-        do {
-            // Adam alone opts into the copy-only recognition conditioner and
-            // best-effort hardware gain. The original Hermes target leaves
-            // both manager settings at their safe defaults.
-            audioManager.recognitionConditioningEnabled = true
-            audioManager.bridgeConditioningEnabled = true
-            audioManager.maximumInputGainEnabled = true
-            audioManager.mediaDuckingEnabled = true
-            _ = try await audioManager.startCapture(route: .glassesMic)
-            refreshAudioRoute()
-        } catch is CancellationError {
-            audioManager.stopCapture()
-            return
-        } catch {
-            failStartup(error.localizedDescription)
-            return
-        }
-
-        guard isRunning, generation == runGeneration else { return }
-        let speechAllowed = await speechRecognizer.requestAuthorization()
-        guard isRunning, generation == runGeneration, !Task.isCancelled else { return }
-        guard speechAllowed else {
-            failStartup(HermesSpeechError.notAuthorized.localizedDescription)
-            return
-        }
-        do {
-            try speechRecognizer.start()
-            isOnDeviceSpeechSupported = speechRecognizer.supportsOnDeviceRecognition
-        } catch {
-            failStartup(error.localizedDescription)
-            return
+        if AdamVoiceActivationPolicy.shouldRunCapture(
+            mode: activationMode,
+            manualListeningActive: false
+        ) {
+            do {
+                try await startCapturePipeline(generation: generation)
+            } catch is CancellationError {
+                return
+            } catch {
+                failStartup(error.localizedDescription)
+                return
+            }
         }
 
         let connected = await openBridge()
@@ -710,6 +884,70 @@ final class AdamVoiceSession {
         status = .failed
         stop()
         status = .failed
+    }
+
+    private func startCapturePipeline(generation: Int) async throws {
+        if capturePipelineActive { return }
+        guard isRunning, generation == runGeneration else {
+            throw CancellationError()
+        }
+
+        // Adam alone opts into copy-only recognition conditioning and
+        // best-effort hardware gain. Manual idle never reaches this path.
+        audioManager.recognitionConditioningEnabled = true
+        audioManager.bridgeConditioningEnabled = true
+        audioManager.maximumInputGainEnabled = true
+        audioManager.mediaDuckingEnabled = true
+        do {
+            _ = try await audioManager.startCapture(route: .glassesMic)
+            guard isRunning, generation == runGeneration,
+                  !Task.isCancelled else {
+                audioManager.stopCapture()
+                throw CancellationError()
+            }
+            refreshAudioRoute()
+            let speechAllowed = await speechRecognizer.requestAuthorization()
+            guard isRunning, generation == runGeneration,
+                  !Task.isCancelled else {
+                audioManager.stopCapture()
+                throw CancellationError()
+            }
+            guard speechAllowed else {
+                audioManager.stopCapture()
+                throw HermesSpeechError.notAuthorized
+            }
+            try speechRecognizer.start()
+            capturePipelineActive = true
+            isOnDeviceSpeechSupported = speechRecognizer.supportsOnDeviceRecognition
+        } catch {
+            speechRecognizer.stop()
+            audioManager.stopCapture()
+            capturePipelineActive = false
+            throw error
+        }
+    }
+
+    private func stopCapturePipeline() {
+        speechRecognizer.stop()
+        audioManager.stopCapture()
+        capturePipelineActive = false
+        micLevel = 0
+        refreshAudioRoute()
+    }
+
+    private func resetManualListeningGate() {
+        manualListeningGate.stop()
+        isManualListeningStarting = false
+        isManualListeningActive = false
+    }
+
+    private func stopManualCaptureIfIdle() {
+        guard !wakeWordEnabled, pendingRequestID == nil,
+              outputKind == nil else { return }
+        activationTask?.cancel()
+        activationTask = nil
+        resetManualListeningGate()
+        stopCapturePipeline()
     }
 
     // MARK: - Bridge connection and reconnect
@@ -965,6 +1203,7 @@ final class AdamVoiceSession {
     private func handleBridgeDisconnect(_ client: HermesAPIClient, generation: Int) {
         guard isCurrentBridge(client, generation: generation) else { return }
         invalidatePauseWork()
+        cancelReadyCueWork(resumeRecognizer: true)
         resetCommandCapture()
         bridgeConnected = false
         followUpModeSupported = false
@@ -989,11 +1228,13 @@ final class AdamVoiceSession {
         // callback while the attempt is still awaiting its return value.
         guard isRunning, !isOpeningBridge else { return }
         status = .reconnecting
+        stopManualCaptureIfIdle()
         scheduleReconnect()
     }
 
     private func invalidateBridge() {
         invalidatePauseWork()
+        cancelReadyCueWork(resumeRecognizer: true)
         resetCommandCapture()
         bridgeGeneration += 1
         if let client = bridgeClient {
@@ -1031,6 +1272,7 @@ final class AdamVoiceSession {
             _ = wakeGate.failed()
             speechRecognizer.isSuspended = false
         }
+        stopManualCaptureIfIdle()
     }
 
     private func scheduleReconnect(immediate: Bool = false) {
@@ -1063,11 +1305,15 @@ final class AdamVoiceSession {
     // MARK: - Speech and wake loop
 
     private func handlePartial(_ text: String) {
-        guard isRunning else { return }
+        guard isRunning, !readyCueGate.isBlockingCapture,
+              wakeWordEnabled || !manualListeningGate.isIdle else { return }
         if commandCaptureOpen {
-            // Partial recognition is a segment update inside the one active
-            // command capture. It must not expire the original wake window or
-            // submit after Apple's short pause.
+            // A complete finish marker in an incremental partial wins at its
+            // first occurrence. The later final is rejected by the same gate.
+            if finishPhraseGate.consumeIfMatched(text) {
+                invalidatePauseWork()
+                submitRecordedUtterance(finishPhrase: true)
+            }
             return
         }
         // Partial recognition is used only to keep Apple's on-device wake
@@ -1081,11 +1327,13 @@ final class AdamVoiceSession {
             commandWindowTask = nil
             liveTranscript = ""
             status = bridgeConnected ? .armed : .reconnecting
+            stopManualCaptureIfIdle()
         }
     }
 
     private func handleFinal(_ text: String) {
-        guard isRunning else { return }
+        guard isRunning, !readyCueGate.isBlockingCapture,
+              wakeWordEnabled || !manualListeningGate.isIdle else { return }
         if pendingRequestID != nil {
             if status == .transcribing || status == .transcriptReady
                 || status == .thinking,
@@ -1114,9 +1362,7 @@ final class AdamVoiceSession {
                 finishFollowUpMode(playCompletionCue: true)
                 return
             }
-            if AdamFinishPhrasePolicy.isStandaloneFinishPhrase(text) {
-                guard !finishPhraseSent else { return }
-                finishPhraseSent = true
+            if finishPhraseGate.consumeIfMatched(text) {
                 invalidatePauseWork()
                 submitRecordedUtterance(finishPhrase: true)
             }
@@ -1129,7 +1375,7 @@ final class AdamVoiceSession {
         case .suppressed:
             if wakeGate.state == .armed {
                 commandCaptureOpen = false
-                finishPhraseSent = false
+                finishPhraseGate.reset()
                 isCapturingUtterance = false
                 utteranceAudio.removeAll(keepingCapacity: true)
                 lastUtteranceAudio.removeAll(keepingCapacity: true)
@@ -1139,7 +1385,7 @@ final class AdamVoiceSession {
             invalidatePauseWork()
             isCapturingUtterance = false
             commandCaptureOpen = false
-            finishPhraseSent = false
+            finishPhraseGate.reset()
             utteranceAudio.removeAll(keepingCapacity: true)
             preRollAudio.removeAll(keepingCapacity: true)
             lastUtteranceAudio.removeAll(keepingCapacity: true)
@@ -1154,8 +1400,7 @@ final class AdamVoiceSession {
             commandWindowTask?.cancel()
             commandWindowTask = nil
             if retainRecognizedCommandForDeliberatePause() {
-                if AdamFinishPhrasePolicy.isStandaloneFinishPhrase(command) {
-                    finishPhraseSent = true
+                if finishPhraseGate.consumeIfMatched(command) {
                     submitRecordedUtterance(finishPhrase: true)
                 } else if isCapturingUtterance {
                     status = .hearingSpeech
@@ -1193,6 +1438,7 @@ final class AdamVoiceSession {
                 finishListeningSoundscape(playCompletionIfIdle: wasFollowUp)
                 liveTranscript = ""
                 status = bridgeConnected ? .armed : .reconnecting
+                stopManualCaptureIfIdle()
             }
             return
         }
@@ -1209,10 +1455,11 @@ final class AdamVoiceSession {
                 self.isCapturingUtterance = false
                 self.activeCaptureIsFollowUp = false
                 self.commandCaptureOpen = false
-                self.finishPhraseSent = false
+                self.finishPhraseGate.reset()
                 self.utteranceAudio.removeAll(keepingCapacity: true)
                 self.lastUtteranceAudio.removeAll(keepingCapacity: true)
                 self.status = self.bridgeConnected ? .armed : .reconnecting
+                self.stopManualCaptureIfIdle()
             } else if self.wakeGate.state.isAwaitingCommand {
                 // A clock tick can wake a fraction before the deadline. Keep
                 // waiting rather than losing the command window.
@@ -1231,7 +1478,7 @@ final class AdamVoiceSession {
             && (activeCaptureIsFollowUp || wakeGate.state.isFollowUp)
         activeCaptureIsFollowUp = false
         commandCaptureOpen = false
-        finishPhraseSent = false
+        finishPhraseGate.reset()
         _ = wakeGate.cancel()
         let audio = takeRecordedUtterance()
         guard audio.count >= 640, audioHasMeaningfulEnergy(audio) else {
@@ -1240,8 +1487,11 @@ final class AdamVoiceSession {
             bridgeClient?.sendDebug(
                 "adam rejected empty/quiet capture bytes=\(audio.count)"
             )
-            errorMessage = "I did not receive enough audio. Say Adam and try again."
+            errorMessage = wakeWordEnabled
+                ? "I did not receive enough audio. Say Adam and try again."
+                : "I did not receive enough audio. Tap Start listening and try again."
             status = bridgeConnected ? .armed : .reconnecting
+            stopManualCaptureIfIdle()
             return
         }
         finishListeningSoundscape(playCompletionIfIdle: true)
@@ -1410,6 +1660,7 @@ final class AdamVoiceSession {
         _ data: Data,
         sampleRate: Int
     ) {
+        armReadyCueForCurrentOutput()
         soundscape.stopImmediately()
         responseTimeoutTask?.cancel()
         responseTimeoutTask = nil
@@ -1426,6 +1677,7 @@ final class AdamVoiceSession {
         // A2DP. The physical route transition is allowed up to 1.5 seconds;
         // if it does not appear we still play, but report the fallback.
         audioManager.stopCapture()
+        capturePipelineActive = false
         let requestGeneration = turnGeneration
         Task { @MainActor [weak self] in
             guard let self, self.isRunning,
@@ -1453,6 +1705,7 @@ final class AdamVoiceSession {
     }
 
     private func beginOutput(_ kind: OutputKind) {
+        armReadyCueForCurrentOutput()
         // Never let a listening cue or completion cue render under Adam's reply.
         soundscape.stopImmediately()
         responseTimeoutTask?.cancel()
@@ -1486,7 +1739,11 @@ final class AdamVoiceSession {
         }
 
         if case .bridgeAudio = kind {
-            restoreCaptureAfterPlayback()
+            if wakeWordEnabled || !manualListeningGate.isIdle {
+                restoreCaptureAfterPlayback()
+            } else {
+                finishResponse()
+            }
         } else {
             finishResponse()
         }
@@ -1521,12 +1778,16 @@ final class AdamVoiceSession {
                 }
                 self.refreshAudioRoute()
                 self.speechRecognizer.restartCycle()
+                self.capturePipelineActive = true
                 self.micWarning = nil
                 self.captureRestoreTask = nil
                 if completeTurn {
                     self.finishResponse()
                 } else {
-                    self.status = .failed
+                    if self.status != .failed {
+                        self.status = self.bridgeConnected ? .armed : .reconnecting
+                    }
+                    self.stopManualCaptureIfIdle()
                 }
             } catch is CancellationError {
                 return
@@ -1534,6 +1795,7 @@ final class AdamVoiceSession {
                 guard self.captureRestoreSerial == restoreSerial,
                       self.turnGeneration == expectedGeneration else { return }
                 self.captureRestoreTask = nil
+                self.capturePipelineActive = false
                 self.errorMessage =
                     "The Ray-Ban microphone did not reconnect. Start Adam again."
                 self.status = .failed
@@ -1548,7 +1810,9 @@ final class AdamVoiceSession {
         responseTimeoutTask?.cancel()
         responseTimeoutTask = nil
         pendingRequestID = nil
-        let shouldOpenFollowUp = bridgeConnected && followUpModeSupported
+        let shouldOpenFollowUp = bridgeConnected
+            && followUpModeSupported
+            && (wakeWordEnabled || !manualListeningGate.isIdle)
         if !shouldOpenFollowUp { _ = wakeGate.cancel() }
         status = bridgeConnected ? .armed : .reconnecting
         scheduleSpeechResume(openFollowUp: shouldOpenFollowUp)
@@ -1556,6 +1820,7 @@ final class AdamVoiceSession {
     }
 
     private func finishFollowUpMode(playCompletionCue: Bool) {
+        cancelReadyCueWork(resumeRecognizer: false)
         invalidatePauseWork()
         soundscape.stopThinkingPulse()
         responseTimeoutTask?.cancel()
@@ -1566,7 +1831,7 @@ final class AdamVoiceSession {
         pendingBridgeAudio = false
         activeCaptureIsFollowUp = false
         commandCaptureOpen = false
-        finishPhraseSent = false
+        finishPhraseGate.reset()
         isCapturingUtterance = false
         utteranceAudio.removeAll(keepingCapacity: true)
         lastUtteranceAudio.removeAll(keepingCapacity: true)
@@ -1576,13 +1841,15 @@ final class AdamVoiceSession {
             soundscape.playCompletionCue()
         }
         status = bridgeConnected ? .armed : .reconnecting
+        stopManualCaptureIfIdle()
         if !bridgeConnected { scheduleReconnect() }
     }
 
     private func failResponse(_ message: String) {
         invalidatePauseWork()
-        let shouldRestoreCapture = outputKind == .bridgeAudio
-            || captureRestoreTask != nil
+        cancelReadyCueWork(resumeRecognizer: false)
+        let shouldRestoreCapture = (wakeWordEnabled || !manualListeningGate.isIdle)
+            && (outputKind == .bridgeAudio || captureRestoreTask != nil)
         soundscape.stopImmediately()
         if wakeCueCaptureGate.isBlocking {
             releaseWakeCueCaptureGuard(resumeRecognizer: false)
@@ -1594,7 +1861,7 @@ final class AdamVoiceSession {
         pendingBridgeAudio = false
         activeCaptureIsFollowUp = false
         commandCaptureOpen = false
-        finishPhraseSent = false
+        finishPhraseGate.reset()
         errorMessage = message
         _ = wakeGate.failed()
         turnGeneration &+= 1
@@ -1606,6 +1873,7 @@ final class AdamVoiceSession {
                 completeTurn: false
             )
         }
+        if !shouldRestoreCapture { stopManualCaptureIfIdle() }
         if !bridgeConnected { scheduleReconnect() }
     }
 
@@ -1615,19 +1883,20 @@ final class AdamVoiceSession {
     /// waits for that response.
     func cancelTurn() {
         guard canCancelTurn, let requestID = pendingRequestID else { return }
-        let shouldRestoreCapture = outputKind == .bridgeAudio
-            || captureRestoreTask != nil
+        let shouldRestoreCapture = (wakeWordEnabled || !manualListeningGate.isIdle)
+            && (outputKind == .bridgeAudio || captureRestoreTask != nil)
         _ = bridgeClient?.sendCancelTurn(requestID: requestID)
 
         turnGeneration &+= 1
         invalidatePauseWork()
+        cancelReadyCueWork(resumeRecognizer: false)
         responseTimeoutTask?.cancel()
         responseTimeoutTask = nil
         pendingRequestID = nil
         pendingBridgeAudio = false
         activeCaptureIsFollowUp = false
         commandCaptureOpen = false
-        finishPhraseSent = false
+        finishPhraseGate.reset()
         commandWindowTask?.cancel()
         commandWindowTask = nil
         soundscape.stopImmediately()
@@ -1643,9 +1912,14 @@ final class AdamVoiceSession {
         preRollAudio.removeAll(keepingCapacity: true)
 
         if shouldRestoreCapture {
-            restoreCaptureAfterPlayback(generation: turnGeneration)
+            status = bridgeConnected ? .armed : .reconnecting
+            restoreCaptureAfterPlayback(
+                generation: turnGeneration,
+                completeTurn: false
+            )
         } else {
             status = bridgeConnected ? .armed : .reconnecting
+            stopManualCaptureIfIdle()
             if !bridgeConnected { scheduleReconnect() }
         }
     }
@@ -1654,6 +1928,13 @@ final class AdamVoiceSession {
     func retryTurn() {
         guard canRetryTurn else { return }
         invalidatePauseWork()
+        if !wakeWordEnabled {
+            errorMessage = nil
+            status = bridgeConnected ? .armed : .reconnecting
+            stopManualCaptureIfIdle()
+            if !bridgeConnected { scheduleReconnect() }
+            return
+        }
         turnGeneration &+= 1
         let expectedGeneration = turnGeneration
         _ = wakeGate.failed()
@@ -1670,6 +1951,7 @@ final class AdamVoiceSession {
                 }
                 self.refreshAudioRoute()
                 self.speechRecognizer.restartCycle()
+                self.capturePipelineActive = true
                 self.speechRecognizer.isSuspended = false
                 self.micWarning = nil
                 self.errorMessage = nil
@@ -1686,6 +1968,7 @@ final class AdamVoiceSession {
 
     private func stopOutputForInterruption() {
         guard let kind = outputKind else { return }
+        cancelReadyCueWork(resumeRecognizer: false)
         cancellingOutput = true
         switch kind {
         case .localSpeech:
@@ -1719,22 +2002,105 @@ final class AdamVoiceSession {
         pendingBridgeAudio = false
     }
 
+    private func armReadyCueForCurrentOutput() {
+        cancelReadyCueWork(resumeRecognizer: false)
+        readyCueTicket = readyCueGate.arm()
+    }
+
+    private func cancelReadyCueWork(resumeRecognizer: Bool) {
+        readyCueTask?.cancel()
+        readyCueTask = nil
+        speechResumeTask?.cancel()
+        speechResumeTask = nil
+        readyCueTicket = nil
+        let wasBlocking = readyCueGate.isBlockingCapture
+        readyCueGate.cancel()
+        if wasBlocking {
+            soundscape.stopImmediately()
+            audioManager.setSpeechDetectionSuppressed(
+                wakeCueCaptureGate.isBlocking
+            )
+        }
+        if resumeRecognizer, isRunning, capturePipelineActive,
+           !wakeCueCaptureGate.isBlocking {
+            speechRecognizer.isSuspended = false
+        }
+    }
+
     private func scheduleSpeechResume(openFollowUp: Bool = false) {
         speechResumeTask?.cancel()
+        let ticket = readyCueTicket
         speechResumeTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: Self.speechResumeGrace)
             guard !Task.isCancelled, let self, self.isRunning else { return }
             self.speechResumeTask = nil
-            self.speechRecognizer.isSuspended = false
             guard openFollowUp, self.bridgeConnected,
-                  self.followUpModeSupported else {
+                  self.followUpModeSupported,
+                  self.capturePipelineActive,
+                  let ticket else {
                 _ = self.wakeGate.cancel()
+                self.readyCueTicket = nil
+                self.readyCueGate.cancel()
+                if self.capturePipelineActive {
+                    self.speechRecognizer.isSuspended = false
+                }
+                self.stopManualCaptureIfIdle()
                 return
             }
             let action = self.wakeGate.completed()
-            if action == .followUpOpened {
+            guard action == .followUpOpened else {
+                self.readyCueTicket = nil
+                self.readyCueGate.cancel()
+                self.stopManualCaptureIfIdle()
+                return
+            }
+            self.finishPhraseGate.reset()
+            self.status = .awaitingCommand
+
+            guard self.listeningSoundsEnabled else {
+                self.readyCueTicket = nil
+                self.readyCueGate.cancel()
+                self.speechRecognizer.isSuspended = false
+                self.armCommandWindowTimeout()
+                return
+            }
+            guard self.readyCueGate.beginIfCaptureReady(ticket: ticket) else {
+                _ = self.wakeGate.cancel()
+                self.stopManualCaptureIfIdle()
+                return
+            }
+
+            self.audioManager.setSpeechDetectionSuppressed(true)
+            self.speechRecognizer.isSuspended = true
+            self.resetCommandCapture()
+            self.soundscape.playReadyCue()
+            self.bridgeClient?.sendDebug("adam ready cue guard started")
+
+            self.readyCueTask = Task { @MainActor [weak self] in
+                do {
+                    try await Task.sleep(nanoseconds: Self.wakeCueGuardDuration)
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled else { return }
+                guard self.isRunning,
+                      self.readyCueGate.complete(ticket: ticket),
+                      self.capturePipelineActive,
+                      self.bridgeConnected,
+                      self.followUpModeSupported,
+                      (self.wakeWordEnabled || !self.manualListeningGate.isIdle),
+                      self.wakeGate.state.isFollowUp else {
+                    self.cancelReadyCueWork(resumeRecognizer: true)
+                    self.stopManualCaptureIfIdle()
+                    return
+                }
+                self.readyCueTask = nil
+                self.readyCueTicket = nil
+                self.audioManager.setSpeechDetectionSuppressed(false)
+                self.speechRecognizer.isSuspended = false
                 self.status = .awaitingCommand
                 self.armCommandWindowTimeout()
+                self.bridgeClient?.sendDebug("adam follow-up capture armed after ready cue")
             }
         }
     }
@@ -1762,7 +2128,7 @@ final class AdamVoiceSession {
         speechRecognizer.isSuspended = true
         isCapturingUtterance = false
         commandCaptureOpen = false
-        finishPhraseSent = false
+        finishPhraseGate.reset()
         preRollAudio.removeAll(keepingCapacity: true)
         utteranceAudio.removeAll(keepingCapacity: true)
         lastUtteranceAudio.removeAll(keepingCapacity: true)
@@ -1811,7 +2177,7 @@ final class AdamVoiceSession {
     private func resetCommandCapture() {
         isCapturingUtterance = false
         commandCaptureOpen = false
-        finishPhraseSent = false
+        finishPhraseGate.reset()
         utteranceAudio.removeAll(keepingCapacity: true)
         lastUtteranceAudio.removeAll(keepingCapacity: true)
         preRollAudio.removeAll(keepingCapacity: true)
@@ -1883,7 +2249,9 @@ final class AdamVoiceSession {
 
     private func handleAudioChunk(_ data: Data) {
         guard isRunning, !data.isEmpty,
-              wakeCueCaptureGate.acceptsCapture else { return }
+              wakeCueCaptureGate.acceptsCapture,
+              !readyCueGate.isBlockingCapture,
+              wakeWordEnabled || !manualListeningGate.isIdle else { return }
         preRollAudio.append(data)
         if preRollAudio.count > Self.preRollBytes {
             preRollAudio.removeFirst(preRollAudio.count - Self.preRollBytes)
@@ -1898,6 +2266,8 @@ final class AdamVoiceSession {
         guard isRunning, outputKind == nil,
               pendingRequestID == nil,
               wakeCueCaptureGate.acceptsCapture,
+              !readyCueGate.isBlockingCapture,
+              wakeWordEnabled || !manualListeningGate.isIdle,
               status == .armed || status == .wakeAcknowledged
                 || status == .paused
                 || status == .awaitingCommand else { return }
@@ -1918,7 +2288,8 @@ final class AdamVoiceSession {
     }
 
     private func handleSpeechEnded() {
-        guard isCapturingUtterance else { return }
+        guard !readyCueGate.isBlockingCapture,
+              isCapturingUtterance else { return }
         isCapturingUtterance = false
         if commandCaptureOpen {
             // VAD's existing 650 ms boundary starts the session grace period
@@ -2025,10 +2396,13 @@ final class AdamVoiceSession {
             Task { @MainActor [weak self] in
                 guard let self, self.isRunning else { return }
                 self.refreshAudioRoute()
-                if self.status == .wakeAcknowledged {
+                if self.capturePipelineActive,
+                   self.status == .wakeAcknowledged {
                     self.startListeningSoundscape()
                 }
-                self.speechRecognizer.restartCycle()
+                if self.capturePipelineActive {
+                    self.speechRecognizer.restartCycle()
+                }
             }
         }
         audioManager.onCaptureRecoveryFailed = { [weak self] message in
@@ -2100,6 +2474,8 @@ final class AdamVoiceSession {
             } else {
                 micRoute = "Bluetooth HFP · \(input)"
             }
+        } else if isRunning, !wakeWordEnabled, !capturePipelineActive {
+            micRoute = "Microphone off · Manual mode"
         } else if isRunning {
             micRoute = "iPhone microphone · Ray-Ban HFP unavailable"
         } else {

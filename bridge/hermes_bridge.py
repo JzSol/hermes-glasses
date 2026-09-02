@@ -1094,7 +1094,9 @@ def is_adam_finish_phrase(text: str) -> bool:
         without_apostrophes = without_apostrophes.replace(apostrophe, "")
     return re.findall(r"[^\W_]+", without_apostrophes, flags=re.UNICODE) in (
         ["thats", "it"],
+        ["that", "s", "it"],
         ["that", "is", "it"],
+        ["thatsit"],
     )
 
 
@@ -1102,7 +1104,8 @@ def strip_adam_finish_phrase(text: str) -> str:
     """Remove one exact trailing finish segment, preserving the command."""
     value = (text or "").strip()
     match = re.search(
-        r"(?iu)(^|[\s,;:—–-]+)(?:that['’‘ʼ＇]?s|thats|that\s+is)\s+it"
+        r"(?iu)(^|[\s,;:—–-]+)(?:thatsit|thats\s+it|"
+        r"that\s*['’‘ʼ＇]?\s*s\s+it|that\s+is\s+it)"
         r"(?:[\s.!?,;:…'’‘ʼ＇\"()\[\]]*)$",
         value,
     )

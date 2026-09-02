@@ -288,8 +288,17 @@ command acceptance, not the gate's physical position.
 
 Adam keeps an awakened command open across pauses for up to 15 seconds. The
 wearer can continue speaking to reset that grace period or say “That's it” as
-a standalone phrase to submit immediately; the finish phrase is removed before
-the command reaches the gate router or agent.
+a standalone phrase to submit immediately from the first complete recognition
+update; punctuation, “that is it”, and common joined/spaced ASR variants are
+accepted. The finish phrase is removed before the command reaches the gate
+router or agent. After a successful reply and microphone restore, a distinct
+matched-family cue sounds once before follow-up recognition opens.
+
+New installs default to manual listening for testing: Adam connects to the
+bridge but keeps microphone capture and speech recognition stopped until the
+wearer taps the accessible **Start listening** button. **Settings → Voice &
+microphone → Listen for “Adam”** restores the persisted always-armed wake-word
+mode at any time.
 
 The bridge's `HERMES_BRIDGE_BRAIN` env var can also be set to `anthropic`,
 `openai`, or `gemini` to skip the Hermes CLI and call that provider's API

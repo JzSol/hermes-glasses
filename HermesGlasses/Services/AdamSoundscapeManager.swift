@@ -59,6 +59,7 @@ final class AdamSoundscapeManager: NSObject {
     private let fluteLoopData: Data
     private let risingCueData: Data
     private let fallingCueData: Data
+    private let readyCueData: Data
     private let speechStartCueData: Data
     private let thinkingPulseData: Data
 
@@ -95,6 +96,10 @@ final class AdamSoundscapeManager: NSObject {
         ).wavData
         self.fallingCueData = AdamSoundscapeWaveform.matchedCue(
             for: .listeningEnd,
+            sampleRate: sampleRate
+        ).wavData
+        self.readyCueData = AdamSoundscapeWaveform.matchedCue(
+            for: .responseReady,
             sampleRate: sampleRate
         ).wavData
         self.speechStartCueData = AdamSoundscapeWaveform.speechStartCue(sampleRate: sampleRate).wavData
@@ -203,6 +208,19 @@ final class AdamSoundscapeManager: NSObject {
         playFallingCue()
     }
 
+    /// Play the conversational handoff cue after capture has been restored.
+    /// The session owns exactly-once and self-capture guards; this manager
+    /// keeps the cue in the same player/family as the listening edge pair.
+    func playReadyCue() {
+        generation &+= 1
+        isListening = false
+        listeningMode = nil
+        cancelPendingAudio()
+        stopThinkingPulse()
+        stopAmbienceImmediately()
+        playMatchedCue(data: readyCueData, description: "ready")
+    }
+
     /// Mark the instant command speech is detected. This is independent of
     /// the rising listening cue so it cannot delay or replace that cue.
     func playSpeechStartCue() {
@@ -279,20 +297,24 @@ final class AdamSoundscapeManager: NSObject {
         // There should be no overlap even if a caller begins a new end cue
         // after a route/session reset. The listening-period guard is what
         // prevents normal duplicate `finishListening` calls.
+        playMatchedCue(data: fallingCueData, description: "completion")
+    }
+
+    private func playMatchedCue(data: Data, description: String) {
         completionCuePlayer?.stop()
         completionCuePlayer = nil
         guard let player = makePlayer(
-            data: fallingCueData,
+            data: data,
             volume: configuration.matchedCueVolume
         ) else {
-            logger.error("Unable to create Adam completion cue player")
+            logger.error("Unable to create Adam \(description, privacy: .public) cue player")
             return
         }
         completionCuePlayer = player
         player.prepareToPlay()
         guard player.play() else {
             completionCuePlayer = nil
-            logger.error("Unable to start Adam completion cue player")
+            logger.error("Unable to start Adam \(description, privacy: .public) cue player")
             return
         }
     }

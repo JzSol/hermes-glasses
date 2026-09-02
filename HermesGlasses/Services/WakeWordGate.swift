@@ -179,6 +179,14 @@ struct WakeWordGate: Sendable {
         state = speaking ? .speaking : .armed
     }
 
+    /// Open the same command window used by a recognized wake word, but from
+    /// an explicit UI action. Manual listening therefore shares every later
+    /// timeout, submission, follow-up, and cancellation transition.
+    mutating func beginCommandWindow(now: Date = Date()) -> Action {
+        state = .awaitingCommand(until: now.addingTimeInterval(commandWindow))
+        return .prompt
+    }
+
     /// Re-arm after a user cancellation, a completed command, or an agent
     /// failure. Returning an action makes lifecycle transitions easy to test.
     mutating func cancel() -> Action {

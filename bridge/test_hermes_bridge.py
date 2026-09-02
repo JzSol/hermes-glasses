@@ -456,6 +456,23 @@ class TestProcessQuery(unittest.TestCase):
         )
         self.assertFalse(responses[0]["tts"])
 
+    def test_exact_open_and_close_commands_both_trigger_ajax_relay(self):
+        for command, action in (("open gates", "open"),
+                                ("close gates", "close")):
+            with self.subTest(command=command):
+                ws = FakeWebSocket([])
+                with mock.patch.object(
+                    hb, "activate_gate_relay",
+                    return_value=(
+                        True, "Gate relay activation command accepted."
+                    ),
+                ) as activate, mock.patch.object(hb, "ask_hermes") as ask:
+                    asyncio.run(
+                        hb.process_query(ws, command, want_tts=False)
+                    )
+                activate.assert_called_once_with(action)
+                ask.assert_not_called()
+
 
 class TestSessionStore(unittest.TestCase):
     def setUp(self):
@@ -1239,7 +1256,10 @@ class BridgeAudioProtocolTests(unittest.TestCase):
 
 class AdamFinishPhraseTests(unittest.TestCase):
     def test_standalone_finish_phrase_normalization(self):
-        for phrase in ("That's it", "Thats it!", "THAT IS IT.", "That’s it…", "Thatʼs it"):
+        for phrase in (
+            "That's it", "Thats it!", "THAT IS IT.", "That’s it…",
+            "Thatʼs it", "that s it", "thatsit", "that'sit",
+        ):
             self.assertTrue(is_adam_finish_phrase(phrase), phrase)
 
     def test_embedded_and_longer_phrases_do_not_trigger(self):
@@ -1247,7 +1267,10 @@ class AdamFinishPhraseTests(unittest.TestCase):
             self.assertFalse(is_adam_finish_phrase(phrase), phrase)
 
     def test_marker_strips_only_trailing_exact_finish_phrase(self):
-        for transcript in ("open the door That's it", "open the door, that is it."):
+        for transcript in (
+            "open the door That's it", "open the door, that is it.",
+            "open the door that s it", "open the door thatsit",
+        ):
             self.assertEqual(strip_adam_finish_phrase(transcript), "open the door")
         self.assertEqual(strip_adam_finish_phrase("That's it"), "")
         self.assertEqual(strip_adam_finish_phrase("open that's it please"), "open that's it please")

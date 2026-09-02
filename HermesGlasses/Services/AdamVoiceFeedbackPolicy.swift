@@ -115,33 +115,113 @@ struct AdamPauseGate: Equatable, Sendable {
 enum AdamFinishPhrasePolicy {
     private static let finishPhrases: Set<[String]> = [
         ["thats", "it"],
+        ["that", "s", "it"],
         ["that", "is", "it"],
+        ["thatsit"],
     ]
 
-    /// Match only a complete final segment, accepting case, punctuation,
-    /// width, diacritics, and straight/curly apostrophe variants.
+    /// Match only a complete recognition segment, accepting case,
+    /// punctuation, width, diacritics, and apostrophe variants. This is safe
+    /// for both full partials and finals because longer sentences never match.
     static func isStandaloneFinishPhrase(_ text: String) -> Bool {
-        let tokens = normalizedTokens(in: text).map(String.init).map { token in
-            token
-                .replacingOccurrences(of: "'", with: "")
-        }
+        let tokens = normalizedTokens(in: text)
         return finishPhrases.contains(tokens)
+    }
+
+    /// Remove one marked trailing control phrase while preserving the command
+    /// before it. Callers must decide that the phrase is control input first;
+    /// this helper deliberately does not classify ordinary conversational use.
+    static func strippingTrailingFinishPhrase(from text: String) -> String {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pattern = #"(?iu)(^|[\s,;:—–-]+)(?:thatsit|thats\s+it|that\s*['’‘ʼ＇]?\s*s\s+it|that\s+is\s+it)(?:[\s.!?,;:…'’‘ʼ＇\"()\[\]]*)$"#
+        guard let range = value.range(of: pattern, options: .regularExpression) else {
+            return value
+        }
+        return String(value[..<range.lowerBound])
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(
+                CharacterSet(charactersIn: ",;:—–-")
+            ))
     }
 
     private static func normalizedTokens(
         in text: String
-    ) -> [Substring] {
+    ) -> [String] {
         let folded = text.folding(
             options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive],
             locale: Locale(identifier: "en_US_POSIX")
         )
         let apostropheNormalized = folded
-            .replacingOccurrences(of: "’", with: "'")
-            .replacingOccurrences(of: "‘", with: "'")
-            .replacingOccurrences(of: "ʼ", with: "'")
-            .replacingOccurrences(of: "＇", with: "'")
-        return apostropheNormalized.split {
-            !$0.isLetter && !$0.isNumber && $0 != "'"
+            .replacingOccurrences(of: "'", with: "")
+            .replacingOccurrences(of: "’", with: "")
+            .replacingOccurrences(of: "‘", with: "")
+            .replacingOccurrences(of: "ʼ", with: "")
+            .replacingOccurrences(of: "＇", with: "")
+        return apostropheNormalized.split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+    }
+}
+
+/// Exactly-once control gate shared by partial and final recognition. A full
+/// partial can win immediately; the later final then becomes a harmless no-op.
+struct AdamFinishPhraseGate: Equatable, Sendable {
+    private(set) var isConsumed = false
+
+    mutating func consumeIfMatched(_ text: String) -> Bool {
+        guard !isConsumed,
+              AdamFinishPhrasePolicy.isStandaloneFinishPhrase(text) else {
+            return false
         }
+        isConsumed = true
+        return true
+    }
+
+    mutating func reset() {
+        isConsumed = false
+    }
+}
+
+/// One-shot lifecycle for the conversational handoff cue. The session arms
+/// this when successful playback begins, advances it only after capture has
+/// been restored, and invalidates stale/cancelled turns by generation.
+struct AdamReadyCueGate: Equatable, Sendable {
+    private enum State: Equatable, Sendable {
+        case idle
+        case awaitingCapture(UInt64)
+        case playing(UInt64)
+    }
+
+    private var generation: UInt64 = 0
+    private var state: State = .idle
+
+    var isBlockingCapture: Bool {
+        if case .playing = state { return true }
+        return false
+    }
+
+    mutating func arm() -> UInt64 {
+        generation &+= 1
+        state = .awaitingCapture(generation)
+        return generation
+    }
+
+    mutating func beginIfCaptureReady(ticket: UInt64) -> Bool {
+        guard state == .awaitingCapture(ticket), ticket == generation else {
+            return false
+        }
+        state = .playing(ticket)
+        return true
+    }
+
+    mutating func complete(ticket: UInt64) -> Bool {
+        guard state == .playing(ticket), ticket == generation else {
+            return false
+        }
+        state = .idle
+        return true
+    }
+
+    mutating func cancel() {
+        generation &+= 1
+        state = .idle
     }
 }

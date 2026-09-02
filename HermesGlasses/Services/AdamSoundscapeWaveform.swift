@@ -43,11 +43,13 @@ struct AdamSoundscapeClip: Equatable, Sendable {
 enum AdamSoundscapeCueDirection: Equatable, Sendable {
     case rising
     case falling
+    case ready
 
     var opposite: Self {
         switch self {
         case .rising: return .falling
         case .falling: return .rising
+        case .ready: return .ready
         }
     }
 }
@@ -55,11 +57,13 @@ enum AdamSoundscapeCueDirection: Equatable, Sendable {
 enum AdamSoundscapeCueEvent: Equatable, Sendable {
     case listeningStart
     case listeningEnd
+    case responseReady
 
     var direction: AdamSoundscapeCueDirection {
         switch self {
         case .listeningStart: return .rising
         case .listeningEnd: return .falling
+        case .responseReady: return .ready
         }
     }
 }
@@ -153,7 +157,21 @@ enum AdamSoundscapeWaveform {
             let progress = frameCount > 1
                 ? Double(index) / Double(frameCount - 1)
                 : 1
-            let directionProgress = direction == .rising ? progress : 1 - progress
+            let directionProgress: Double
+            switch direction {
+            case .rising:
+                directionProgress = progress
+            case .falling:
+                directionProgress = 1 - progress
+            case .ready:
+                // A small mid-high-mid turn says “your turn” without being
+                // mistaken for either edge of the listening window.
+                if progress < 0.5 {
+                    directionProgress = 0.32 + progress * 0.88
+                } else {
+                    directionProgress = 0.76 - (progress - 0.5) * 0.48
+                }
+            }
             let frequency = matchedMotifFrequency(at: directionProgress)
             phase += 2 * Double.pi * frequency / Double(rate)
 

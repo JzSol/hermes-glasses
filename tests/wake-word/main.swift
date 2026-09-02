@@ -27,6 +27,15 @@ expectEqual(gate.handlePartial("what time", now: t0), .suppressed,
             "armed suppresses ambient partials")
 expectEqual(gate.state, .armed, "ambient speech leaves gate armed")
 
+var manualGate = WakeWordGate(commandWindow: 8)
+expectEqual(manualGate.beginCommandWindow(now: t0), .prompt,
+            "manual start opens the standard command window")
+expect(manualGate.state.isAwaitingCommand,
+       "manual start uses the awaiting-command state")
+expectEqual(manualGate.handleFinal("open gates", now: t0.addingTimeInterval(1)),
+            .submit("open gates"), "manual capture submits through the same gate")
+expectEqual(manualGate.state, .armed, "manual submission rearms the gate")
+
 // Adam is a whole-token prefix, never a substring or a mid-utterance match.
 expectEqual(gate.handleFinal("adamant disagreement", now: t0), .suppressed,
             "adamant is not a wake word")
