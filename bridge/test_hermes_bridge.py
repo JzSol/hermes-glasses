@@ -15,6 +15,7 @@ from unittest import mock
 import hermes_bridge as hb
 from hermes_bridge import (
     is_visual_query, await_photo, build_provider_request, parse_provider_reply,
+    is_adam_finish_phrase, strip_adam_finish_phrase,
 )
 
 
@@ -961,6 +962,56 @@ class BridgeAudioProtocolTests(unittest.TestCase):
         self.assertEqual(error["type"], "error")
         self.assertIn("boolean", error["message"])
 
+    def test_finish_phrase_defaults_false_for_old_clients(self):
+        websocket = ConnectionWebSocket([
+            json.dumps({
+                "type": "audio_start",
+                "request_id": "old-finish-client",
+                "format": "pcm_s16le",
+                "sample_rate": 16_000,
+                "channels": 1,
+            }),
+            b"\x01\x00" * 320,
+            json.dumps({"type": "audio_end", "request_id": "old-finish-client"}),
+        ])
+        realtime_turn = mock.AsyncMock()
+        with mock.patch.object(hb, "process_audio_turn", realtime_turn):
+            asyncio.run(hb.handle_connection(websocket))
+        self.assertFalse(realtime_turn.await_args.args[1]["finish_phrase"])
+
+    def test_non_boolean_finish_phrase_is_rejected(self):
+        websocket = ConnectionWebSocket([json.dumps({
+            "type": "audio_start",
+            "request_id": "bad-finish-phrase",
+            "format": "pcm_s16le",
+            "sample_rate": 16_000,
+            "channels": 1,
+            "finish_phrase": "yes",
+        })])
+        asyncio.run(hb.handle_connection(websocket))
+        error = json.loads(websocket.sent[1])
+        self.assertEqual(error["type"], "error")
+        self.assertIn("boolean", error["message"])
+
+    def test_finish_phrase_is_forwarded_when_true(self):
+        websocket = ConnectionWebSocket([
+            json.dumps({
+                "type": "audio_start",
+                "request_id": "finish-client",
+                "format": "pcm_s16le",
+                "sample_rate": 16_000,
+                "channels": 1,
+                "finish_phrase": True,
+            }),
+            b"\x01\x00" * 320,
+            json.dumps({"type": "audio_end", "request_id": "finish-client"}),
+        ])
+        realtime_turn = mock.AsyncMock()
+        with mock.patch.object(hb, "process_audio_turn", realtime_turn):
+            asyncio.run(hb.handle_connection(websocket))
+        self.assertTrue(realtime_turn.await_args.args[1]["finish_phrase"])
+
+
     def test_pcm_wav_wrapper_has_expected_wire_format(self):
         import io
         import wave
@@ -1186,6 +1237,54 @@ class BridgeAudioProtocolTests(unittest.TestCase):
         self.assertEqual(errors, [])
 
 
+class AdamFinishPhraseTests(unittest.TestCase):
+    def test_standalone_finish_phrase_normalization(self):
+        for phrase in ("That's it", "Thats it!", "THAT IS IT.", "That’s it…", "Thatʼs it"):
+            self.assertTrue(is_adam_finish_phrase(phrase), phrase)
+
+    def test_embedded_and_longer_phrases_do_not_trigger(self):
+        for phrase in ("do that's it", "that's it please", "that is it now"):
+            self.assertFalse(is_adam_finish_phrase(phrase), phrase)
+
+    def test_marker_strips_only_trailing_exact_finish_phrase(self):
+        for transcript in ("open the door That's it", "open the door, that is it."):
+            self.assertEqual(strip_adam_finish_phrase(transcript), "open the door")
+        self.assertEqual(strip_adam_finish_phrase("That's it"), "")
+        self.assertEqual(strip_adam_finish_phrase("open that's it please"), "open that's it please")
+
+    def test_process_strips_marked_transcript_but_not_unmarked(self):
+        def run(marked):
+            websocket = FakeWebSocket([])
+            api = mock.MagicMock()
+            api.transcribe.return_value = {
+                "transcript": "open the door That's it",
+                "provider": "local",
+                "backend": "mlx-whisper",
+            }
+            gateway = SimpleNamespace(ask=mock.AsyncMock(return_value="Done."))
+            state = {"send_lock": asyncio.Lock(), "hermes_api": api, "gateway": gateway}
+            capture = {
+                "request_id": "finish-turn",
+                "locale": "en-GB",
+                "pcm": bytearray(b"\x01\x00" * 320),
+                "vocabulary": [],
+                "follow_up": False,
+                "finish_phrase": marked,
+            }
+            with mock.patch.object(hb, "HermesTTSStream") as stream_type, \
+                 mock.patch.object(hb, "synthesize_speech", return_value=b""):
+                stream = stream_type.return_value
+                stream.open = mock.AsyncMock(return_value=False)
+                stream.close = mock.AsyncMock()
+                asyncio.run(hb.process_audio_turn(websocket, capture, state))
+            return [json.loads(item) for item in websocket.sent if isinstance(item, str)]
+
+        marked = run(True)
+        unmarked = run(False)
+        self.assertEqual(marked[0]["text"], "open the door")
+        self.assertEqual(unmarked[0]["text"], "open the door That's it")
+
+
 class BridgeGateRealtimeTests(unittest.TestCase):
     def test_audio_gate_command_bypasses_agent_and_keeps_voice_response(self):
         websocket = FakeWebSocket([])
@@ -1238,6 +1337,47 @@ class BridgeGateRealtimeTests(unittest.TestCase):
         self.assertFalse(response["tts"])
         self.assertNotIn("audio_start", [item.get("type") for item in payloads])
         self.assertNotIn("audio_end", [item.get("type") for item in payloads])
+
+    def test_finished_open_gate_command_still_activates_relay(self):
+        websocket = FakeWebSocket([])
+        api = mock.MagicMock()
+        api.transcribe.return_value = {
+            "transcript": "open gates That's it",
+            "provider": "local",
+            "backend": "mlx-whisper",
+        }
+        gateway = SimpleNamespace(ask=mock.AsyncMock())
+        stream = mock.MagicMock()
+        stream.open = mock.AsyncMock(return_value=False)
+        stream.close = mock.AsyncMock()
+        stream.provider = "kokoro-mlx"
+        stream.voice = "bm_george"
+        capture = {
+            "request_id": "finished-gate-turn",
+            "locale": "en-GB",
+            "pcm": bytearray(b"\x01\x00" * 320),
+            "vocabulary": ["Adam"],
+            "follow_up": False,
+            "finish_phrase": True,
+        }
+        state = {
+            "send_lock": asyncio.Lock(),
+            "hermes_api": api,
+            "gateway": gateway,
+        }
+
+        with mock.patch.object(
+            hb, "HermesTTSStream", return_value=stream
+        ), mock.patch.object(
+            hb, "activate_gate_relay",
+            return_value=(True, "Gate relay activation command accepted."),
+        ) as activate, mock.patch.object(
+            hb, "synthesize_speech", return_value=b""
+        ):
+            asyncio.run(hb.process_audio_turn(websocket, capture, state))
+
+        activate.assert_called_once_with("open")
+        gateway.ask.assert_not_awaited()
 
 
 class BridgeFollowUpTests(unittest.TestCase):

@@ -7,7 +7,8 @@ the captured utterance to Hermes for final STT, agent reasoning, and TTS.
 Protocol (JSON text frames):
   app → bridge: {"type":"audio_start","request_id":...,
                  "format":"pcm_s16le","sample_rate":16000,"channels":1,
-                 "locale":"en-GB"|"lv-LV","follow_up":bool}
+                 "locale":"en-GB"|"lv-LV","follow_up":bool,
+                 "finish_phrase":bool}
                                                   begin captured utterance
   app → bridge: binary PCM16 frames, then {"type":"audio_end",...}
   app → bridge: {"type":"query","text":...}   legacy text client
@@ -1081,6 +1082,35 @@ def is_donzo_command(text: str) -> bool:
     return re.findall(r"[^\W_]+", without_marks, flags=re.UNICODE) == ["donzo"]
 
 
+def is_adam_finish_phrase(text: str) -> bool:
+    """Match only a standalone, punctuation-tolerant command finish segment."""
+    folded = unicodedata.normalize("NFKD", text or "").casefold()
+    without_marks = "".join(
+        character for character in folded
+        if unicodedata.category(character) != "Mn"
+    )
+    without_apostrophes = without_marks
+    for apostrophe in ("'", "’", "‘", "ʼ", "＇"):
+        without_apostrophes = without_apostrophes.replace(apostrophe, "")
+    return re.findall(r"[^\W_]+", without_apostrophes, flags=re.UNICODE) in (
+        ["thats", "it"],
+        ["that", "is", "it"],
+    )
+
+
+def strip_adam_finish_phrase(text: str) -> str:
+    """Remove one exact trailing finish segment, preserving the command."""
+    value = (text or "").strip()
+    match = re.search(
+        r"(?iu)(^|[\s,;:—–-]+)(?:that['’‘ʼ＇]?s|thats|that\s+is)\s+it"
+        r"(?:[\s.!?,;:…'’‘ʼ＇\"()\[\]]*)$",
+        value,
+    )
+    if not match:
+        return value
+    return value[:match.start()].rstrip(" \t\r\n,;:—–-")
+
+
 def _stt_language(locale: str) -> str:
     return "lv" if sanitize_locale(locale) == "lv-LV" else "en"
 
@@ -1657,6 +1687,8 @@ async def process_audio_turn(
                 "request_id": request_id,
             }))
             return
+        if capture.get("finish_phrase"):
+            transcript = strip_adam_finish_phrase(transcript)
         await phone_send(json.dumps({
             "type": "transcript",
             "text": transcript,
@@ -2366,11 +2398,20 @@ async def handle_connection(websocket):
                         request_id,
                     )
                     continue
+                finish_phrase = data.get("finish_phrase", False)
+                if not isinstance(finish_phrase, bool):
+                    await _send_protocol_error(
+                        websocket,
+                        "audio_start finish_phrase must be a boolean.",
+                        request_id,
+                    )
+                    continue
                 conn_state["audio_capture"] = {
                     "request_id": request_id,
                     "locale": sanitize_locale(data.get("locale")),
                     "vocabulary": _safe_vocabulary(data.get("vocabulary")),
                     "follow_up": follow_up,
+                    "finish_phrase": finish_phrase,
                     "pcm": bytearray(),
                     "started_at": time.monotonic(),
                 }

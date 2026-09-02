@@ -362,14 +362,16 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
     func startAudioCapture(
         requestID: String,
         vocabulary: [String] = [],
-        followUp: Bool = false
+        followUp: Bool = false,
+        finishPhrase: Bool = false
     ) {
         guard isConnected, let ws = webSocket, !requestID.isEmpty else { return }
         isFinalized = false
         guard let data = try? makeAudioStartData(
             requestID: requestID,
             vocabulary: vocabulary,
-            followUp: followUp
+            followUp: followUp,
+            finishPhrase: finishPhrase
         ),
               let text = String(data: data, encoding: .utf8) else { return }
         ws.send(.string(text)) { [weak self] error in
@@ -388,7 +390,8 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
         _ data: Data,
         requestID: String,
         vocabulary: [String] = [],
-        followUp: Bool = false
+        followUp: Bool = false,
+        finishPhrase: Bool = false
     ) async throws {
         guard isConnected, let ws = webSocket, !requestID.isEmpty else {
             throw URLError(.notConnectedToInternet)
@@ -397,7 +400,8 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
         let startData = try makeAudioStartData(
             requestID: requestID,
             vocabulary: vocabulary,
-            followUp: followUp
+            followUp: followUp,
+            finishPhrase: finishPhrase
         )
         guard let startText = String(data: startData, encoding: .utf8) else {
             throw HermesAPIClientError.invalidAudioPayload
@@ -422,7 +426,8 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
     func makeAudioStartData(
         requestID: String,
         vocabulary: [String] = [],
-        followUp: Bool = false
+        followUp: Bool = false,
+        finishPhrase: Bool = false
     ) throws -> Data {
         let words = Array(vocabulary.prefix(24)).map {
             String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(48))
@@ -437,6 +442,7 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
             "vocabulary": words,
             "wake_verified": true,
             "follow_up": followUp,
+            "finish_phrase": finishPhrase,
         ]
         return try JSONSerialization.data(withJSONObject: payload)
     }

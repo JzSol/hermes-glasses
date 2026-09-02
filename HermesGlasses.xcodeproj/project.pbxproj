@@ -133,6 +133,8 @@
 		ADAD00000000000000000011 /* AdamSpeechSignal.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000116 /* AdamSpeechSignal.swift */; };
 		ADAD00000000000000000012 /* AdamSoundscapeWaveform.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000117 /* AdamSoundscapeWaveform.swift */; };
 		ADAD00000000000000000013 /* AdamSoundscapeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000118 /* AdamSoundscapeManager.swift */; };
+		ADAD00000000000000000017 /* AdamVoiceFeedbackPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000119 /* AdamVoiceFeedbackPolicy.swift */; };
+		ADAD00000000000000000018 /* AdamVoiceFeedbackPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000119 /* AdamVoiceFeedbackPolicy.swift */; };
 		ADAD00000000000000000014 /* HermesDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000818 /* HermesDesign.swift */; };
 		ADAD00000000000000000015 /* AssistantConversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000870 /* AssistantConversation.swift */; };
 		ADAD00000000000000000016 /* AssistantConversationSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000872 /* AssistantConversationSurface.swift */; };
@@ -272,6 +274,7 @@
 		ADAD00000000000000000116 /* AdamSpeechSignal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamSpeechSignal.swift; sourceTree = "<group>"; };
 		ADAD00000000000000000117 /* AdamSoundscapeWaveform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamSoundscapeWaveform.swift; sourceTree = "<group>"; };
 		ADAD00000000000000000118 /* AdamSoundscapeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamSoundscapeManager.swift; sourceTree = "<group>"; };
+		ADAD00000000000000000119 /* AdamVoiceFeedbackPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamVoiceFeedbackPolicy.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -376,6 +379,7 @@
 				ADAD00000000000000000116 /* AdamSpeechSignal.swift */,
 				ADAD00000000000000000117 /* AdamSoundscapeWaveform.swift */,
 				ADAD00000000000000000118 /* AdamSoundscapeManager.swift */,
+				ADAD00000000000000000119 /* AdamVoiceFeedbackPolicy.swift */,
 				AAAA00000000000000000115 /* DirectClient.swift */,
 				AAAA00000000000000000116 /* HermesDisplayLogic.swift */,
 				AAAA00000000000000000117 /* HermesDisplayScreens.swift */,
@@ -682,6 +686,7 @@
 				AAAA00000000000000000A09 /* AiSeeTypes.swift in Sources */,
 				AAAA00000000000000000A52 /* GlassesVendor.swift in Sources */,
 				AAAA00000000000000000A56 /* GlassesKeyMap.swift in Sources */,
+				ADAD00000000000000000018 /* AdamVoiceFeedbackPolicy.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -706,6 +711,7 @@
 				ADAD00000000000000000014 /* HermesDesign.swift in Sources */,
 				ADAD00000000000000000015 /* AssistantConversation.swift in Sources */,
 				ADAD00000000000000000016 /* AssistantConversationSurface.swift in Sources */,
+				ADAD00000000000000000017 /* AdamVoiceFeedbackPolicy.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

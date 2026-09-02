@@ -291,6 +291,7 @@ struct AssistantPhotoCard: View {
 /// Shared live-session bar: waveform, explicit state, contextual recovery,
 /// and start/end controls. Session ownership remains in the supplied closures.
 struct AssistantSessionBar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isRunning: Bool
     let micLevel: Float
     let statusLabel: String
@@ -302,6 +303,7 @@ struct AssistantSessionBar: View {
     var contextActionTitle: String?
     var contextActionIsDestructive = false
     var statusTapHint: String?
+    var presentationPhase: AdamPresentationFeedbackPhase? = nil
     let onStart: () -> Void
     var onStatusTap: (() -> Void)?
     var onContextAction: (() -> Void)?
@@ -376,11 +378,7 @@ struct AssistantSessionBar: View {
     @ViewBuilder
     private var statusControl: some View {
         let content = VStack(alignment: .leading, spacing: 3) {
-            WaveformView(
-                level: micLevel,
-                accent: isError ? HermesTheme.destructive : HermesTheme.accent,
-                barCount: 22
-            )
+            phaseVisualizer
             Text(statusLabel)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(statusColor)
@@ -389,7 +387,9 @@ struct AssistantSessionBar: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(statusLabel)
+        .accessibilityLabel("Assistant status")
+        .accessibilityValue(statusLabel)
+        .accessibilityAddTraits(.updatesFrequently)
 
         if let onStatusTap {
             Button(action: onStatusTap) { content }
@@ -397,6 +397,53 @@ struct AssistantSessionBar: View {
                 .accessibilityHint(statusTapHint ?? "")
         } else {
             content
+        }
+    }
+
+    @ViewBuilder
+    private var phaseVisualizer: some View {
+        let accent = isError ? HermesTheme.destructive : HermesTheme.accent
+        switch presentationPhase ?? .listening {
+        case .listening, .hearingSpeech:
+            WaveformView(level: micLevel, accent: accent, barCount: 22)
+        case .paused:
+            HStack(spacing: 7) {
+                Image(systemName: "pause.circle.fill")
+                Text("Still listening")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(accent)
+            .frame(height: 28, alignment: .center)
+        case .transcribing:
+            HStack(spacing: 7) {
+                Image(systemName: "waveform.and.mic")
+                Text("Transcribing")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(accent)
+            .frame(height: 28, alignment: .center)
+        case .transcriptReady:
+            HStack(spacing: 7) {
+                Image(systemName: "checkmark.circle.fill")
+                Text("Transcript ready")
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(accent)
+            .frame(height: 28, alignment: .center)
+        case .thinking, .preparingVoice:
+            AdamThinkingPulseView(reduceMotion: reduceMotion, accent: accent)
+        case .speaking:
+            Image(systemName: "speaker.wave.2.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(accent)
+                .frame(height: 28, alignment: .center)
+        case .failure:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(accent)
+                .frame(height: 28, alignment: .center)
+        case .idle, .connecting:
+            WaveformView(level: 0, accent: accent, barCount: 22)
         }
     }
 
@@ -460,6 +507,7 @@ struct AssistantFlowRow: Layout {
 
 /// Mic-level waveform: bars with the original Hermes sine envelope.
 struct WaveformView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let level: Float
     let accent: Color
     var barCount: Int = 30
@@ -480,11 +528,51 @@ struct WaveformView: View {
             }
         }
         .frame(height: 28, alignment: .center)
-        .animation(.linear(duration: 0.12), value: level)
+        .animation(
+            reduceMotion ? nil : .linear(duration: 0.12),
+            value: level
+        )
         .accessibilityHidden(true)
     }
 
     private var amplitude: Double {
         min(1.0, Double(level) * 10)
+    }
+}
+
+private struct AdamThinkingPulseView: View {
+    let reduceMotion: Bool
+    let accent: Color
+    @State private var isExpanded = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(accent.opacity(0.18), lineWidth: 2)
+                .scaleEffect(isExpanded ? 1.12 : 0.82)
+            Circle()
+                .fill(accent.opacity(0.78))
+                .frame(width: 10, height: 10)
+        }
+        .frame(width: 42, height: 28)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                isExpanded = true
+            }
+        }
+        .onChange(of: reduceMotion) { _, reduced in
+            if reduced {
+                isExpanded = false
+            } else {
+                withAnimation(
+                    .easeInOut(duration: 1.1)
+                        .repeatForever(autoreverses: true)
+                ) {
+                    isExpanded = true
+                }
+            }
+        }
+        .accessibilityHidden(true)
     }
 }

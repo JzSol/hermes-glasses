@@ -142,7 +142,8 @@ expect(HermesAPIClient.parseCapabilities(from: incompleteAdamWelcome)?.supportsA
 if let body = try? client.makeAudioStartData(
     requestID: "follow-up-123",
     vocabulary: ["Donzo", "Vārti"],
-    followUp: true
+    followUp: true,
+    finishPhrase: true
 ),
    let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
     expect(json["type"] as? String == "audio_start",
@@ -151,6 +152,8 @@ if let body = try? client.makeAudioStartData(
            "audio capture carries request identity")
     expect(json["follow_up"] as? Bool == true,
            "audio capture identifies follow-up turns")
+    expect(json["finish_phrase"] as? Bool == true,
+           "audio capture identifies an explicit finish segment")
     expect(json["wake_verified"] as? Bool == true,
            "audio capture retains verified wake provenance")
 } else {

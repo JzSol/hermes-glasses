@@ -286,6 +286,11 @@ allowlisted dry-contact switch; bridge authentication and the relay's live
 Home Assistant state must both pass before activation. The response confirms
 command acceptance, not the gate's physical position.
 
+Adam keeps an awakened command open across pauses for up to 15 seconds. The
+wearer can continue speaking to reset that grace period or say “That's it” as
+a standalone phrase to submit immediately; the finish phrase is removed before
+the command reaches the gate router or agent.
+
 The bridge's `HERMES_BRIDGE_BRAIN` env var can also be set to `anthropic`,
 `openai`, or `gemini` to skip the Hermes CLI and call that provider's API
 directly from the bridge - but **those direct-provider brains are

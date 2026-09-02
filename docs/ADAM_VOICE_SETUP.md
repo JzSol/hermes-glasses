@@ -251,7 +251,9 @@ signing, endpoint, or bridge-token values.
 7. Say “Adam, what time is it?” or say “Adam”, wait for the flute/listening
    state, then speak the command. The terracotta user bubble is Hermes's final
    local transcript; the white bubble is the answer. English replies use
-   George, a British male Kokoro voice.
+   George, a British male Kokoro voice. A short pause keeps the same command
+   open for up to 15 seconds; continue speaking to reset that window, or say
+   `That's it` by itself to submit immediately.
 8. After Adam replies, speak the next command without repeating `Adam`. The
    follow-up window lasts 30 seconds and resets after each completed answer.
    Say `donzo` by itself to close it and return to wake-only listening.
@@ -263,7 +265,8 @@ signing, endpoint, or bridge-token values.
 The **Listening sounds** switch is enabled by default. One short, quiet
 generated flute cue marks the open command window; recording itself stays
 silent so the cue cannot contaminate Whisper. A droplet confirms that the
-command was accepted. No recorded or licensed cue assets are used.
+command was accepted. The separate **Haptic feedback** switch controls the
+wake and submission taps. No recorded or licensed cue assets are used.
 
 If Adam reports that the input is very quiet, confirm the Input row still names
 the Ray-Bans. The app requests the route's highest supported hardware gain and

@@ -35,27 +35,42 @@ struct AdamVoiceView: View {
             statusNotices
             capabilityStrip
 
-            AssistantSessionBar(
-                isRunning: session.isRunning,
-                micLevel: session.micLevel,
-                statusLabel: session.status.label,
-                isError: session.status == .failed,
-                startTitle: "Start listening",
-                canStart: session.tokenConfigured,
-                startNote: session.tokenConfigured
-                    ? nil : "Add the bridge token in Settings before starting.",
-                contextActionTitle: contextActionTitle,
-                contextActionIsDestructive: session.canCancelTurn,
-                onStart: { session.start() },
-                onContextAction: contextAction,
-                onEnd: { session.stop() }
-            )
+            sessionBar
+        }
+        .sensoryFeedback(.start, trigger: session.sensoryFeedbackEvent) { _, newEvent in
+            session.hapticsEnabled
+                && newEvent == .wakeCueStarted
+                && session.isWakeCueCaptureGuardActive
+        }
+        .sensoryFeedback(.stop, trigger: session.sensoryFeedbackEvent) { _, newEvent in
+            session.hapticsEnabled
+                && newEvent == .transcriptionStarted
+                && !session.isWakeCueCaptureGuardActive
         }
         .background(HermesTheme.canvas)
         .tint(HermesTheme.accent)
         .sheet(isPresented: $showSettings) {
             AdamSettingsView(session: session)
         }
+    }
+
+    private var sessionBar: AssistantSessionBar {
+        AssistantSessionBar(
+            isRunning: session.isRunning,
+            micLevel: session.micLevel,
+            statusLabel: session.status.label,
+            isError: session.status == .failed,
+            startTitle: "Start listening",
+            canStart: session.tokenConfigured,
+            startNote: session.tokenConfigured
+                ? nil : "Add the bridge token in Settings before starting.",
+            contextActionTitle: contextActionTitle,
+            contextActionIsDestructive: session.canCancelTurn,
+            presentationPhase: session.presentationFeedbackPhase,
+            onStart: { session.start() },
+            onContextAction: contextAction,
+            onEnd: { session.stop() }
+        )
     }
 
     private var header: some View {
@@ -166,6 +181,10 @@ struct AdamVoiceView: View {
         switch session.status {
         case .transcribing:
             return "Transcribing with the Hermes bridge…"
+        case .transcriptReady:
+            return "Transcript complete — preparing Adam’s reply…"
+        case .paused:
+            return "Paused — continue speaking or say “That’s it” to send"
         case .wakeAcknowledged, .hearingSpeech, .awaitingCommand:
             return "Listening through the Ray-Ban microphone…"
         default:
@@ -175,7 +194,7 @@ struct AdamVoiceView: View {
 
     private var conversationActivity: AssistantConversationActivity {
         switch session.status {
-        case .transcribing, .thinking, .preparingVoice, .processing:
+        case .transcribing, .transcriptReady, .thinking, .preparingVoice, .processing:
             return .processing(session.status.label)
         case .speaking:
             return .speaking("Adam is speaking - tap to stop")
@@ -342,6 +361,18 @@ private struct AdamSettingsView: View {
                 isOn: Binding(
                     get: { session.listeningSoundsEnabled },
                     set: { session.setListeningSounds($0) }
+                )
+            )
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            HermesDivider()
+
+            Toggle(
+                "Haptic feedback",
+                isOn: Binding(
+                    get: { session.hapticsEnabled },
+                    set: { session.setHaptics($0) }
                 )
             )
             .padding(.horizontal, 16)
