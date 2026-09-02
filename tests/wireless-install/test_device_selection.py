@@ -70,6 +70,29 @@ class WirelessDeviceSelectionTests(unittest.TestCase):
         ):
             MODULE.select_wireless_iphone({"result": {"devices": [candidate]}})
 
+    def test_confirmation_rejects_device_that_became_wired(self):
+        payload = {"result": {"devices": [
+            device("phone", transport="wired"),
+        ]}}
+        with self.assertRaisesRegex(
+            MODULE.DeviceSelectionError, "not wireless"
+        ):
+            MODULE.confirm_wireless_iphone(
+                payload, "phone", "00008130-TEST"
+            )
+
+    def test_confirmation_rejects_changed_hardware_identity(self):
+        candidate = device("phone")
+        candidate["hardwareProperties"]["udid"] = "DIFFERENT-UDID"
+        with self.assertRaisesRegex(
+            MODULE.DeviceSelectionError, "hardware identity changed"
+        ):
+            MODULE.confirm_wireless_iphone(
+                {"result": {"devices": [candidate]}},
+                "phone",
+                "00008130-TEST",
+            )
+
 
 class AdamInstallVerificationTests(unittest.TestCase):
     def test_exact_version_and_build_are_accepted(self):

@@ -42,6 +42,10 @@ trap cleanup EXIT HUP INT TERM
 
 devices_json="$temporary_directory/devices.json"
 selection_json="$temporary_directory/selection.json"
+preinstall_devices_json="$temporary_directory/preinstall-devices.json"
+preinstall_selection_json="$temporary_directory/preinstall-selection.json"
+postinstall_devices_json="$temporary_directory/postinstall-devices.json"
+postinstall_selection_json="$temporary_directory/postinstall-selection.json"
 apps_json="$temporary_directory/apps.json"
 
 xcrun devicectl list devices \
@@ -62,6 +66,19 @@ device_identifier=$(/usr/bin/plutil -extract identifier raw -o - "$selection_jso
 device_udid=$(/usr/bin/plutil -extract udid raw -o - "$selection_json")
 device_name=$(/usr/bin/plutil -extract name raw -o - "$selection_json")
 transport=$(/usr/bin/plutil -extract transport raw -o - "$selection_json")
+
+confirm_wireless_transport() {
+    phase=$1
+    devices_path=$2
+    selection_path=$3
+    xcrun devicectl list devices \
+        --json-output "$devices_path" \
+        --quiet \
+        --timeout 15 || fail "could not recheck CoreDevice before $phase"
+    /usr/bin/python3 scripts/adam-wireless-device.py confirm \
+        "$devices_path" "$device_identifier" "$device_udid" \
+        > "$selection_path" || exit $?
+}
 
 derived_data="${TMPDIR:-/tmp}"
 derived_data="${derived_data%/}/adamvoice-wireless-build"
@@ -84,6 +101,8 @@ build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app_path/Info.plis
 
 printf 'Installing Adam %s (%s) without uninstalling the current app...\n' \
     "$version" "$build"
+confirm_wireless_transport "install" \
+    "$preinstall_devices_json" "$preinstall_selection_json"
 xcrun devicectl device install app \
     --device "$device_identifier" \
     "$app_path"
@@ -99,6 +118,8 @@ xcrun devicectl device info apps \
     --timeout 20
 /usr/bin/python3 scripts/adam-wireless-device.py verify \
     "$apps_json" "$version" "$build" >/dev/null
+confirm_wireless_transport "final verification" \
+    "$postinstall_devices_json" "$postinstall_selection_json"
 
 printf 'Adam %s (%s) is installed and running wirelessly on %s.\n' \
     "$version" "$build" "$device_name"

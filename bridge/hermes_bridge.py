@@ -48,6 +48,7 @@ import wave
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 # Load only the bridge-local .env before reading any configuration constants.
@@ -189,6 +190,12 @@ def voice_session_profile_signature() -> str:
 # speaks replies on-device with AVSpeechSynthesizer. Set HERMES_BRIDGE_TTS=1
 # to fall back to server TTS for clients that can't speak locally.
 BRIDGE_TTS = os.environ.get("HERMES_BRIDGE_TTS", "") == "1"
+STREAM_TTS_PROVIDER = os.environ.get(
+    "HERMES_BRIDGE_STREAM_TTS_PROVIDER", ""
+).strip() or None
+STREAM_TTS_VOICE = os.environ.get(
+    "HERMES_BRIDGE_STREAM_TTS_VOICE", ""
+).strip() or None
 
 # Which brain answers queries:
 #   "hermes" (default) - spawn the hermes CLI per query (agent with tools;
@@ -1466,8 +1473,11 @@ class HermesTTSStream:
         self.bytes_sent = 0
         self.sample_rate = 24_000
         self.channels = 1
-        self.provider = "kokoro-mlx"
-        self.voice = "bm_george"
+        # Hermes can advertise these in the start frame. Older servers do
+        # not, so only use an explicitly configured bridge identity rather
+        # than claiming a provider or voice that may not be active.
+        self.provider = STREAM_TTS_PROVIDER
+        self.voice = STREAM_TTS_VOICE
         self.on_audio_start = on_audio_start
 
     async def _phone_send(self, value) -> None:
@@ -1492,6 +1502,14 @@ class HermesTTSStream:
                 return False
             self.sample_rate = int(first.get("sample_rate") or 24_000)
             self.channels = int(first.get("channels") or 1)
+            self.provider = (
+                str(first.get("provider") or "").strip()
+                or self.provider
+            )
+            self.voice = (
+                str(first.get("voice") or "").strip()
+                or self.voice
+            )
             self.receiver = asyncio.create_task(self._receive())
             return True
         except Exception as error:
@@ -1542,7 +1560,7 @@ class HermesTTSStream:
         if self.websocket is not None and text:
             await self.websocket.send(json.dumps({"text": text}))
 
-    async def finish(self) -> bool:
+    async def finish(self, end_phone: bool = True) -> bool:
         if self.websocket is None:
             return False
         with contextlib.suppress(Exception):
@@ -1550,9 +1568,14 @@ class HermesTTSStream:
         if self.receiver is not None:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(self.receiver, timeout=90)
-        await self._end_phone_audio()
         await self.close()
+        if end_phone:
+            await self._end_phone_audio()
         return self.bytes_sent > 0
+
+    async def complete_phone_audio(self) -> None:
+        """Close the phone envelope after its final response metadata."""
+        await self._end_phone_audio()
 
     async def _receive(self) -> None:
         if self.websocket is None:
@@ -1571,7 +1594,6 @@ class HermesTTSStream:
                     await self._end_phone_segment()
                     continue
                 if value.get("type") == "end":
-                    await self._end_phone_audio()
                     return
         except Exception:
             pass
@@ -1720,43 +1742,68 @@ async def process_audio_turn(
             await tts.feed(response)
         response_text = response or "I'm not sure what to say."
 
-        await phone_send(json.dumps({
-            "type": "response",
-            "text": response_text,
-            "request_id": request_id,
-            "tts": True,
-            "provider": tts.provider if streaming_tts else "edge",
-            "voice": tts.voice if streaming_tts else (
-                "lv-LV-NilsNeural" if locale == "lv-LV" else "en-GB-RyanNeural"
-            ),
-        }))
-
+        response_sent = False
+        produced_audio = False
         if streaming_tts:
-            produced_audio = await tts.finish()
+            # If sentence streaming already produced PCM, publish the response
+            # before the upstream done marker can close playback. Otherwise
+            # finish with the phone envelope held open so response metadata
+            # still arrives before audio_end.
+            if tts.bytes_sent > 0:
+                await phone_send(json.dumps({
+                    "type": "response",
+                    "text": response_text,
+                    "request_id": request_id,
+                    "tts": True,
+                    "provider": tts.provider,
+                    "voice": tts.voice,
+                }))
+                response_sent = True
+            produced_audio = await tts.finish(end_phone=False)
             if not produced_audio:
                 streaming_tts = False
-        if not streaming_tts:
-            audio = await asyncio.to_thread(
+            else:
+                if not response_sent:
+                    await phone_send(json.dumps({
+                        "type": "response",
+                        "text": response_text,
+                        "request_id": request_id,
+                        "tts": True,
+                        "provider": tts.provider,
+                        "voice": tts.voice,
+                    }))
+                await tts.complete_phone_audio()
+
+        if not produced_audio:
+            speech = _coerce_synthesized_speech(await asyncio.to_thread(
                 synthesize_speech, response_text, locale
-            )
+            ))
             await phone_send(json.dumps({
-                "type": "audio_start",
+                "type": "response",
+                "text": response_text,
                 "request_id": request_id,
-                "sample_rate": 24_000,
-                "channels": 1,
-                "format": "pcm_s16le",
-                "provider": "edge",
-                "voice": "lv-LV-NilsNeural" if locale == "lv-LV" else "en-GB-RyanNeural",
+                "tts": speech is not None,
+                "provider": speech.provider if speech else None,
+                "voice": speech.voice if speech else None,
             }))
-            fallback_audio_open = True
-            if audio:
-                await on_first_audio("edge")
-                for index in range(0, len(audio), 16_384):
-                    await phone_send(audio[index:index + 16_384])
-            await phone_send(json.dumps({
-                "type": "audio_end", "request_id": request_id
-            }))
-            fallback_audio_open = False
+            if speech is not None:
+                await phone_send(json.dumps({
+                    "type": "audio_start",
+                    "request_id": request_id,
+                    "sample_rate": speech.sample_rate,
+                    "channels": speech.channels,
+                    "format": "pcm_s16le",
+                    "provider": speech.provider,
+                    "voice": speech.voice,
+                }))
+                fallback_audio_open = True
+                await on_first_audio(speech.provider)
+                for index in range(0, len(speech.pcm), 16_384):
+                    await phone_send(speech.pcm[index:index + 16_384])
+                await phone_send(json.dumps({
+                    "type": "audio_end", "request_id": request_id
+                }))
+                fallback_audio_open = False
     except Exception as error:
         print(f"[Bridge] Realtime turn failed ({type(error).__name__})")
         await phone_send(json.dumps({
@@ -1780,9 +1827,47 @@ async def process_audio_turn(
 
 # ── Text-to-Speech ─────────────────────────────────────────────────────────
 
-def synthesize_speech(text: str, locale: str = DEFAULT_LOCALE) -> bytes | None:
-    """Convert text to speech. Always returns raw PCM16 mono 24kHz -
-    the only format the app can play."""
+@dataclass(frozen=True)
+class SynthesizedSpeech:
+    """PCM plus the provider identity that actually produced it."""
+
+    pcm: bytes
+    provider: str
+    voice: str
+    sample_rate: int = 24_000
+    channels: int = 1
+
+
+def _coerce_synthesized_speech(value) -> SynthesizedSpeech | None:
+    """Keep legacy extensions returning bytes safe during migration."""
+    if isinstance(value, SynthesizedSpeech):
+        return value if value.pcm else None
+    if isinstance(value, bytes) and value:
+        return SynthesizedSpeech(value, "bridge", "configured")
+    return None
+
+
+def select_macos_say_voice(voices: str, locale: str) -> str | None:
+    """Select only a known British male macOS voice for Adam's fallback."""
+    if sanitize_locale(locale) != "en-GB":
+        return None
+    for line in voices.splitlines():
+        match = re.match(
+            r"^(.+?)\s+([a-z]{2}_[A-Z]{2})\s+#", line.strip()
+        )
+        if (
+            match
+            and match.group(1).strip() == "Daniel"
+            and match.group(2) == "en_GB"
+        ):
+            return "Daniel"
+    return None
+
+
+def synthesize_speech(
+    text: str, locale: str = DEFAULT_LOCALE
+) -> SynthesizedSpeech | None:
+    """Convert text to PCM16 mono 24kHz with truthful voice metadata."""
     # Try Edge TTS first (better quality)
     try:
         import edge_tts
@@ -1792,12 +1877,13 @@ def synthesize_speech(text: str, locale: str = DEFAULT_LOCALE) -> bytes | None:
         wav_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         wav_tmp.close()
         try:
+            voice = (
+                "lv-LV-NilsNeural"
+                if sanitize_locale(locale) == "lv-LV"
+                else "en-GB-RyanNeural"
+            )
+
             async def _synth():
-                voice = (
-                    "lv-LV-NilsNeural"
-                    if sanitize_locale(locale) == "lv-LV"
-                    else "en-GB-RyanNeural"
-                )
                 communicate = edge_tts.Communicate(text, voice)
                 await communicate.save(mp3_tmp.name)
 
@@ -1820,7 +1906,8 @@ def synthesize_speech(text: str, locale: str = DEFAULT_LOCALE) -> bytes | None:
                 result = subprocess.run(cmd, capture_output=True, timeout=30)
                 if result.returncode == 0:
                     with wave.open(wav_tmp.name, "rb") as wf:
-                        return wf.readframes(wf.getnframes())
+                        pcm = wf.readframes(wf.getnframes())
+                    return SynthesizedSpeech(pcm, "edge", voice) if pcm else None
                 print(f"[TTS] decode failed: {result.stderr.decode()[:200]}")
         finally:
             # NamedTemporaryFile(delete=False) - always clean up, whether
@@ -1839,11 +1926,24 @@ def synthesize_speech(text: str, locale: str = DEFAULT_LOCALE) -> bytes | None:
     if not shutil.which("say"):
         print("[TTS] No 'say' fallback available on this platform")
         return None
+    try:
+        voices_result = subprocess.run(
+            ["say", "-v", "?"], capture_output=True, timeout=10
+        )
+    except Exception as error:
+        print(f"[TTS] Could not list macOS voices: {error}")
+        return None
+    voice = select_macos_say_voice(
+        voices_result.stdout.decode("utf-8", errors="replace"), locale
+    )
+    if voices_result.returncode != 0 or voice is None:
+        print("[TTS] No verified British male macOS voice is installed")
+        return None
     tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     tmp.close()
     try:
         result = subprocess.run(
-            ["say", "-o", tmp.name,
+            ["say", "-v", voice, "-o", tmp.name,
              "--file-format=WAVE", "--data-format=LEI16@24000", text],
             capture_output=True, timeout=30,
         )
@@ -1851,7 +1951,8 @@ def synthesize_speech(text: str, locale: str = DEFAULT_LOCALE) -> bytes | None:
             print(f"[TTS] 'say' failed: {result.stderr.decode()[:200]}")
             return None
         with wave.open(tmp.name, "rb") as wf:
-            return wf.readframes(wf.getnframes())
+            pcm = wf.readframes(wf.getnframes())
+        return SynthesizedSpeech(pcm, "macos-say", voice) if pcm else None
     except Exception as e:
         print(f"[TTS] Error: {e}")
         return None
@@ -1913,27 +2014,39 @@ async def send_response(
     request_id: str | None = None,
 ):
     """Send a text response and optional legacy bridge-side audio."""
+    speech = None
+    if bridge_tts:
+        print("[Bridge] Generating speech...")
+        speech = _coerce_synthesized_speech(
+            await asyncio.to_thread(synthesize_speech, response_text)
+        )
     payload = {
         "type": "response",
         "text": response_text,
-        "tts": bridge_tts,
+        "tts": speech is not None,
     }
+    if speech is not None:
+        payload.update({"provider": speech.provider, "voice": speech.voice})
     if request_id:
         payload["request_id"] = request_id
     await websocket.send(json.dumps(payload))
 
-    if bridge_tts:
+    if speech is not None:
         # ── Server-side TTS (legacy fallback, HERMES_BRIDGE_TTS=1) ──
-        print("[Bridge] Generating speech...")
-        await websocket.send(json.dumps({"type": "audio_start"}))
+        await websocket.send(json.dumps({
+            "type": "audio_start",
+            "sample_rate": speech.sample_rate,
+            "channels": speech.channels,
+            "format": "pcm_s16le",
+            "provider": speech.provider,
+            "voice": speech.voice,
+        }))
 
-        audio_data = await asyncio.to_thread(synthesize_speech, response_text)
-        if audio_data:
-            # Send in chunks to avoid frame size limits
-            chunk_size = 16384
-            for i in range(0, len(audio_data), chunk_size):
-                await websocket.send(audio_data[i:i + chunk_size])
-                await asyncio.sleep(0.01)
+        # Send in chunks to avoid frame size limits
+        chunk_size = 16384
+        for i in range(0, len(speech.pcm), chunk_size):
+            await websocket.send(speech.pcm[i:i + chunk_size])
+            await asyncio.sleep(0.01)
 
         await websocket.send(json.dumps({"type": "audio_end"}))
 

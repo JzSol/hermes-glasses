@@ -13,6 +13,7 @@ enum HermesAPIClientError: LocalizedError, Equatable, Sendable {
     case missingToken
     case invalidEndpoint(HermesEndpointValidationError)
     case invalidAudioPayload
+    case invalidWelcome
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +23,8 @@ enum HermesAPIClientError: LocalizedError, Equatable, Sendable {
             return error.localizedDescription
         case .invalidAudioPayload:
             return "Adam could not encode the audio upload."
+        case .invalidWelcome:
+            return "Hermes bridge did not send a valid welcome frame."
         }
     }
 }
@@ -34,6 +37,10 @@ struct HermesBridgeCapabilities: Equatable, Sendable {
     var streamingTTS = false
     var turnCancel = false
     var followUpMode = false
+
+    var supportsAdamVoice: Bool {
+        audioUpload && serverSTT && streamingTTS
+    }
 }
 
 struct HermesVoiceMetadata: Equatable, Sendable {
@@ -259,6 +266,21 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
         )
     }
 
+    private static func parseCapabilities(
+        from message: URLSessionWebSocketTask.Message
+    ) -> HermesBridgeCapabilities? {
+        let data: Data
+        switch message {
+        case .string(let text):
+            data = Data(text.utf8)
+        case .data(let payload):
+            data = payload
+        @unknown default:
+            return nil
+        }
+        return parseCapabilities(from: data)
+    }
+
     // MARK: - Public API
 
     /// Connect to the Hermes bridge and wait for its welcome message.
@@ -285,8 +307,14 @@ final class HermesAPIClient: NSObject, @unchecked Sendable {
         do {
             // The bridge sends {"type":"welcome"} immediately on connect
             let first = try await ws.receive()
+            guard let capabilities = Self.parseCapabilities(from: first) else {
+                throw HermesAPIClientError.invalidWelcome
+            }
+            await MainActor.run { [weak self] in
+                self?.capabilities = capabilities
+                self?.onCapabilities?(capabilities)
+            }
             setConnected(true)
-            await handleMessage(first)
 
             receiveTask = Task { [weak self] in
                 await self?.receiveLoop()

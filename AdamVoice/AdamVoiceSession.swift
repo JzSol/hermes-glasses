@@ -714,12 +714,21 @@ final class AdamVoiceSession {
             client.disconnect()
             return false
         }
-        bridgeConnected = connected
-        if connected {
-            errorMessage = nil
-            reconnectAttempt = 0
+        guard connected else {
+            bridgeConnected = false
+            return false
         }
-        return connected
+        guard client.capabilities.supportsAdamVoice else {
+            client.onDisconnected = nil
+            client.disconnect()
+            bridgeConnected = false
+            errorMessage = "Update the Adam bridge on your Mac for server speech."
+            return false
+        }
+        bridgeConnected = true
+        errorMessage = nil
+        reconnectAttempt = 0
+        return true
     }
 
     private func installBridgeCallbacks(on client: HermesAPIClient, generation: Int) {

@@ -132,6 +132,12 @@ expect(HermesAPIClient.parseCapabilities(from: noVisionKey)?.vision == false,
        "welcome parser defaults missing vision to false")
 expect(HermesAPIClient.parseCapabilities(from: Data("{}".utf8)) == nil,
        "non-welcome frame is not capabilities")
+let adamWelcome = #"{"type":"welcome","capabilities":{"audio_upload":true,"server_stt":true,"streaming_tts":true}}"#.data(using: .utf8)!
+expect(HermesAPIClient.parseCapabilities(from: adamWelcome)?.supportsAdamVoice == true,
+       "Adam accepts a welcome with every required server speech capability")
+let incompleteAdamWelcome = #"{"type":"welcome","capabilities":{"audio_upload":true,"server_stt":true,"streaming_tts":false}}"#.data(using: .utf8)!
+expect(HermesAPIClient.parseCapabilities(from: incompleteAdamWelcome)?.supportsAdamVoice == false,
+       "Adam rejects a welcome missing a required server speech capability")
 
 if let body = try? client.makeAudioStartData(
     requestID: "follow-up-123",

@@ -1234,8 +1234,10 @@ class BridgeGateRealtimeTests(unittest.TestCase):
             "Gate relay activation command accepted.",
             [item.get("text") for item in payloads],
         )
-        self.assertIn("audio_start", [item.get("type") for item in payloads])
-        self.assertIn("audio_end", [item.get("type") for item in payloads])
+        response = next(item for item in payloads if item.get("type") == "response")
+        self.assertFalse(response["tts"])
+        self.assertNotIn("audio_start", [item.get("type") for item in payloads])
+        self.assertNotIn("audio_end", [item.get("type") for item in payloads])
 
 
 class BridgeFollowUpTests(unittest.TestCase):
@@ -1297,7 +1299,83 @@ class BridgeFollowUpTests(unittest.TestCase):
 
 
 class BridgeStreamingTTSTests(unittest.TestCase):
-    def test_phone_playback_starts_on_first_pcm_and_always_ends(self):
+    def test_response_metadata_precedes_stream_end_after_tail_flush(self):
+        websocket = FakeWebSocket([])
+        api = mock.MagicMock()
+        api.transcribe.return_value = {
+            "transcript": "hello Adam",
+            "provider": "local",
+            "backend": "mlx-whisper",
+        }
+        gateway = SimpleNamespace(
+            ask=mock.AsyncMock(return_value="Good morning.")
+        )
+
+        class TailFlushStream:
+            provider = "kokoro-mlx"
+            voice = "bm_george"
+            bytes_sent = 0
+
+            async def open(self):
+                return True
+
+            async def feed(self, _text):
+                return None
+
+            async def finish(self, end_phone=True):
+                self.bytes_sent = 4
+                await websocket.send(json.dumps({
+                    "type": "audio_start",
+                    "request_id": "stream-turn",
+                    "provider": self.provider,
+                    "voice": self.voice,
+                }))
+                await websocket.send(b"\x01\x00\x02\x00")
+                return True
+
+            async def complete_phone_audio(self):
+                await websocket.send(json.dumps({
+                    "type": "audio_end", "request_id": "stream-turn"
+                }))
+
+            async def close(self, **_kwargs):
+                return None
+
+        capture = {
+            "request_id": "stream-turn",
+            "locale": "en-GB",
+            "pcm": bytearray(b"\x01\x00" * 320),
+            "vocabulary": ["Adam"],
+            "follow_up": False,
+        }
+        state = {
+            "send_lock": asyncio.Lock(),
+            "hermes_api": api,
+            "gateway": gateway,
+        }
+        stream = TailFlushStream()
+        with mock.patch.object(hb, "HermesTTSStream", return_value=stream), \
+             mock.patch.object(hb, "synthesize_speech") as fallback:
+            asyncio.run(hb.process_audio_turn(websocket, capture, state))
+
+        fallback.assert_not_called()
+        frames = [
+            json.loads(item) if isinstance(item, str) else item
+            for item in websocket.sent
+        ]
+        response_index = next(
+            index for index, item in enumerate(frames)
+            if isinstance(item, dict) and item.get("type") == "response"
+        )
+        end_index = next(
+            index for index, item in enumerate(frames)
+            if isinstance(item, dict) and item.get("type") == "audio_end"
+        )
+        self.assertLess(response_index, end_index)
+        self.assertEqual(frames[response_index]["provider"], "kokoro-mlx")
+        self.assertEqual(frames[response_index]["voice"], "bm_george")
+
+    def test_phone_playback_starts_on_first_pcm_and_caller_ends_it(self):
         async def run():
             phone = FakeWebSocket([])
             stream = hb.HermesTTSStream(
@@ -1310,18 +1388,56 @@ class BridgeStreamingTTSTests(unittest.TestCase):
                 json.dumps({"type": "end"}),
             ])
             await stream._receive()
-            return phone.sent, stream
+            before_end = list(phone.sent)
+            await stream.complete_phone_audio()
+            return before_end, phone.sent, stream
 
-        sent, stream = asyncio.run(run())
+        before_end, sent, stream = asyncio.run(run())
         self.assertEqual(json.loads(sent[0])["type"], "audio_start")
         self.assertEqual(sent[1], b"\x01\x00\x02\x00")
         self.assertEqual(json.loads(sent[2]), {
             "type": "audio_segment", "request_id": "reply-1"
         })
+        self.assertEqual(len(before_end), 3)
         self.assertEqual(json.loads(sent[3]), {
             "type": "audio_end", "request_id": "reply-1"
         })
         self.assertEqual(stream.bytes_sent, 4)
+
+    def test_start_frame_supplies_truthful_voice_identity(self):
+        async def run():
+            phone = FakeWebSocket([])
+            stream = hb.HermesTTSStream(
+                SimpleNamespace(
+                    websocket_url=lambda _path: "ws://127.0.0.1/tts"
+                ),
+                phone,
+                "reply-identity",
+                asyncio.Lock(),
+            )
+            upstream = StreamWebSocket([
+                json.dumps({
+                    "type": "start",
+                    "sample_rate": 24_000,
+                    "channels": 1,
+                    "provider": "openai",
+                    "voice": "cedar",
+                }),
+            ])
+
+            async def connect(*_args, **_kwargs):
+                return upstream
+
+            with mock.patch.object(hb.websockets, "connect", new=connect):
+                opened = await stream.open()
+                await asyncio.sleep(0)
+                await stream.close()
+            return opened, stream
+
+        opened, stream = asyncio.run(run())
+        self.assertTrue(opened)
+        self.assertEqual(stream.provider, "openai")
+        self.assertEqual(stream.voice, "cedar")
 
     def test_failure_cleanup_balances_started_phone_audio_once(self):
         async def run():
@@ -1339,6 +1455,80 @@ class BridgeStreamingTTSTests(unittest.TestCase):
             [json.loads(item)["type"] for item in sent],
             ["audio_start", "audio_end"],
         )
+
+
+class BridgeFallbackTTSTests(unittest.TestCase):
+    def test_british_macos_voice_selector_requires_daniel(self):
+        voices = """\
+Samantha            en_US    # Hello!
+Daniel              en_GB    # Hello! My name is Daniel.
+"""
+        self.assertEqual(
+            hb.select_macos_say_voice(voices, "en-GB"),
+            "Daniel",
+        )
+        self.assertIsNone(
+            hb.select_macos_say_voice("Samantha en_US # Hello!", "en-GB")
+        )
+        self.assertIsNone(hb.select_macos_say_voice(voices, "lv-LV"))
+
+    def test_macos_fallback_uses_explicit_daniel_and_reports_it(self):
+        fake_wave = mock.MagicMock()
+        fake_wave.getnframes.return_value = 2
+        fake_wave.readframes.return_value = b"\x01\x00\x02\x00"
+        process_results = [
+            subprocess.CompletedProcess(
+                ["say", "-v", "?"], 0,
+                stdout=b"Daniel en_GB # Hello!", stderr=b"",
+            ),
+            subprocess.CompletedProcess(["say"], 0, stdout=b"", stderr=b""),
+        ]
+        with mock.patch.dict(sys.modules, {"edge_tts": None}), \
+             mock.patch.object(hb.shutil, "which", side_effect=lambda name: (
+                 "/usr/bin/say" if name == "say" else None
+             )), \
+             mock.patch.object(hb.subprocess, "run", side_effect=process_results) as run, \
+             mock.patch.object(hb.wave, "open") as wave_open:
+            wave_open.return_value.__enter__.return_value = fake_wave
+            speech = hb.synthesize_speech("Good morning", "en-GB")
+
+        self.assertIsNotNone(speech)
+        self.assertEqual(speech.pcm, b"\x01\x00\x02\x00")
+        self.assertEqual(speech.provider, "macos-say")
+        self.assertEqual(speech.voice, "Daniel")
+        synthesis_command = run.call_args_list[1].args[0]
+        self.assertEqual(synthesis_command[:3], ["say", "-v", "Daniel"])
+
+    def test_edge_success_reports_the_voice_that_generated_pcm(self):
+        class FakeCommunicate:
+            selected_voice = None
+
+            def __init__(self, _text, voice):
+                FakeCommunicate.selected_voice = voice
+
+            async def save(self, _path):
+                return None
+
+        fake_edge = SimpleNamespace(Communicate=FakeCommunicate)
+        fake_wave = mock.MagicMock()
+        fake_wave.getnframes.return_value = 2
+        fake_wave.readframes.return_value = b"\x01\x00\x02\x00"
+        converted = subprocess.CompletedProcess(
+            ["afconvert"], 0, stdout=b"", stderr=b""
+        )
+        with mock.patch.dict(sys.modules, {"edge_tts": fake_edge}), \
+             mock.patch.object(hb.shutil, "which", side_effect=lambda name: (
+                 "/usr/bin/afconvert" if name == "afconvert" else None
+             )), \
+             mock.patch.object(hb.subprocess, "run", return_value=converted), \
+             mock.patch.object(hb.wave, "open") as wave_open:
+            wave_open.return_value.__enter__.return_value = fake_wave
+            speech = hb.synthesize_speech("Good morning", "en-GB")
+
+        self.assertIsNotNone(speech)
+        self.assertEqual(speech.provider, "edge")
+        self.assertEqual(speech.voice, "en-GB-RyanNeural")
+        self.assertEqual(FakeCommunicate.selected_voice, speech.voice)
 
 
 class BridgeGatewayTests(unittest.TestCase):

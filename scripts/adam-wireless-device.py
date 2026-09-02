@@ -89,6 +89,18 @@ def select_wireless_iphone(
     }
 
 
+def confirm_wireless_iphone(
+    payload: dict[str, Any], expected_identifier: str, expected_udid: str
+) -> dict[str, str]:
+    """Revalidate that the selected hardware is still reachable wirelessly."""
+    selected = select_wireless_iphone(payload, expected_identifier)
+    if selected["udid"] != expected_udid:
+        raise DeviceSelectionError(
+            "the selected iPhone hardware identity changed during installation"
+        )
+    return selected
+
+
 def verify_adam_install(
     payload: dict[str, Any], expected_version: str, expected_build: str
 ) -> dict[str, str]:
@@ -129,6 +141,11 @@ def main(argv: list[str] | None = None) -> int:
     select.add_argument("json_path")
     select.add_argument("identifier", nargs="?")
 
+    confirm = subparsers.add_parser("confirm")
+    confirm.add_argument("json_path")
+    confirm.add_argument("identifier")
+    confirm.add_argument("udid")
+
     verify = subparsers.add_parser("verify")
     verify.add_argument("json_path")
     verify.add_argument("version")
@@ -139,6 +156,10 @@ def main(argv: list[str] | None = None) -> int:
         payload = _load(arguments.json_path)
         if arguments.command == "select":
             result = select_wireless_iphone(payload, arguments.identifier)
+        elif arguments.command == "confirm":
+            result = confirm_wireless_iphone(
+                payload, arguments.identifier, arguments.udid
+            )
         else:
             result = verify_adam_install(
                 payload, arguments.version, arguments.build
