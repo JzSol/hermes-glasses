@@ -203,7 +203,7 @@ final class AdamVoiceSession {
     private static let bridgeAudioTimeout: UInt64 = 30_000_000_000
     private static let thinkingPulseDelay: UInt64 = 900_000_000
     private static let thinkingPulseInterval: UInt64 = 2_800_000_000
-    /// The generated opening cue lasts 420 ms. Keep recognition closed for
+    /// The generated rising cue lasts 360 ms. Keep recognition closed for
     /// an HFP latency tail so the glasses cannot loop that cue into the mic.
     private static let wakeCueGuardDuration: UInt64 = 770_000_000
 
@@ -1453,7 +1453,7 @@ final class AdamVoiceSession {
     }
 
     private func beginOutput(_ kind: OutputKind) {
-        // Never let a listening cue or droplet render under Adam's reply.
+        // Never let a listening cue or completion cue render under Adam's reply.
         soundscape.stopImmediately()
         responseTimeoutTask?.cancel()
         responseTimeoutTask = nil
@@ -1745,7 +1745,7 @@ final class AdamVoiceSession {
             return
         }
         beginWakeCueCaptureGuard()
-        // One short flute cue marks the opened command window. Silence while
+        // One short rising cue marks the opened command window. Silence while
         // the user speaks avoids contaminating the Ray-Ban HFP microphone.
         soundscape.startListening(loop: false)
     }

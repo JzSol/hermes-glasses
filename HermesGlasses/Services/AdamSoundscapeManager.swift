@@ -13,11 +13,10 @@ import os
 
 /// Runtime tuning for Adam's generated listening cues.
 struct AdamSoundscapeConfiguration: Equatable, Sendable {
-    /// The generated flute is already quiet; this player-level value leaves
-    /// headroom for HFP output and keeps the cue below speech volume.
+    /// Generated cues are already quiet; these player-level values leave
+    /// headroom for HFP output and keep cues below speech volume.
     var ambienceVolume: Float = 0.78
-    var openingCueVolume: Float = 0.82
-    var dropletVolume: Float = 0.78
+    var matchedCueVolume: Float = 0.80
     var speechStartCueVolume: Float = 0.45
     var thinkingPulseVolume: Float = 0.55
     var fadeOutDuration: TimeInterval = 0.16
@@ -27,8 +26,7 @@ struct AdamSoundscapeConfiguration: Equatable, Sendable {
     var normalized: AdamSoundscapeConfiguration {
         var copy = self
         copy.ambienceVolume = Self.volume(copy.ambienceVolume)
-        copy.openingCueVolume = Self.volume(copy.openingCueVolume)
-        copy.dropletVolume = Self.volume(copy.dropletVolume)
+        copy.matchedCueVolume = Self.volume(copy.matchedCueVolume)
         copy.speechStartCueVolume = Self.volume(copy.speechStartCueVolume)
         copy.thinkingPulseVolume = Self.volume(copy.thinkingPulseVolume)
         copy.fadeOutDuration = copy.fadeOutDuration.isFinite
@@ -49,7 +47,7 @@ struct AdamSoundscapeConfiguration: Equatable, Sendable {
 final class AdamSoundscapeManager: NSObject {
     private enum ListeningMode: Equatable {
         case loop
-        case openingCue
+        case risingCue
     }
 
     private let logger = Logger(
@@ -59,23 +57,23 @@ final class AdamSoundscapeManager: NSObject {
 
     private let configuration: AdamSoundscapeConfiguration
     private let fluteLoopData: Data
-    private let openingCueData: Data
-    private let dropletData: Data
+    private let risingCueData: Data
+    private let fallingCueData: Data
     private let speechStartCueData: Data
     private let thinkingPulseData: Data
 
     private var ambiencePlayer: AVAudioPlayer?
-    private var dropletPlayer: AVAudioPlayer?
+    private var completionCuePlayer: AVAudioPlayer?
     private var signalPlayer: AVAudioPlayer?
     private var ambienceFadeTask: Task<Void, Never>?
-    private var pendingDropletTask: Task<Void, Never>?
+    private var pendingCompletionCueTask: Task<Void, Never>?
     private var thinkingPulseTask: Task<Void, Never>?
     private var generation: UInt64 = 0
     private var pulseGeneration: UInt64 = 0
     private var listeningMode: ListeningMode?
 
     /// True from `startListening` until `finishListening` or
-    /// `stopImmediately`, including the short period after an opening cue has
+    /// `stopImmediately`, including the short period after a rising cue has
     /// naturally finished while speech recognition is starting.
     private(set) var isListening = false
 
@@ -83,7 +81,7 @@ final class AdamSoundscapeManager: NSObject {
     var isLooping: Bool { listeningMode == .loop }
 
     /// Whether the end cue is currently rendering.
-    var isPlayingDroplet: Bool { dropletPlayer?.isPlaying == true }
+    var isPlayingCompletionCue: Bool { completionCuePlayer?.isPlaying == true }
 
     init(
         configuration: AdamSoundscapeConfiguration = .default,
@@ -91,8 +89,14 @@ final class AdamSoundscapeManager: NSObject {
     ) {
         self.configuration = configuration.normalized
         self.fluteLoopData = AdamSoundscapeWaveform.fluteLoop(sampleRate: sampleRate).wavData
-        self.openingCueData = AdamSoundscapeWaveform.openingCue(sampleRate: sampleRate).wavData
-        self.dropletData = AdamSoundscapeWaveform.droplet(sampleRate: sampleRate).wavData
+        self.risingCueData = AdamSoundscapeWaveform.matchedCue(
+            for: .listeningStart,
+            sampleRate: sampleRate
+        ).wavData
+        self.fallingCueData = AdamSoundscapeWaveform.matchedCue(
+            for: .listeningEnd,
+            sampleRate: sampleRate
+        ).wavData
         self.speechStartCueData = AdamSoundscapeWaveform.speechStartCue(sampleRate: sampleRate).wavData
         self.thinkingPulseData = AdamSoundscapeWaveform.thinkingPulse(sampleRate: sampleRate).wavData
         super.init()
@@ -100,28 +104,28 @@ final class AdamSoundscapeManager: NSObject {
 
     deinit {
         ambienceFadeTask?.cancel()
-        pendingDropletTask?.cancel()
+        pendingCompletionCueTask?.cancel()
         thinkingPulseTask?.cancel()
         ambiencePlayer?.stop()
-        dropletPlayer?.stop()
+        completionCuePlayer?.stop()
         signalPlayer?.stop()
     }
 
     /// Begin a listening cue.
     ///
-    /// Bluetooth HFP callers pass `loop: true` to keep the low flute bed
+    /// Bluetooth HFP callers pass `loop: true` to keep the low ambience bed
     /// active while the recognizer accepts speech. Phone-mic fallback callers
-    /// pass `loop: false`; that mode plays only the brief opening cue so the
+    /// pass `loop: false`; that mode plays only the brief rising cue so the
     /// generated sound does not get fed back into the phone microphone.
     /// Repeating the same call while active is idempotent.
     func startListening(loop: Bool) {
-        let requestedMode: ListeningMode = loop ? .loop : .openingCue
+        let requestedMode: ListeningMode = loop ? .loop : .risingCue
         if isListening, listeningMode == requestedMode {
             return
         }
 
         // A new listening period owns the route and must not leave an earlier
-        // droplet or fade task rendering under speech.
+        // completion cue or fade task rendering under speech.
         cancelPendingAudio()
         stopAmbienceImmediately()
         stopThinkingPulse()
@@ -130,10 +134,10 @@ final class AdamSoundscapeManager: NSObject {
         isListening = true
         listeningMode = requestedMode
 
-        let data = loop ? fluteLoopData : openingCueData
+        let data = loop ? fluteLoopData : risingCueData
         let volume = loop
             ? configuration.ambienceVolume
-            : configuration.openingCueVolume
+            : configuration.matchedCueVolume
         guard let player = makePlayer(data: data, volume: volume) else {
             logger.error("Unable to create Adam listening cue player")
             isListening = false
@@ -154,21 +158,21 @@ final class AdamSoundscapeManager: NSObject {
     }
 
     /// Finish the current listening period. Ambience fades out first; the
-    /// droplet is scheduled after that fade so cues never overlap. Calling
+    /// completion cue is scheduled after that fade so cues never overlap. Calling
     /// this more than once for one period is a no-op, guaranteeing one end
-    /// droplet at most.
-    func finishListening(playDroplet: Bool = true) {
+    /// completion cue at most.
+    func finishListening(playCompletionCue: Bool = true) {
         guard isListening else { return }
 
         isListening = false
         listeningMode = nil
         generation &+= 1
         let fadeDuration = fadeAndStopAmbience()
-        guard playDroplet else { return }
+        guard playCompletionCue else { return }
 
-        pendingDropletTask?.cancel()
+        pendingCompletionCueTask?.cancel()
         let token = generation
-        pendingDropletTask = Task { @MainActor [weak self] in
+        pendingCompletionCueTask = Task { @MainActor [weak self] in
             guard let self else { return }
             if fadeDuration > 0 {
                 do {
@@ -180,8 +184,8 @@ final class AdamSoundscapeManager: NSObject {
                 }
             }
             guard !Task.isCancelled, self.generation == token else { return }
-            self.pendingDropletTask = nil
-            self.playDroplet()
+            self.pendingCompletionCueTask = nil
+            self.playCompletionCue()
         }
     }
 
@@ -196,11 +200,11 @@ final class AdamSoundscapeManager: NSObject {
         cancelPendingAudio()
         stopThinkingPulse()
         stopAmbienceImmediately()
-        playDroplet()
+        playFallingCue()
     }
 
     /// Mark the instant command speech is detected. This is independent of
-    /// the opening flute player so it cannot delay or replace that cue.
+    /// the rising listening cue so it cannot delay or replace that cue.
     func playSpeechStartCue() {
         playSignal(
             data: speechStartCueData,
@@ -245,7 +249,7 @@ final class AdamSoundscapeManager: NSObject {
         signalPlayer = nil
     }
 
-    /// Stop all sound immediately, including any queued fade/droplet. This is
+    /// Stop all sound immediately, including any queued fade/completion cue. This is
     /// used before processing or TTS and intentionally emits no end cue.
     func stopImmediately() {
         generation &+= 1
@@ -254,8 +258,8 @@ final class AdamSoundscapeManager: NSObject {
         cancelPendingAudio()
         stopAmbienceImmediately()
         stopThinkingPulse()
-        dropletPlayer?.stop()
-        dropletPlayer = nil
+        completionCuePlayer?.stop()
+        completionCuePlayer = nil
     }
 
     // MARK: - Private lifecycle
@@ -271,21 +275,24 @@ final class AdamSoundscapeManager: NSObject {
         }
     }
 
-    private func playDroplet() {
+    private func playFallingCue() {
         // There should be no overlap even if a caller begins a new end cue
         // after a route/session reset. The listening-period guard is what
         // prevents normal duplicate `finishListening` calls.
-        dropletPlayer?.stop()
-        dropletPlayer = nil
-        guard let player = makePlayer(data: dropletData, volume: configuration.dropletVolume) else {
-            logger.error("Unable to create Adam droplet player")
+        completionCuePlayer?.stop()
+        completionCuePlayer = nil
+        guard let player = makePlayer(
+            data: fallingCueData,
+            volume: configuration.matchedCueVolume
+        ) else {
+            logger.error("Unable to create Adam completion cue player")
             return
         }
-        dropletPlayer = player
+        completionCuePlayer = player
         player.prepareToPlay()
         guard player.play() else {
-            dropletPlayer = nil
-            logger.error("Unable to start Adam droplet player")
+            completionCuePlayer = nil
+            logger.error("Unable to start Adam completion cue player")
             return
         }
     }
@@ -307,7 +314,7 @@ final class AdamSoundscapeManager: NSObject {
     }
 
     /// Fade the active ambience player and return the delay before another
-    /// cue may safely begin. A non-playing opening cue is stopped immediately.
+    /// cue may safely begin. A non-playing rising cue is stopped immediately.
     @discardableResult
     private func fadeAndStopAmbience() -> TimeInterval {
         ambienceFadeTask?.cancel()
@@ -348,10 +355,10 @@ final class AdamSoundscapeManager: NSObject {
     }
 
     private func cancelPendingAudio() {
-        pendingDropletTask?.cancel()
-        pendingDropletTask = nil
-        dropletPlayer?.stop()
-        dropletPlayer = nil
+        pendingCompletionCueTask?.cancel()
+        pendingCompletionCueTask = nil
+        completionCuePlayer?.stop()
+        completionCuePlayer = nil
         signalPlayer?.stop()
         signalPlayer = nil
     }

@@ -37,17 +37,52 @@ struct AdamSoundscapeClip: Equatable, Sendable {
     }
 }
 
-/// Deterministic original sound generation for Adam's listening feedback.
-///
-/// The flute is a low-amplitude additive synthesis drone with a slow breath
-/// tremolo and shallow vibrato.  The droplet is a pair of decaying resonances
-/// with a downward pitch sweep.  Both are rendered locally; no audio assets
-/// or licensed recordings are needed.
+/// The two one-shot listening cues are rendered from one deliberately matched
+/// additive-synthesis family. The Bluetooth ambience remains a separate,
+/// continuous bed. No audio assets or licensed recordings are needed.
+enum AdamSoundscapeCueDirection: Equatable, Sendable {
+    case rising
+    case falling
+
+    var opposite: Self {
+        switch self {
+        case .rising: return .falling
+        case .falling: return .rising
+        }
+    }
+}
+
+enum AdamSoundscapeCueEvent: Equatable, Sendable {
+    case listeningStart
+    case listeningEnd
+
+    var direction: AdamSoundscapeCueDirection {
+        switch self {
+        case .listeningStart: return .rising
+        case .listeningEnd: return .falling
+        }
+    }
+}
+
+struct AdamSoundscapeCueProfile: Equatable, Sendable {
+    let family: String
+    let direction: AdamSoundscapeCueDirection
+    let duration: TimeInterval
+    let attack: TimeInterval
+    let release: TimeInterval
+}
+
 enum AdamSoundscapeWaveform {
     static let defaultSampleRate = 44_100
     static let fluteLoopDuration: TimeInterval = 8
-    static let openingCueDuration: TimeInterval = 0.42
-    static let dropletDuration: TimeInterval = 0.72
+    static let matchedCueFamily = "adam-listening-cue-v1"
+    static let matchedCueDuration: TimeInterval = 0.36
+    static let matchedCueAttack: TimeInterval = 0.018
+    static let matchedCueRelease: TimeInterval = 0.09
+    // Kept as compatibility names for callers that only know the old
+    // opening/end API; both now resolve to the matched family duration.
+    static let openingCueDuration = matchedCueDuration
+    static let dropletDuration = matchedCueDuration
     static let speechStartCueDuration: TimeInterval = 0.075
     static let thinkingPulseDuration: TimeInterval = 0.24
 
@@ -65,74 +100,90 @@ enum AdamSoundscapeWaveform {
         )
     }
 
-    /// A short opening cue used when the phone microphone is active.  It has
-    /// no loop and intentionally ends well before speech recognition settles.
+    /// The rising half of the matched one-shot listening pair.
     static func openingCue(
         sampleRate: Int = defaultSampleRate,
         duration: TimeInterval = openingCueDuration
     ) -> AdamSoundscapeClip {
-        renderFlute(
+        matchedCue(
+            direction: .rising,
             sampleRate: sampleRate,
-            duration: duration,
-            amplitude: 0.085,
-            baseFrequency: 392,
-            fadeDuration: 0.12
+            duration: duration
         )
     }
 
-    /// A short water-droplet-like end cue with two distinct resonances.
+    /// The falling half of the matched one-shot listening pair.
     static func droplet(
         sampleRate: Int = defaultSampleRate,
         duration: TimeInterval = dropletDuration
     ) -> AdamSoundscapeClip {
-        let rate = normalizedSampleRate(sampleRate)
-        let seconds = normalizedDuration(duration, fallback: dropletDuration)
-        let frameCount = frameCount(duration: seconds, sampleRate: rate)
-        let endFade = min(0.095, seconds * 0.22)
-        var samples = [Int16](repeating: 0, count: frameCount)
+        matchedCue(
+            direction: .falling,
+            sampleRate: sampleRate,
+            duration: duration
+        )
+    }
 
-        var firstPhase = 0.0
-        var secondPhase = 0.0
+    static func profile(
+        for event: AdamSoundscapeCueEvent
+    ) -> AdamSoundscapeCueProfile {
+        AdamSoundscapeCueProfile(
+            family: matchedCueFamily,
+            direction: event.direction,
+            duration: matchedCueDuration,
+            attack: matchedCueAttack,
+            release: matchedCueRelease
+        )
+    }
+
+    static func matchedCue(
+        direction: AdamSoundscapeCueDirection,
+        sampleRate: Int = defaultSampleRate,
+        duration: TimeInterval = matchedCueDuration
+    ) -> AdamSoundscapeClip {
+        let rate = normalizedSampleRate(sampleRate)
+        let seconds = normalizedDuration(duration, fallback: matchedCueDuration)
+        let frameCount = frameCount(duration: seconds, sampleRate: rate)
+        let release = min(matchedCueRelease, seconds / 2)
+        var samples = [Int16](repeating: 0, count: frameCount)
+        var phase = 0.0
+
         for index in 0..<frameCount {
             let time = Double(index) / Double(rate)
-            // Use the rendered frame range for the envelope endpoint. The
-            // final sample is otherwise one sample short of `seconds` and
-            // can retain a tiny non-zero tail after rounding.
             let progress = frameCount > 1
                 ? Double(index) / Double(frameCount - 1)
                 : 1
+            let directionProgress = direction == .rising ? progress : 1 - progress
+            let frequency = matchedMotifFrequency(at: directionProgress)
+            phase += 2 * Double.pi * frequency / Double(rate)
 
-            // A falling pitch gives the first resonance the rounded start of
-            // a drop rather than the static tone of a simple sine earcon.
-            let firstFrequency = 1_540 - 610 * progress
-            let secondFrequency = 2_260 - 910 * progress
-            firstPhase += 2 * Double.pi * firstFrequency / Double(rate)
-            secondPhase += 2 * Double.pi * secondFrequency / Double(rate)
-
-            let attack = min(1, time / 0.004)
-            let release = endFade > 0 && seconds > 0
-                ? min(1, max(0, (1 - progress) / (endFade / seconds)))
+            let attack = smoothstep(min(1, time / max(matchedCueAttack, 0.0001)))
+            let releaseEnvelope = release > 0 && seconds > 0
+                ? smoothstep(min(1, max(0, (1 - progress) / (release / seconds))))
                 : 1
-            let envelope = attack * release * exp(-4.8 * time)
-            let resonance =
-                0.78 * sin(firstPhase)
-                + 0.26 * sin(secondPhase + 0.35)
-                + 0.11 * sin(firstPhase * 2.03 + 0.7)
-
-            // A tiny delayed lower resonance suggests the drop meeting the
-            // surface.  It remains quiet enough to avoid masking speech.
-            let delayed = max(0, time - 0.19)
-            let delayedEnvelope = min(1, delayed / 0.006)
-                * exp(-8.0 * delayed)
-                * release
-            let delayedResonance = 0.20 * delayedEnvelope
-                * sin(2 * Double.pi * 930 * delayed)
-
-            let value = 0.17 * (resonance * envelope + delayedResonance)
-            samples[index] = pcm16(value)
+            let envelope = attack * releaseEnvelope
+            // The same harmonics and envelope are used in both directions;
+            // only the phase-continuous pitch path is mirrored.
+            let timbre =
+                0.78 * sin(phase)
+                + 0.17 * sin(2 * phase + 0.13)
+                + 0.05 * sin(3 * phase + 0.41)
+            samples[index] = pcm16(0.10 * envelope * timbre)
         }
 
         return AdamSoundscapeClip(sampleRate: rate, samples: samples)
+    }
+
+    static func matchedCue(
+        for event: AdamSoundscapeCueEvent,
+        sampleRate: Int = defaultSampleRate,
+        duration: TimeInterval = matchedCueDuration
+    ) -> AdamSoundscapeClip {
+        matchedCue(
+            direction: event.direction,
+            sampleRate: sampleRate,
+            duration: duration
+        )
     }
 
     /// A very quiet, immediate acknowledgement that command speech started.
@@ -293,6 +344,16 @@ enum AdamSoundscapeWaveform {
             samples[index] = pcm16(amplitude * envelope * signal)
         }
         return AdamSoundscapeClip(sampleRate: rate, samples: samples)
+    }
+
+    private static func matchedMotifFrequency(at progress: Double) -> Double {
+        let notes = [392.0, 523.25, 659.25]
+        let clamped = min(1, max(0, progress))
+        let scaled = clamped * Double(notes.count - 1)
+        let lowerIndex = min(notes.count - 2, Int(scaled.rounded(.down)))
+        let localProgress = smoothstep(scaled - Double(lowerIndex))
+        return notes[lowerIndex]
+            + (notes[lowerIndex + 1] - notes[lowerIndex]) * localProgress
     }
 
     private static func smoothstep(_ value: Double) -> Double {

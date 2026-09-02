@@ -192,9 +192,9 @@ unavailable, while the underlying target stays free of Meta/camera dependencies.
 
 The first turn begins with **“Adam”**. After every completed reply, Adam opens
 a fresh 30-second follow-up window where the next command needs no wake word;
-say **“donzo”** by itself to end it immediately. A short generated flute cue
-marks the initial command window, recording is silent, and a droplet confirms
-upload. English replies use local Kokoro voice
+say **“donzo”** by itself to end it immediately. A short generated rising cue
+marks the initial command window, recording is silent, and its matched falling
+counterpart confirms upload. English replies use local Kokoro voice
 `bm_george`; Latvian uses the male Nils neural fallback. Adam applies bounded
 gain to quiet HFP wake audio and to the PCM copy sent to Whisper, stores the
 bridge token in iPhone Keychain, and accepts a release endpoint only when it is

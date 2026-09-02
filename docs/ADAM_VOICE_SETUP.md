@@ -248,7 +248,7 @@ signing, endpoint, or bridge-token values.
 6. In Settings, confirm the Ray-Ban audio card names the glasses HFP input. If
    it names the iPhone microphone, reconnect the glasses' Bluetooth audio and
    restart the session.
-7. Say “Adam, what time is it?” or say “Adam”, wait for the flute/listening
+7. Say “Adam, what time is it?” or say “Adam”, wait for the rising/listening
    state, then speak the command. The terracotta user bubble is Hermes's final
    local transcript; the white bubble is the answer. English replies use
    George, a British male Kokoro voice. A short pause keeps the same command
@@ -262,9 +262,9 @@ signing, endpoint, or bridge-token values.
    entering the agent; Adam confirms only Home Assistant command acceptance,
    not the gate's physical position.
 
-The **Listening sounds** switch is enabled by default. One short, quiet
-generated flute cue marks the open command window; recording itself stays
-silent so the cue cannot contaminate Whisper. A droplet confirms that the
+The **Listening sounds** switch is enabled by default. One short, quiet rising
+cue marks the open command window; recording itself stays silent so the cue
+cannot contaminate Whisper. A matched falling counterpart confirms that the
 command was accepted. The separate **Haptic feedback** switch controls the
 wake and submission taps. No recorded or licensed cue assets are used.
 
@@ -286,6 +286,6 @@ recording buffer is not modified.
 - Ray-Ban HFP uses call-quality audio. If another Bluetooth call device wins
   the route, Adam reports the actual input instead of claiming it is the
   glasses.
-- The generated flute is deliberately quiet and plays once when Adam begins
+- The generated rising cue is deliberately quiet and plays once when Adam begins
   accepting a command, not while merely waiting for the wake word, recording,
   processing, or speaking.

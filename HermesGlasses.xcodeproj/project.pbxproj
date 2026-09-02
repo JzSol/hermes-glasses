@@ -133,6 +133,7 @@
 		ADAD00000000000000000011 /* AdamSpeechSignal.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000116 /* AdamSpeechSignal.swift */; };
 		ADAD00000000000000000012 /* AdamSoundscapeWaveform.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000117 /* AdamSoundscapeWaveform.swift */; };
 		ADAD00000000000000000013 /* AdamSoundscapeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000118 /* AdamSoundscapeManager.swift */; };
+		ADAD00000000000000000019 /* AdamBuildMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000120 /* AdamBuildMetadata.swift */; };
 		ADAD00000000000000000017 /* AdamVoiceFeedbackPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000119 /* AdamVoiceFeedbackPolicy.swift */; };
 		ADAD00000000000000000018 /* AdamVoiceFeedbackPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000119 /* AdamVoiceFeedbackPolicy.swift */; };
 		ADAD00000000000000000014 /* HermesDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000818 /* HermesDesign.swift */; };
@@ -275,6 +276,7 @@
 		ADAD00000000000000000117 /* AdamSoundscapeWaveform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamSoundscapeWaveform.swift; sourceTree = "<group>"; };
 		ADAD00000000000000000118 /* AdamSoundscapeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamSoundscapeManager.swift; sourceTree = "<group>"; };
 		ADAD00000000000000000119 /* AdamVoiceFeedbackPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamVoiceFeedbackPolicy.swift; sourceTree = "<group>"; };
+		ADAD00000000000000000120 /* AdamBuildMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamBuildMetadata.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -380,6 +382,7 @@
 				ADAD00000000000000000117 /* AdamSoundscapeWaveform.swift */,
 				ADAD00000000000000000118 /* AdamSoundscapeManager.swift */,
 				ADAD00000000000000000119 /* AdamVoiceFeedbackPolicy.swift */,
+				ADAD00000000000000000120 /* AdamBuildMetadata.swift */,
 				AAAA00000000000000000115 /* DirectClient.swift */,
 				AAAA00000000000000000116 /* HermesDisplayLogic.swift */,
 				AAAA00000000000000000117 /* HermesDisplayScreens.swift */,
@@ -708,6 +711,7 @@
 				ADAD00000000000000000011 /* AdamSpeechSignal.swift in Sources */,
 				ADAD00000000000000000012 /* AdamSoundscapeWaveform.swift in Sources */,
 				ADAD00000000000000000013 /* AdamSoundscapeManager.swift in Sources */,
+				ADAD00000000000000000019 /* AdamBuildMetadata.swift in Sources */,
 				ADAD00000000000000000014 /* HermesDesign.swift in Sources */,
 				ADAD00000000000000000015 /* AssistantConversation.swift in Sources */,
 				ADAD00000000000000000016 /* AssistantConversationSurface.swift in Sources */,
@@ -945,7 +949,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AdamVoice/Info.plist;
@@ -953,7 +957,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.5;
+				MARKETING_VERSION = 0.1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.vandret.adamvoice;
 				PRODUCT_NAME = Adam;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -969,7 +973,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 11;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AdamVoice/Info.plist;
@@ -977,7 +981,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.5;
+				MARKETING_VERSION = 0.1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.vandret.adamvoice;
 				PRODUCT_NAME = Adam;
 				SWIFT_COMPILATION_MODE = wholemodule;

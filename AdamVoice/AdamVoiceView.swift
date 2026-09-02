@@ -135,7 +135,7 @@ struct AdamVoiceView: View {
                     .kerning(-0.5)
                     .multilineTextAlignment(.center)
 
-                Text("Say “Adam”, wait for the flute cue, then ask your question. Replies play through your Ray-Ban speakers.")
+                Text("Say “Adam”, wait for the rising cue, then ask your question. Replies play through your Ray-Ban speakers.")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -220,11 +220,15 @@ private struct AdamSettingsView: View {
     let session: AdamVoiceSession
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppearanceMode.storageKey) private var appearanceRaw =
         AppearanceMode.system.rawValue
     @State private var endpointDraft: String
     @State private var tokenDraft = ""
     @State private var vocabularyDraft: String
+    @State private var updateLabel = AdamBuildMetadata.updateLabel(
+        for: AdamBuildMetadata.artifactTimestamp()
+    )
 
     init(session: AdamVoiceSession) {
         self.session = session
@@ -255,14 +259,20 @@ private struct AdamSettingsView: View {
                 appearanceSection
                 capabilitiesSection
 
-                VStack(spacing: 4) {
+                VStack(spacing: 3) {
                     HermesLockup(height: 13, showsSuffix: true)
-                    Text(Self.versionLabel)
+                    Text("\(Self.versionIdentity) · \(updateLabel)")
                         .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Camera-free Ray-Ban audio")
+                        .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.top, 8)
+                .accessibilityElement(children: .combine)
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -277,6 +287,12 @@ private struct AdamSettingsView: View {
                 }
             }
             .onDisappear(perform: commitDrafts)
+            .onAppear(perform: refreshBuildMetadata)
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    refreshBuildMetadata()
+                }
+            }
         }
         .tint(HermesTheme.accent)
     }
@@ -467,10 +483,16 @@ private struct AdamSettingsView: View {
         }
     }
 
-    private static var versionLabel: String {
+    private static var versionIdentity: String {
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "—"
         let build = info?["CFBundleVersion"] as? String ?? "—"
-        return "Adam \(version) (\(build)) · camera-free Ray-Ban audio"
+        return "Adam \(version) (\(build))"
+    }
+
+    private func refreshBuildMetadata() {
+        updateLabel = AdamBuildMetadata.updateLabel(
+            for: AdamBuildMetadata.artifactTimestamp()
+        )
     }
 }
