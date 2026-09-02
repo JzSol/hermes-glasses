@@ -26,6 +26,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import wave
 import urllib.error
@@ -37,6 +38,43 @@ try:
 except ImportError:
     print("Install websockets: pip install websockets")
     sys.exit(1)
+
+
+def _env_file_values(path: str) -> dict[str, str]:
+    """Parse simple KEY=VALUE lines without executing shell code."""
+    values = {}
+    try:
+        with open(path, encoding="utf-8") as env_file:
+            for raw_line in env_file:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):].lstrip()
+                name, separator, value = line.partition("=")
+                name = name.strip()
+                if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                    continue
+                value = value.strip()
+                if (len(value) >= 2 and value[0] == value[-1]
+                        and value[0] in ("'", '"')):
+                    value = value[1:-1]
+                values[name] = value
+    except OSError:
+        pass
+    return values
+
+
+def _read_env_file_value(path: str, key: str) -> str:
+    return _env_file_values(path).get(key, "")
+
+
+# bridge/.env is documented as the local configuration surface and is
+# gitignored. Load it without python-dotenv and never override values supplied
+# explicitly by launchd or the calling shell.
+BRIDGE_ENV_FILE = os.path.join(os.path.dirname(__file__), ".env")
+for _env_name, _env_value in _env_file_values(BRIDGE_ENV_FILE).items():
+    os.environ.setdefault(_env_name, _env_value)
 
 # ── Configuration ──────────────────────────────────────────────────────────
 HOST = os.environ.get("HERMES_BRIDGE_HOST", "0.0.0.0")
@@ -51,6 +89,21 @@ HERMES_BIN = os.environ.get(
 # reachable from the internet - hermes has tool access, so an open bridge
 # is remote code execution for anyone who finds the port.
 AUTH_TOKEN = os.environ.get("HERMES_BRIDGE_TOKEN", "")
+
+# Exact, allowlisted access-control route. The relay entity is deliberately
+# configuration-only: a generic model must never choose among Home Assistant
+# actuators. HASS credentials may stay in the existing Hermes secret file,
+# avoiding a second plaintext copy in this repository's ignored bridge/.env.
+GATE_ENTITY = os.environ.get("HERMES_BRIDGE_GATE_ENTITY", "").strip()
+HASS_ENV_FILE = os.path.expanduser(os.environ.get(
+    "HERMES_BRIDGE_HASS_ENV_FILE", "~/.hermes/.env"
+))
+GATE_COOLDOWN_SECONDS = float(os.environ.get(
+    "HERMES_BRIDGE_GATE_COOLDOWN_SECONDS", "5"
+))
+_GATE_ENTITY_RE = re.compile(r"^switch\.[a-z0-9_]+$")
+_gate_lock = threading.Lock()
+_gate_last_accepted_at = 0.0
 
 # Bridge-side TTS (edge-tts/say → PCM streaming). Default OFF: the app
 # speaks replies on-device with AVSpeechSynthesizer. Set HERMES_BRIDGE_TTS=1
@@ -80,6 +133,128 @@ PROVIDER_API_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
 }
+
+
+# ── Deterministic gate relay ──────────────────────────────────────────────
+
+_GATE_COMMANDS = {
+    "open gate": "open",
+    "open the gate": "open",
+    "open gates": "open",
+    "open the gates": "open",
+    "close gate": "close",
+    "close the gate": "close",
+    "close gates": "close",
+    "close the gates": "close",
+}
+
+
+def detect_gate_action(text: str) -> str | None:
+    """Return open/close only for a complete, canonical gate utterance.
+
+    Device context is prepended by the iOS app before bridge queries; strip
+    that one machine-generated line, then require a whole-utterance match.
+    Incidental uses such as "open Golden Gate Park" must remain normal chat.
+    """
+    command = re.sub(
+        r"^\s*\[Context:[^\r\n]*\]\s*", "", text, count=1,
+        flags=re.IGNORECASE,
+    )
+    command = re.sub(r"[?!.,'\"’]+", " ", command.lower())
+    command = " ".join(command.split())
+    fillers = ("hey", "ok", "okay", "hermes", "adam", "please")
+    while True:
+        matched = next(
+            (filler for filler in fillers if command.startswith(filler + " ")),
+            None,
+        )
+        if not matched:
+            break
+        command = command[len(matched) + 1:]
+    return _GATE_COMMANDS.get(command)
+
+
+def _home_assistant_config() -> tuple[str, str]:
+    """Resolve Home Assistant credentials without logging either value."""
+    url = (
+        os.environ.get("HERMES_BRIDGE_HASS_URL", "").strip()
+        or os.environ.get("HASS_URL", "").strip()
+        or _read_env_file_value(HASS_ENV_FILE, "HASS_URL")
+    )
+    token = (
+        os.environ.get("HERMES_BRIDGE_HASS_TOKEN", "").strip()
+        or os.environ.get("HASS_TOKEN", "").strip()
+        or _read_env_file_value(HASS_ENV_FILE, "HASS_TOKEN")
+    )
+    return url.rstrip("/"), token
+
+
+def activate_gate_relay(action: str) -> tuple[bool, str]:
+    """Pulse the one configured Ajax relay through Home Assistant.
+
+    Both open and close are intentionally the same dry-contact pulse. A 2xx
+    response proves only command acceptance, not the gate's physical state.
+    """
+    global _gate_last_accepted_at
+
+    if action not in ("open", "close"):
+        return False, "Gate relay command rejected."
+    if not AUTH_TOKEN:
+        return False, "Gate control requires an authenticated bridge."
+    if not _GATE_ENTITY_RE.fullmatch(GATE_ENTITY):
+        return False, "Gate relay is not configured on this bridge."
+
+    hass_url, hass_token = _home_assistant_config()
+    parsed = urlparse(hass_url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or not hass_token:
+        return False, "Home Assistant gate control is not configured."
+
+    with _gate_lock:
+        now = time.monotonic()
+        if (_gate_last_accepted_at > 0
+                and now - _gate_last_accepted_at < GATE_COOLDOWN_SECONDS):
+            return True, "A gate relay command was already accepted moments ago."
+
+        headers = {
+            "Authorization": "Bearer " + hass_token,
+            "Content-Type": "application/json",
+        }
+        state_request = urllib.request.Request(
+            hass_url + "/api/states/" + GATE_ENTITY,
+            headers=headers,
+            method="GET",
+        )
+        request = urllib.request.Request(
+            hass_url + "/api/services/switch/turn_on",
+            data=json.dumps({"entity_id": GATE_ENTITY}).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(state_request, timeout=10) as response:
+                state_body = response.read()
+                status = getattr(response, "status", 200)
+                if not 200 <= status < 300:
+                    raise RuntimeError(f"unexpected state HTTP status {status}")
+            state_payload = json.loads(state_body.decode("utf-8"))
+            if not isinstance(state_payload, dict):
+                raise ValueError("unexpected Home Assistant state response")
+            if state_payload.get("state") in ("unavailable", "unknown", None):
+                return False, "Gate relay is unavailable; no activation was sent."
+
+            with urllib.request.urlopen(request, timeout=10) as response:
+                response.read()
+                status = getattr(response, "status", 200)
+                if not 200 <= status < 300:
+                    raise RuntimeError(f"unexpected HTTP status {status}")
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError,
+                OSError, ValueError, RuntimeError) as error:
+            print(f"[Gate] Home Assistant relay activation failed: {error}")
+            return False, "Gate relay activation failed; Home Assistant did not accept it."
+
+        _gate_last_accepted_at = now
+        print(f"[Gate] {action} command accepted for the allowlisted relay")
+        return True, "Gate relay activation command accepted."
 
 
 def _canon_brain(brain: str) -> str:
@@ -620,6 +795,31 @@ async def await_photo(websocket, timeout: float = 25.0) -> bytes | None:
         # any other message type: keep waiting
 
 
+async def send_response(websocket, response_text: str, bridge_tts: bool):
+    """Send one response and optional bridge-side speech to the app."""
+    # "tts": whether PCM audio follows. False means the app speaks the text
+    # itself with on-device synthesis.
+    await websocket.send(json.dumps({
+        "type": "response",
+        "text": response_text,
+        "tts": bridge_tts,
+    }))
+
+    if bridge_tts:
+        print("[Bridge] Generating speech...")
+        await websocket.send(json.dumps({"type": "audio_start"}))
+
+        audio_data = await asyncio.to_thread(synthesize_speech, response_text)
+        if audio_data:
+            chunk_size = 16384
+            for i in range(0, len(audio_data), chunk_size):
+                await websocket.send(audio_data[i:i+chunk_size])
+                await asyncio.sleep(0.01)
+
+        await websocket.send(json.dumps({"type": "audio_end"}))
+    print("[Bridge] Response complete.")
+
+
 async def process_query(websocket, text: str, conn_state: dict | None = None,
                         want_tts: bool | None = None):
     """Answer a text query: photo capture if visual, Hermes, TTS reply.
@@ -632,6 +832,18 @@ async def process_query(websocket, text: str, conn_state: dict | None = None,
     bridge_tts = BRIDGE_TTS if want_tts is None else bool(want_tts)
     if conn_state is None:
         conn_state = {"last_photo_at": 0.0}
+
+    # Access control never enters a generic model/tool-selection path. The
+    # authenticated bridge maps a whole-utterance command to one relay, and
+    # reports command acceptance without claiming physical gate position.
+    gate_action = detect_gate_action(text)
+    if gate_action:
+        accepted, response_text = await asyncio.to_thread(
+            activate_gate_relay, gate_action
+        )
+        print(f"[Gate] response accepted={accepted}")
+        await send_response(websocket, response_text, bridge_tts)
+        return
 
     # ── Capture a photo for visual/deictic queries ──
     photo = None
@@ -686,38 +898,30 @@ async def process_query(websocket, text: str, conn_state: dict | None = None,
     response_text = response or "I'm not sure what to say."
 
     print(f"[Bridge] Hermes: {response_text[:100]}...")
-
-    # "tts": whether PCM audio follows. False → the app speaks the text
-    # itself with on-device synthesis.
-    await websocket.send(json.dumps({
-        "type": "response",
-        "text": response_text,
-        "tts": bridge_tts,
-    }))
-
-    if bridge_tts:
-        # ── Server-side TTS (legacy fallback, HERMES_BRIDGE_TTS=1) ──
-        print("[Bridge] Generating speech...")
-        await websocket.send(json.dumps({"type": "audio_start"}))
-
-        audio_data = await asyncio.to_thread(synthesize_speech, response_text)
-        if audio_data:
-            # Send in chunks to avoid frame size limits
-            chunk_size = 16384
-            for i in range(0, len(audio_data), chunk_size):
-                await websocket.send(audio_data[i:i+chunk_size])
-                await asyncio.sleep(0.01)
-
-        await websocket.send(json.dumps({"type": "audio_end"}))
-    print("[Bridge] Response complete.")
+    await send_response(websocket, response_text, bridge_tts)
 
 
 def is_authorized(websocket) -> bool:
-    """When AUTH_TOKEN is set, require ?token=<AUTH_TOKEN> in the WS path."""
+    """Accept the bearer header, with query-token support for older clients."""
     if not AUTH_TOKEN:
         return True
     try:
         path = websocket.request.path if websocket.request else ""
+        headers = websocket.request.headers if websocket.request else None
+        if headers is None:
+            headers = getattr(websocket, "request_headers", None)
+        authorization = ""
+        if headers is not None:
+            authorization = (
+                headers.get("Authorization")
+                or headers.get("authorization")
+                or ""
+            )
+        scheme, separator, bearer = authorization.partition(" ")
+        if (separator and scheme.lower() == "bearer"
+                and hmac.compare_digest(bearer.strip(), AUTH_TOKEN)):
+            return True
+
         query = parse_qs(urlparse(path).query)
         return hmac.compare_digest(query.get("token", [""])[0], AUTH_TOKEN)
     except Exception:

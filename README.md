@@ -142,7 +142,10 @@ memory), over a WebSocket:
   the Mac. Receives text queries, detects visual questions by keyword, requests
   a photo from the app when needed, invokes `hermes chat -q ... [--image ...]`
   (or calls a provider API directly), and streams back the reply text plus TTS
-  audio (Edge TTS with macOS `say` fallback).
+  audio (Edge TTS with macOS `say` fallback). If one Home Assistant switch is
+  explicitly allowlisted, the complete commands "open gates" and "close
+  gates" bypass the model and pulse that relay directly; incidental mentions
+  of gates stay ordinary chat.
 
 ### WebSocket protocol (app ⇄ bridge, port 8765)
 
@@ -238,8 +241,19 @@ on your Mac and point the app at it over WebSocket.
    ```
    Copy `bridge/.env.example` to `bridge/.env` to configure it - in
    particular, `HERMES_BRIDGE_TOKEN` is **required** if the bridge is
-   reachable from the internet (clients then connect with
-   `ws://host:8765/voice?token=<value>`).
+   reachable from the internet. Enter
+   `ws://host:8765/voice?token=<value>` once; the app moves the token into
+   iPhone Keychain, removes it from the saved URL, and authenticates future
+   WebSocket connections with a bearer header.
+
+   To enable the narrow Ajax gate route, set
+   `HERMES_BRIDGE_GATE_ENTITY=switch.your_gate_relay` and provide `HASS_URL` /
+   `HASS_TOKEN`. By default, the bridge can
+   read those two values from the existing `~/.hermes/.env`, so the Home
+   Assistant token does not need to be copied into this repository. Gate
+   commands are refused when bridge authentication or the exact switch
+   allowlist is missing, and repeat activations are cooled down for five
+   seconds.
 3. In the app: build to your iPhone, **Connect Glasses**, then
    **Settings → Assistant → Backend: Bridge (server)** and set the endpoint
    to `ws://<your-mac-ip>:8765/voice`. The "Bridge" chip in the banner turns

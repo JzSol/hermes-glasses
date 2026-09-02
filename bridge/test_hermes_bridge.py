@@ -1,8 +1,11 @@
 import asyncio
 import base64
+import json
 import os
 import tempfile
 import unittest
+from unittest import mock
+import urllib.error
 
 import hermes_bridge as hb
 from hermes_bridge import (
@@ -49,6 +52,180 @@ class TestIsVisualQuery(unittest.TestCase):
         self.assertFalse(should_capture_photo("this should work now", 0.0, 1000.0))
 
 
+class TestGateCommand(unittest.TestCase):
+    def test_exact_open_and_close_phrases_match(self):
+        for phrase, action in [
+            ("open gates", "open"),
+            ("Open the gates.", "open"),
+            ("Hermes, please open the gate!", "open"),
+            ("Please Hermes open gates", "open"),
+            ("close gates", "close"),
+            ("Close the gate.", "close"),
+        ]:
+            self.assertEqual(hb.detect_gate_action(phrase), action, phrase)
+
+    def test_device_context_prefix_is_ignored(self):
+        text = "[Context: Tuesday, online, at home]\n\nopen gates"
+        self.assertEqual(hb.detect_gate_action(text), "open")
+
+    def test_ambiguous_or_incidental_gate_words_do_not_match(self):
+        for phrase in [
+            "open Golden Gate Park",
+            "can you open the gates later",
+            "close the gate settings",
+            "tell me whether the gates are open",
+        ]:
+            self.assertIsNone(hb.detect_gate_action(phrase), phrase)
+
+
+class TestGateRelay(unittest.TestCase):
+    def setUp(self):
+        hb._gate_last_accepted_at = 0.0
+
+    def tearDown(self):
+        hb._gate_last_accepted_at = 0.0
+
+    def test_reads_named_value_from_hermes_env_file(self):
+        with tempfile.NamedTemporaryFile(mode="w", delete=False) as env_file:
+            env_file.write("IGNORED=one\nHASS_TOKEN='secret value'\n")
+            path = env_file.name
+        try:
+            self.assertEqual(
+                hb._read_env_file_value(path, "HASS_TOKEN"), "secret value"
+            )
+        finally:
+            os.unlink(path)
+
+    def test_activation_calls_only_the_allowlisted_switch(self):
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return self.body
+
+        opener = mock.Mock(side_effect=[
+            FakeResponse(b'{"state":"off"}'),
+            FakeResponse(b"[]"),
+        ])
+        with mock.patch.object(hb, "AUTH_TOKEN", "bridge-secret"), \
+             mock.patch.object(hb, "_home_assistant_config",
+                               return_value=("http://127.0.0.1:8123", "ha-secret")), \
+             mock.patch.object(hb, "GATE_ENTITY", "switch.gate_relay"), \
+             mock.patch.object(hb.time, "monotonic", return_value=100.0), \
+             mock.patch.object(hb.urllib.request, "urlopen", opener):
+            accepted, message = hb.activate_gate_relay("open")
+
+        self.assertTrue(accepted)
+        self.assertIn("accepted", message.lower())
+        state_request = opener.call_args_list[0].args[0]
+        self.assertEqual(
+            state_request.full_url,
+            "http://127.0.0.1:8123/api/states/switch.gate_relay",
+        )
+        self.assertEqual(state_request.get_method(), "GET")
+        request = opener.call_args_list[1].args[0]
+        self.assertEqual(
+            request.full_url,
+            "http://127.0.0.1:8123/api/services/switch/turn_on",
+        )
+        self.assertEqual(
+            json.loads(request.data.decode()),
+            {"entity_id": "switch.gate_relay"},
+        )
+        self.assertEqual(request.get_method(), "POST")
+
+    def test_duplicate_command_is_cooled_down(self):
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, body):
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return self.body
+
+        opener = mock.Mock(side_effect=[
+            FakeResponse(b'{"state":"off"}'),
+            FakeResponse(b"[]"),
+        ])
+        with mock.patch.object(hb, "AUTH_TOKEN", "bridge-secret"), \
+             mock.patch.object(hb, "_home_assistant_config",
+                               return_value=("http://127.0.0.1:8123", "ha-secret")), \
+             mock.patch.object(hb, "GATE_ENTITY", "switch.gate_relay"), \
+             mock.patch.object(hb.time, "monotonic", side_effect=[100.0, 101.0]), \
+             mock.patch.object(hb.urllib.request, "urlopen", opener):
+            first = hb.activate_gate_relay("open")
+            second = hb.activate_gate_relay("close")
+
+        self.assertTrue(first[0])
+        self.assertTrue(second[0])
+        self.assertIn("already", second[1].lower())
+        self.assertEqual(opener.call_count, 2)
+
+    def test_unavailable_relay_is_not_activated(self):
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return b'{"state":"unavailable"}'
+
+        opener = mock.Mock(return_value=FakeResponse())
+        with mock.patch.object(hb, "AUTH_TOKEN", "bridge-secret"), \
+             mock.patch.object(hb, "_home_assistant_config",
+                               return_value=("http://127.0.0.1:8123", "ha-secret")), \
+             mock.patch.object(hb, "GATE_ENTITY", "switch.gate_relay"), \
+             mock.patch.object(hb.urllib.request, "urlopen", opener):
+            accepted, message = hb.activate_gate_relay("open")
+
+        self.assertFalse(accepted)
+        self.assertIn("unavailable", message.lower())
+        self.assertEqual(opener.call_count, 1)
+
+    def test_gate_control_fails_closed_without_bridge_auth(self):
+        with mock.patch.object(hb, "AUTH_TOKEN", ""):
+            accepted, message = hb.activate_gate_relay("open")
+        self.assertFalse(accepted)
+        self.assertIn("authenticated", message.lower())
+
+    def test_home_assistant_failure_does_not_claim_gate_opened(self):
+        with mock.patch.object(hb, "AUTH_TOKEN", "bridge-secret"), \
+             mock.patch.object(hb, "_home_assistant_config",
+                               return_value=("http://127.0.0.1:8123", "ha-secret")), \
+             mock.patch.object(hb, "GATE_ENTITY", "switch.gate_relay"), \
+             mock.patch.object(
+                 hb.urllib.request,
+                 "urlopen",
+                 side_effect=urllib.error.URLError("offline"),
+             ):
+            accepted, message = hb.activate_gate_relay("close")
+
+        self.assertFalse(accepted)
+        self.assertIn("failed", message.lower())
+        self.assertNotIn("opened", message.lower())
+        self.assertNotIn("closed", message.lower())
+
+
 class FakeWebSocket:
     """Minimal stand-in exposing recv()/send() like websockets."""
 
@@ -63,6 +240,34 @@ class FakeWebSocket:
 
     async def send(self, message):
         self.sent.append(message)
+
+
+class TestBridgeAuthorization(unittest.TestCase):
+    class Request:
+        def __init__(self, path="/voice", headers=None):
+            self.path = path
+            self.headers = headers or {}
+
+    class WebSocket:
+        def __init__(self, path="/voice", headers=None):
+            self.request = TestBridgeAuthorization.Request(path, headers)
+
+    def test_bearer_header_is_accepted(self):
+        websocket = self.WebSocket(
+            headers={"Authorization": "Bearer bridge-secret"}
+        )
+        with mock.patch.object(hb, "AUTH_TOKEN", "bridge-secret"):
+            self.assertTrue(hb.is_authorized(websocket))
+
+    def test_legacy_query_token_remains_accepted(self):
+        websocket = self.WebSocket(path="/voice?token=bridge-secret")
+        with mock.patch.object(hb, "AUTH_TOKEN", "bridge-secret"):
+            self.assertTrue(hb.is_authorized(websocket))
+
+    def test_wrong_bearer_is_rejected(self):
+        websocket = self.WebSocket(headers={"Authorization": "Bearer wrong"})
+        with mock.patch.object(hb, "AUTH_TOKEN", "bridge-secret"):
+            self.assertFalse(hb.is_authorized(websocket))
 
 
 class TestAwaitPhoto(unittest.TestCase):
@@ -195,6 +400,26 @@ class TestProcessQuery(unittest.TestCase):
         calls = self._run("what am I looking at", ws)
         self.assertIsNone(calls["image_path"])
         self.assertIn("No photo could be captured", calls["query"])
+
+    def test_gate_command_activates_relay_without_calling_ai(self):
+        ws = FakeWebSocket([])
+        with mock.patch.object(
+            hb, "activate_gate_relay",
+            return_value=(True, "Gate relay activation command accepted."),
+        ) as activate, mock.patch.object(hb, "ask_hermes") as ask:
+            asyncio.run(hb.process_query(ws, "open gates", want_tts=False))
+
+        activate.assert_called_once_with("open")
+        ask.assert_not_called()
+        responses = [
+            json.loads(message) for message in ws.sent
+            if isinstance(message, str) and json.loads(message).get("type") == "response"
+        ]
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(
+            responses[0]["text"], "Gate relay activation command accepted."
+        )
+        self.assertFalse(responses[0]["tts"])
 
 
 class TestSessionStore(unittest.TestCase):

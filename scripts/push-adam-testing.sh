@@ -85,6 +85,7 @@ invalid_paths=`
             tests/adam-signal/*) : ;;
             tests/adam-soundscape/*) : ;;
             tests/assistant-conversation/*) : ;;
+            tests/bridge-auth/*) : ;;
             tests/endpoint/*) : ;;
             tests/speech-voice/*) : ;;
             tests/voice-locale/*) : ;;

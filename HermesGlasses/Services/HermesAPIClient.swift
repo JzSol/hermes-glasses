@@ -30,6 +30,7 @@ final class HermesAPIClient: NSObject {
     // MARK: - Private
 
     private let endpoint: String
+    private let token: String?
     private var webSocket: URLSessionWebSocketTask?
     private var session: URLSession?
     /// Behind a lock because the receive loop clears it from a background
@@ -45,8 +46,83 @@ final class HermesAPIClient: NSObject {
     private var ttsBuffer = Data()
 
     init(endpoint: String) {
-        self.endpoint = endpoint
+        let migrated = Self.migrateLegacyEndpoint(endpoint)
+        self.endpoint = migrated.endpoint
+
+        let scopedCredentials = BridgeCredentials(endpoint: migrated.endpoint)
+        var storedToken = (try? scopedCredentials.load()) ?? nil
+        if let legacyToken = migrated.token {
+            // Use a legacy URL token only in memory. Settings can migrate it
+            // explicitly; constructing a client should not mutate Keychain.
+            storedToken = legacyToken
+        } else if storedToken == nil,
+                  let formerGlobalToken = (try? BridgeCredentials().load()) ?? nil {
+            // Older Adam builds used one global Keychain item. Preserve that
+            // upgrade path and scope it to the selected endpoint.
+            try? scopedCredentials.save(token: formerGlobalToken)
+            storedToken = formerGlobalToken
+        }
+        self.token = storedToken
         super.init()
+    }
+
+    /// Strip a legacy query credential before URLSession, returning it only
+    /// in memory so callers can migrate to a bearer header.
+    static func migrateLegacyEndpoint(
+        _ endpoint: String
+    ) -> (endpoint: String, token: String?) {
+        guard var components = URLComponents(string: endpoint) else {
+            return (endpoint, nil)
+        }
+        let items = components.queryItems ?? []
+        let token = items.first {
+            $0.name == "token" && !($0.value ?? "").isEmpty
+        }?.value
+        guard token != nil else { return (endpoint, nil) }
+
+        let retained = items.filter { $0.name != "token" }
+        components.queryItems = retained.isEmpty ? nil : retained
+        return (components.string ?? endpoint, token)
+    }
+
+    /// Move a legacy URL token into endpoint-scoped Keychain storage before
+    /// persisting the sanitized endpoint in UserDefaults.
+    static func migrateLegacyEndpointToKeychain(
+        _ endpoint: String
+    ) throws -> String {
+        let migrated = migrateLegacyEndpoint(endpoint)
+        guard let token = migrated.token else { return endpoint }
+        try BridgeCredentials(endpoint: migrated.endpoint).save(token: token)
+
+        let defaults = UserDefaults.standard
+        if defaults.string(forKey: "hermes_endpoint") == endpoint {
+            defaults.set(migrated.endpoint, forKey: "hermes_endpoint")
+        }
+        if var presets = defaults.dictionary(
+            forKey: "endpoint_presets"
+        ) as? [String: String] {
+            var changed = false
+            for (name, value) in presets where value == endpoint {
+                presets[name] = migrated.endpoint
+                changed = true
+            }
+            if changed { defaults.set(presets, forKey: "endpoint_presets") }
+        }
+        return migrated.endpoint
+    }
+
+    /// Build the authenticated request without opening a socket. Bridges that
+    /// do not require auth remain compatible when no Keychain token exists.
+    func makeConnectRequest() -> URLRequest? {
+        guard let url = URL(string: endpoint) else { return nil }
+        var request = URLRequest(url: url)
+        if let token = token?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpShouldHandleCookies = false
+        return request
     }
 
     // MARK: - Public API
@@ -55,7 +131,7 @@ final class HermesAPIClient: NSObject {
     /// Returns true once the bridge has confirmed the connection.
     @discardableResult
     func connect() async -> Bool {
-        guard let url = URL(string: endpoint) else {
+        guard let request = makeConnectRequest() else {
             await reportError("Invalid Hermes endpoint URL: \(endpoint)")
             return false
         }
@@ -65,7 +141,7 @@ final class HermesAPIClient: NSObject {
         let urlSession = URLSession(configuration: config)
         session = urlSession
 
-        let ws = urlSession.webSocketTask(with: url)
+        let ws = urlSession.webSocketTask(with: request)
         webSocket = ws
         ws.resume()
 
