@@ -77,6 +77,8 @@
 		AAAA00000000000000000811 /* LensPDFRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000812 /* LensPDFRenderer.swift */; };
 		AAAA00000000000000000813 /* ShareSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000814 /* ShareSheet.swift */; };
 		AAAA00000000000000000817 /* HermesDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000818 /* HermesDesign.swift */; };
+		AAAA00000000000000000871 /* AssistantConversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000870 /* AssistantConversation.swift */; };
+		AAAA00000000000000000873 /* AssistantConversationSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000872 /* AssistantConversationSurface.swift */; };
 		AAAA00000000000000000819 /* NavigationMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000820 /* NavigationMapView.swift */; };
 		AAAA00000000000000000801 /* MWDATCore in Frameworks */ = {isa = PBXBuildFile; productRef = AAAA00000000000000000701 /* MWDATCore */; };
 		AAAA00000000000000000802 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = AAAA00000000000000000702 /* MWDATCamera */; };
@@ -112,7 +114,28 @@
 		AAAA00000000000000000A48 /* libswresample.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A28 /* libswresample.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		AAAA00000000000000000A52 /* GlassesVendor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A51 /* GlassesVendor.swift */; };
 		AAAA00000000000000000A56 /* GlassesKeyMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A55 /* GlassesKeyMap.swift */; };
-		AAAA00000000000000000A58 /* BridgeCredentials.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000A59 /* BridgeCredentials.swift */; };
+		ADAD00000000000000000001 /* AdamVoiceApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000101 /* AdamVoiceApp.swift */; };
+		ADAD00000000000000000002 /* AdamVoiceSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000102 /* AdamVoiceSession.swift */; };
+		ADAD00000000000000000003 /* AdamVoiceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000103 /* AdamVoiceView.swift */; };
+		ADAD00000000000000000004 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000108 /* Assets.xcassets */; };
+		ADAD00000000000000000005 /* HermesAudioManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000106 /* HermesAudioManager.swift */; };
+		ADAD00000000000000000006 /* HermesAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000107 /* HermesAPIClient.swift */; };
+		ADAD00000000000000000007 /* HermesSpeechRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000113 /* HermesSpeechRecognizer.swift */; };
+		ADAD00000000000000000008 /* HermesSpeechSynthesizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000114 /* HermesSpeechSynthesizer.swift */; };
+		ADAD00000000000000000009 /* VoiceLocale.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000110 /* VoiceLocale.swift */; };
+		ADAD0000000000000000000A /* HermesEndpointPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000112 /* HermesEndpointPolicy.swift */; };
+		ADAD0000000000000000000B /* VoiceLocale.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000110 /* VoiceLocale.swift */; };
+		ADAD0000000000000000000C /* WakeWordGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000111 /* WakeWordGate.swift */; };
+		ADAD0000000000000000000D /* HermesEndpointPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000112 /* HermesEndpointPolicy.swift */; };
+		ADAD0000000000000000000E /* BridgeCredentials.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000113 /* BridgeCredentials.swift */; };
+		ADAD0000000000000000000F /* BridgeCredentials.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000113 /* BridgeCredentials.swift */; };
+		ADAD00000000000000000010 /* AdamSpeechSignal.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000116 /* AdamSpeechSignal.swift */; };
+		ADAD00000000000000000011 /* AdamSpeechSignal.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000116 /* AdamSpeechSignal.swift */; };
+		ADAD00000000000000000012 /* AdamSoundscapeWaveform.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000117 /* AdamSoundscapeWaveform.swift */; };
+		ADAD00000000000000000013 /* AdamSoundscapeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADAD00000000000000000118 /* AdamSoundscapeManager.swift */; };
+		ADAD00000000000000000014 /* HermesDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000818 /* HermesDesign.swift */; };
+		ADAD00000000000000000015 /* AssistantConversation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000870 /* AssistantConversation.swift */; };
+		ADAD00000000000000000016 /* AssistantConversationSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA00000000000000000872 /* AssistantConversationSurface.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -145,7 +168,6 @@
 		AAAA00000000000000000105 /* HermesSessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesSessionViewModel.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000106 /* HermesAudioManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesAudioManager.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000107 /* HermesAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesAPIClient.swift; sourceTree = "<group>"; };
-		AAAA00000000000000000A59 /* BridgeCredentials.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeCredentials.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000108 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		AAAA00000000000000000109 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AAAA0000000000000000012A /* Hermes.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/Hermes.xcconfig; sourceTree = SOURCE_ROOT; };
@@ -213,6 +235,8 @@
 		AAAA00000000000000000812 /* LensPDFRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Lens/LensPDFRenderer.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000814 /* ShareSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareSheet.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000818 /* HermesDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesDesign.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000870 /* AssistantConversation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantConversation.swift; sourceTree = "<group>"; };
+		AAAA00000000000000000872 /* AssistantConversationSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantConversationSurface.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000820 /* NavigationMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationMapView.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000A53 /* AiSeeCameraSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeCameraSource.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000A0A /* AiSeeConnectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AiSee/AiSeeConnectionService.swift; sourceTree = "<group>"; };
@@ -235,7 +259,19 @@
 		AAAA00000000000000000A28 /* libswresample.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = libswresample.framework; sourceTree = "<group>"; };
 		AAAA00000000000000000A51 /* GlassesVendor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassesVendor.swift; sourceTree = "<group>"; };
 		AAAA00000000000000000A55 /* GlassesKeyMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlassesKeyMap.swift; sourceTree = "<group>"; };
+		ADAD00000000000000000101 /* AdamVoiceApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamVoiceApp.swift; sourceTree = "<group>"; };
+		ADAD00000000000000000102 /* AdamVoiceSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamVoiceSession.swift; sourceTree = "<group>"; };
+		ADAD00000000000000000103 /* AdamVoiceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamVoiceView.swift; sourceTree = "<group>"; };
+		ADAD00000000000000000104 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		ADAD00000000000000000110 /* VoiceLocale.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceLocale.swift; sourceTree = "<group>"; };
+		ADAD00000000000000000111 /* WakeWordGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WakeWordGate.swift; sourceTree = "<group>"; };
+		ADAD00000000000000000112 /* HermesEndpointPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HermesEndpointPolicy.swift; sourceTree = "<group>"; };
+		ADAD00000000000000000113 /* BridgeCredentials.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeCredentials.swift; sourceTree = "<group>"; };
 		ADAD00000000000000000114 /* Adam.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Adam.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		ADAD00000000000000000115 /* AdamVoice.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config/AdamVoice.xcconfig; sourceTree = SOURCE_ROOT; };
+		ADAD00000000000000000116 /* AdamSpeechSignal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamSpeechSignal.swift; sourceTree = "<group>"; };
+		ADAD00000000000000000117 /* AdamSoundscapeWaveform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamSoundscapeWaveform.swift; sourceTree = "<group>"; };
+		ADAD00000000000000000118 /* AdamSoundscapeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdamSoundscapeManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -259,6 +295,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		ADAD00000000000000000402 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -266,6 +309,7 @@
 			isa = PBXGroup;
 			children = (
 				AAAA0000000000000000001 /* HermesGlasses */,
+				ADAD00000000000000000201 /* AdamVoice */,
 				AAAA00000000000000000A50 /* Vendor/RTK */,
 				AAAA0000000000000000005 /* Products */,
 			);
@@ -297,6 +341,7 @@
 				AAAA00000000000000000816 /* ObjectLogView.swift */,
 				AAAA00000000000000000814 /* ShareSheet.swift */,
 				AAAA00000000000000000818 /* HermesDesign.swift */,
+				AAAA00000000000000000872 /* AssistantConversationSurface.swift */,
 				AAAA00000000000000000820 /* NavigationMapView.swift */,
 				AAAA00000000000000000830 /* OnboardingView.swift */,
 				AAAA00000000000000000832 /* SimulatedLensView.swift */,
@@ -321,10 +366,16 @@
 			children = (
 				AAAA00000000000000000106 /* HermesAudioManager.swift */,
 				AAAA00000000000000000107 /* HermesAPIClient.swift */,
-				AAAA00000000000000000A59 /* BridgeCredentials.swift */,
 				AAAA00000000000000000112 /* HermesCameraManager.swift */,
 				AAAA00000000000000000113 /* HermesSpeechRecognizer.swift */,
 				AAAA00000000000000000114 /* HermesSpeechSynthesizer.swift */,
+				ADAD00000000000000000110 /* VoiceLocale.swift */,
+				ADAD00000000000000000111 /* WakeWordGate.swift */,
+				ADAD00000000000000000112 /* HermesEndpointPolicy.swift */,
+				ADAD00000000000000000113 /* BridgeCredentials.swift */,
+				ADAD00000000000000000116 /* AdamSpeechSignal.swift */,
+				ADAD00000000000000000117 /* AdamSoundscapeWaveform.swift */,
+				ADAD00000000000000000118 /* AdamSoundscapeManager.swift */,
 				AAAA00000000000000000115 /* DirectClient.swift */,
 				AAAA00000000000000000116 /* HermesDisplayLogic.swift */,
 				AAAA00000000000000000117 /* HermesDisplayScreens.swift */,
@@ -391,6 +442,7 @@
 		AAAA0000000000000000006 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				AAAA00000000000000000870 /* AssistantConversation.swift */,
 				AAAA00000000000000000141 /* yolo11n.mlpackage */,
 			);
 			path = Models;
@@ -403,6 +455,17 @@
 				ADAD00000000000000000114 /* Adam.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		ADAD00000000000000000201 /* AdamVoice */ = {
+			isa = PBXGroup;
+			children = (
+				ADAD00000000000000000101 /* AdamVoiceApp.swift */,
+				ADAD00000000000000000102 /* AdamVoiceSession.swift */,
+				ADAD00000000000000000103 /* AdamVoiceView.swift */,
+				ADAD00000000000000000104 /* Info.plist */,
+			);
+			path = AdamVoice;
 			sourceTree = "<group>";
 		};
 		AAAA00000000000000000A50 /* Vendor/RTK */ = {
@@ -452,10 +515,9 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = ADAD00000000000000000501 /* Build configuration list for PBXNativeTarget "AdamVoice" */;
 			buildPhases = (
-				AAAA00000000000000000401 /* Sources */,
-				AAAA00000000000000000402 /* Frameworks */,
-				AAAA00000000000000000A49 /* Embed Frameworks */,
-				AAAA00000000000000000403 /* Resources */,
+				ADAD00000000000000000401 /* Sources */,
+				ADAD00000000000000000402 /* Frameworks */,
+				ADAD00000000000000000403 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -463,10 +525,6 @@
 			);
 			name = AdamVoice;
 			packageProductDependencies = (
-				AAAA00000000000000000701 /* MWDATCore */,
-				AAAA00000000000000000702 /* MWDATCamera */,
-				AAAA00000000000000000703 /* MWDATMockDevice */,
-				AAAA00000000000000000704 /* MWDATDisplay */,
 			);
 			productName = Adam;
 			productReference = ADAD00000000000000000114 /* Adam.app */;
@@ -521,6 +579,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		ADAD00000000000000000403 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ADAD00000000000000000004 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -535,10 +601,13 @@
 				AAAA00000000000000000005 /* HermesSessionViewModel.swift in Sources */,
 				AAAA00000000000000000006 /* HermesAudioManager.swift in Sources */,
 				AAAA00000000000000000007 /* HermesAPIClient.swift in Sources */,
-				AAAA00000000000000000A58 /* BridgeCredentials.swift in Sources */,
 				AAAA00000000000000000009 /* HermesCameraManager.swift in Sources */,
 				AAAA00000000000000000010 /* HermesSpeechRecognizer.swift in Sources */,
 				AAAA00000000000000000011 /* HermesSpeechSynthesizer.swift in Sources */,
+				ADAD00000000000000000009 /* VoiceLocale.swift in Sources */,
+				ADAD0000000000000000000A /* HermesEndpointPolicy.swift in Sources */,
+				ADAD0000000000000000000F /* BridgeCredentials.swift in Sources */,
+				ADAD00000000000000000010 /* AdamSpeechSignal.swift in Sources */,
 				AAAA00000000000000000012 /* DirectClient.swift in Sources */,
 				AAAA00000000000000000013 /* HermesDisplayLogic.swift in Sources */,
 				AAAA00000000000000000014 /* HermesDisplayScreens.swift in Sources */,
@@ -598,6 +667,8 @@
 				AAAA00000000000000000811 /* LensPDFRenderer.swift in Sources */,
 				AAAA00000000000000000813 /* ShareSheet.swift in Sources */,
 				AAAA00000000000000000817 /* HermesDesign.swift in Sources */,
+				AAAA00000000000000000871 /* AssistantConversation.swift in Sources */,
+				AAAA00000000000000000873 /* AssistantConversationSurface.swift in Sources */,
 				AAAA00000000000000000819 /* NavigationMapView.swift in Sources */,
 				AAAA00000000000000000A54 /* AiSeeCameraSource.swift in Sources */,
 				AAAA00000000000000000A01 /* AiSeeConnectionService.swift in Sources */,
@@ -611,6 +682,30 @@
 				AAAA00000000000000000A09 /* AiSeeTypes.swift in Sources */,
 				AAAA00000000000000000A52 /* GlassesVendor.swift in Sources */,
 				AAAA00000000000000000A56 /* GlassesKeyMap.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ADAD00000000000000000401 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ADAD00000000000000000001 /* AdamVoiceApp.swift in Sources */,
+				ADAD00000000000000000002 /* AdamVoiceSession.swift in Sources */,
+				ADAD00000000000000000003 /* AdamVoiceView.swift in Sources */,
+				ADAD00000000000000000005 /* HermesAudioManager.swift in Sources */,
+				ADAD00000000000000000006 /* HermesAPIClient.swift in Sources */,
+				ADAD00000000000000000007 /* HermesSpeechRecognizer.swift in Sources */,
+				ADAD00000000000000000008 /* HermesSpeechSynthesizer.swift in Sources */,
+				ADAD0000000000000000000B /* VoiceLocale.swift in Sources */,
+				ADAD0000000000000000000C /* WakeWordGate.swift in Sources */,
+				ADAD0000000000000000000D /* HermesEndpointPolicy.swift in Sources */,
+				ADAD0000000000000000000E /* BridgeCredentials.swift in Sources */,
+				ADAD00000000000000000011 /* AdamSpeechSignal.swift in Sources */,
+				ADAD00000000000000000012 /* AdamSoundscapeWaveform.swift in Sources */,
+				ADAD00000000000000000013 /* AdamSoundscapeManager.swift in Sources */,
+				ADAD00000000000000000014 /* HermesDesign.swift in Sources */,
+				ADAD00000000000000000015 /* AssistantConversation.swift in Sources */,
+				ADAD00000000000000000016 /* AssistantConversationSurface.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -839,46 +934,23 @@
 		};
 		ADAD00000000000000000502 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = AAAA0000000000000000012A /* Hermes.xcconfig */;
+			baseConfigurationReference = ADAD00000000000000000115 /* AdamVoice.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CODE_SIGN_ENTITLEMENTS = HermesGlasses/HermesGlasses.entitlements;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 10;
 				ENABLE_PREVIEWS = YES;
-				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]" = (
-					"RTKAIDeviceConnection.framework",
-					"RTKAudioConnectSDK.framework",
-					"RTKAudioStreaming.framework",
-					"RTKLEFoundation.framework",
-					"OpenAIRealtimeAccess.framework",
-					"libavcodec.framework",
-					"libavformat.framework",
-					"libavutil.framework",
-					"libswresample.framework",
-				);
-				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = (
-					"$(inherited)",
-					"$(SRCROOT)/Vendor/RTK",
-				);
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = HermesGlasses/Info.plist;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AdamVoice/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.4;
+				MARKETING_VERSION = 1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.vandret.adamvoice;
 				PRODUCT_NAME = Adam;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				"SWIFT_INCLUDE_PATHS[sdk=iphoneos*]" = (
-					"$(inherited)",
-					"$(SRCROOT)/Vendor/RTK",
-				);
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
@@ -886,48 +958,25 @@
 		};
 		ADAD00000000000000000503 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = AAAA0000000000000000012A /* Hermes.xcconfig */;
+			baseConfigurationReference = ADAD00000000000000000115 /* AdamVoice.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CODE_SIGN_ENTITLEMENTS = HermesGlasses/HermesGlasses.entitlements;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 10;
 				ENABLE_PREVIEWS = YES;
-				"EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]" = (
-					"RTKAIDeviceConnection.framework",
-					"RTKAudioConnectSDK.framework",
-					"RTKAudioStreaming.framework",
-					"RTKLEFoundation.framework",
-					"OpenAIRealtimeAccess.framework",
-					"libavcodec.framework",
-					"libavformat.framework",
-					"libavutil.framework",
-					"libswresample.framework",
-				);
-				"FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]" = (
-					"$(inherited)",
-					"$(SRCROOT)/Vendor/RTK",
-				);
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = HermesGlasses/Info.plist;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AdamVoice/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.4;
+				MARKETING_VERSION = 1.5;
 				PRODUCT_BUNDLE_IDENTIFIER = com.vandret.adamvoice;
 				PRODUCT_NAME = Adam;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				"SWIFT_INCLUDE_PATHS[sdk=iphoneos*]" = (
-					"$(inherited)",
-					"$(SRCROOT)/Vendor/RTK",
-				);
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};

@@ -37,8 +37,6 @@ final class HermesSpeechRecognizer: NSObject, @unchecked Sendable {
     // MARK: - Private
 
     private let logger = Logger(subsystem: "com.flowsxr.hermesglasses", category: "speech")
-    private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-
     /// Every mutable field lives here, behind one lock. Four threads reach
     /// this state: the audio-render thread (`append`), the Speech callback
     /// queue, the detached pause watchdog, and the main actor - and two of
@@ -49,6 +47,9 @@ final class HermesSpeechRecognizer: NSObject, @unchecked Sendable {
     /// handler, which takes this lock - holding it across the call would
     /// deadlock on the non-recursive unfair lock.
     private struct State {
+        var recognizer: SFSpeechRecognizer?
+        var locale: VoiceLocale
+        var contextualWakePhrases: [String]
         var request: SFSpeechAudioBufferRecognitionRequest?
         var task: SFSpeechRecognitionTask?
         /// Incremented on every cycle start; callbacks from cancelled tasks
@@ -62,11 +63,49 @@ final class HermesSpeechRecognizer: NSObject, @unchecked Sendable {
         var pauseWatchdog: Task<Void, Never>?
         var isRunning = false
         var isSuspended = false
+
+        init(locale: VoiceLocale, contextualWakePhrases: [String]) {
+            self.recognizer = SFSpeechRecognizer(locale: locale.speechLocale)
+            self.locale = locale
+            self.contextualWakePhrases = contextualWakePhrases
+        }
     }
 
-    private let lock = OSAllocatedUnfairLock(uncheckedState: State())
+    private let lock: OSAllocatedUnfairLock<State>
+
+    init(
+        locale: VoiceLocale = .englishGB,
+        contextualWakePhrases: [String]? = nil
+    ) {
+        let phrases = contextualWakePhrases ?? locale.contextualWakePhrases
+        lock = OSAllocatedUnfairLock(
+            uncheckedState: State(locale: locale, contextualWakePhrases: phrases)
+        )
+        super.init()
+    }
 
     private var isRunning: Bool { lock.withLockUnchecked { $0.isRunning } }
+
+    /// The locale used by the current SFSpeechRecognizer. This is safe to
+    /// read while callbacks are arriving because the recognizer and its
+    /// generation live behind the same lock.
+    var locale: VoiceLocale { lock.withLockUnchecked { $0.locale } }
+
+    /// Whether the selected locale can be recognized without sending audio to
+    /// Apple's servers. This value is refreshed when setLocale(_:) recreates
+    /// the underlying recognizer.
+    var supportsOnDeviceRecognition: Bool {
+        lock.withLockUnchecked { $0.recognizer?.supportsOnDeviceRecognition ?? false }
+    }
+
+    /// Alias for callers that prefer a noun phrase in capability checks.
+    var isOnDeviceRecognitionSupported: Bool { supportsOnDeviceRecognition }
+
+    /// Strings supplied to Apple's contextual recognizer. Wake-word matching
+    /// itself remains in WakeWordGate, where whole-token checks are enforced.
+    var contextualWakePhrases: [String] {
+        lock.withLockUnchecked { $0.contextualWakePhrases }
+    }
 
     /// When true, no recognition runs (e.g. while TTS plays). Suspending
     /// discards any half-heard words and tears the cycle down entirely;
@@ -129,7 +168,45 @@ final class HermesSpeechRecognizer: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Recreate Speech's locale-bound recognizer without dropping a cycle's
+    /// generation guarantees. A running recognizer starts its replacement
+    /// first, then cancels the old task; stale callbacks are invalidated before
+    /// that cancellation can invoke their error handler.
+    func setLocale(_ newLocale: VoiceLocale) throws {
+        guard let replacement = SFSpeechRecognizer(locale: newLocale.speechLocale) else {
+            throw HermesSpeechError.recognizerUnavailable
+        }
+
+        let shouldRotate = lock.withLockUnchecked { state -> Bool in
+            guard state.locale != newLocale else { return false }
+            state.locale = newLocale
+            state.recognizer = replacement
+            return state.isRunning && !state.isSuspended
+        }
+        if shouldRotate {
+            rotateCycle(invalidateCurrentCallbacks: true)
+        }
+    }
+
+    /// Descriptive alias for UI/settings callers.
+    func changeLocale(to newLocale: VoiceLocale) throws {
+        try setLocale(newLocale)
+    }
+
+    /// Replace contextual terms for the next and subsequent recognition
+    /// cycles. Empty input restores the selected locale's default aliases.
+    func setContextualWakePhrases(_ phrases: [String]) {
+        let values = phrases.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        lock.withLockUnchecked { state in
+            state.contextualWakePhrases = values.isEmpty
+                ? state.locale.contextualWakePhrases
+                : values
+        }
+    }
+
     func start() throws {
+        let recognizer = lock.withLockUnchecked { $0.recognizer }
         guard let recognizer, recognizer.isAvailable else {
             throw HermesSpeechError.recognizerUnavailable
         }
@@ -141,7 +218,8 @@ final class HermesSpeechRecognizer: NSObject, @unchecked Sendable {
         guard shouldStart else { return }
         startRecognitionCycle()
         startPauseWatchdog()
-        logger.info("Speech recognition started (onDevice=\(recognizer.supportsOnDeviceRecognition))")
+        let selectedLocale = locale.rawValue
+        logger.info("Speech recognition started (locale=\(selectedLocale, privacy: .public), onDevice=\(recognizer.supportsOnDeviceRecognition))")
     }
 
     func stop() {
@@ -189,6 +267,9 @@ final class HermesSpeechRecognizer: NSObject, @unchecked Sendable {
     // MARK: - Private
 
     private func startRecognitionCycle() {
+        let (recognizer, contextualWakePhrases) = lock.withLockUnchecked { state in
+            (state.recognizer, state.contextualWakePhrases)
+        }
         guard let recognizer else { return }
 
         let req = SFSpeechAudioBufferRecognitionRequest()
@@ -196,11 +277,17 @@ final class HermesSpeechRecognizer: NSObject, @unchecked Sendable {
         if recognizer.supportsOnDeviceRecognition {
             req.requiresOnDeviceRecognition = true
         }
+        req.contextualStrings = contextualWakePhrases
 
         // Publish the request and claim a generation before the task exists:
         // `append` must never see a nil request while a cycle is starting.
         let claimed = lock.withLockUnchecked { state -> Int? in
-            guard !state.isSuspended else { return nil }
+            // Locale changes replace the recognizer while this method may be
+            // between its initial snapshot and this critical section. Do not
+            // let a stale snapshot claim a new generation.
+            guard !state.isSuspended,
+                  let currentRecognizer = state.recognizer,
+                  currentRecognizer === recognizer else { return nil }
             state.cycleGeneration += 1
             state.request = req
             state.latestPartial = ""
@@ -306,10 +393,13 @@ final class HermesSpeechRecognizer: NSObject, @unchecked Sendable {
     /// bumps `cycleGeneration`, so when the old task is cancelled immediately
     /// afterwards its handler sees a stale generation and is ignored - the
     /// same guard that makes `tearDownCycle` safe.
-    private func rotateCycle() {
+    private func rotateCycle(invalidateCurrentCallbacks: Bool = false) {
         let (staleTask, staleRequest) = lock.withLockUnchecked {
             state -> (SFSpeechRecognitionTask?, SFSpeechAudioBufferRecognitionRequest?) in
-            (state.task, state.request)
+            if invalidateCurrentCallbacks {
+                state.cycleGeneration += 1
+            }
+            return (state.task, state.request)
         }
         startRecognitionCycle()
         staleTask?.cancel()
@@ -336,7 +426,9 @@ final class HermesSpeechRecognizer: NSObject, @unchecked Sendable {
 
         let text = partial.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        logger.info("Utterance final: \(text, privacy: .public)")
+        // Never put user speech in public logs. The length is enough to debug
+        // an empty/finalization issue without exposing the utterance.
+        logger.info("Utterance finalized (\(text.count) chars)")
         DispatchQueue.main.async { [weak self] in
             self?.onFinal?(text)
         }

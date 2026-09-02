@@ -1056,6 +1056,14 @@ final class HermesSessionViewModel {
                 self?.speechRecognizer.restartCycle()
             }
         }
+        audioManager.onCaptureRecoveryFailed = { [weak self] message in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.connectionState != .disconnected else { return }
+                self.endSession()
+                self.show(message)
+            }
+        }
 
         do {
             if glassesVendor == .aisee && micSource == .aiseeGlasses {
@@ -3300,17 +3308,6 @@ final class HermesSessionViewModel {
         showNotice = true
     }
 }
-
-struct ConversationTurn: Identifiable {
-    let id = UUID()
-    let userText: String
-    let agentText: String
-    let timestamp: Date
-    var photo: Data? = nil
-    /// Which camera took `photo` ("AiSee camera", "Ray-Ban camera", "iPhone camera").
-    var photoSource: String? = nil
-}
-
 
 /// Thread-safe counter for `testAiSeeMic` - the kit delivers on its own thread.
 private final class AiSeeMicTally: @unchecked Sendable {

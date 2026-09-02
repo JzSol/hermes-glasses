@@ -1,97 +1,288 @@
-# Adam Hermes clone setup
+# Adam voice-only setup
 
-The **AdamVoice** scheme builds the complete HermesGlasses iPhone app under
-the external app name **Adam** and bundle identifier
-`com.vandret.adamvoice`. It does not contain a separate Adam runtime.
-Both targets use the same Hermes entry point, Swift sources, assets,
-frameworks, embedded frameworks, package products, Info.plist, entitlements,
-permissions, and build configuration.
+AdamVoice is the camera-free target for talking to Hermes through Ray-Ban
+Meta glasses. It uses standard Bluetooth hands-free audio rather than Meta's
+Wearables Device Access Toolkit. You do not need a Meta developer project or
+a paid Apple Developer membership for a personal prototype.
 
-This means Adam has the same onboarding, navigation, conversation UI, voice
-sessions, live transcription, camera and photo flows, settings, pairing,
-permission prompts, error states, and accessibility behavior as
-HermesGlasses. Changes to Hermes source or target phases automatically apply
-to Adam.
+Adam uses the same chat-first presentation as the full HermesGlasses app:
+conversation bubbles and bounded history, live transcription, session status,
+waveform, start/end/cancel/retry controls, warm Hermes styling, appearance
+settings, and attachment cards when a session supplies an attachment. Adam's
+adapter deliberately exposes no photo button because this target has no camera;
+the interface labels that limitation explicitly and visual bridge requests
+return a camera-unavailable error instead of pretending to capture an image.
 
-## Intentional identity differences
+## What runs where
 
-| Setting | HermesGlasses | AdamVoice |
-|---|---|---|
-| Installed app name / product | Hermes Glasses | Adam |
-| Bundle identifier | `com.flowsxr.hermesglasses` | `com.vandret.adamvoice` |
-| Xcode scheme and target | HermesGlasses | AdamVoice |
+- Ray-Bans: Bluetooth HFP microphone and speaker.
+- iPhone: the `Adam` wake word and utterance-boundary detection, generated
+  listening cues, bounded HFP gain, and high-quality PCM playback.
+- Mac: authenticated Hermes bridge, faster-whisper final transcription,
+  persistent Hermes Agent session, and Kokoro MLX speech synthesis.
+- Tailscale: private TLS WebSocket from the iPhone to the loopback-only bridge.
 
-Version, source membership, resources, dependencies, entitlements, permission
-descriptions, URL scheme, and runtime configuration stay aligned. Signing and
-provisioning are selected for the bundle identifier at build time.
+After `Adam` opens a command window, the captured mono PCM command is sent to
+the Mac over the private Tailscale WebSocket. Apple's recognizer is used only
+for wake/boundary detection; Hermes's local faster-whisper transcript is the
+text shown as **Heard** and sent to the agent. English reply audio is generated
+locally on the Mac and streamed back as PCM. Natural sentence boundaries are
+queued on the iPhone, so George can begin the first sentence while Hermes is
+still generating the rest of the answer.
 
-## Meta Wearables configuration
+## 1. Configure the bridge
 
-Adam is a full Meta Wearables Device Access Toolkit app, not a Bluetooth
-headset-only variant. Configure `Config/Secrets.xcconfig` from
-`Config/Secrets.example.xcconfig` with the Meta App ID and Client Token used
-by HermesGlasses. Keep the file untracked.
-
-The Meta developer project must allow the Adam bundle identifier
-`com.vandret.adamvoice` and the shared `hermesglasses` callback scheme. If
-the bundle identifier is not registered for the Meta app, SDK registration or
-pairing can fail even though the app builds correctly.
-
-## Build and install
-
-1. Open `HermesGlasses.xcodeproj`.
-2. Select the **AdamVoice** scheme and the connected iPhone.
-3. Select a signing team and provisioning profile that support the shared
-   Hermes entitlements for `com.vandret.adamvoice`.
-4. Run the app.
-5. Complete onboarding, grant every requested permission, and register the
-   glasses through the same Meta AI flow used by HermesGlasses.
-
-The target requests the same camera, microphone, speech recognition,
-Bluetooth, local-network, location, motion, external-accessory, background,
-Wi-Fi information, hotspot, and keychain capabilities as HermesGlasses.
-Personal/free provisioning may reject restricted capabilities; use a profile
-that supports the canonical Hermes entitlements rather than removing them
-from Adam.
-
-If HermesGlasses and Adam are installed together, both advertise the same
-`hermesglasses` callback scheme. iOS may choose either app for an external
-callback. For unambiguous pairing tests, keep only the app currently under
-test installed.
-
-## Guarded testing branch
-
-The `adam-testing` branch uses the project-local post-commit hook:
+From the repository root:
 
 ```bash
-git switch adam-testing
-git config core.hooksPath .githooks
+cd bridge
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env
 ```
 
-After a reviewed commit, the hook checks that the worktree is clean, verifies
-the allowed replacement paths, builds both HermesGlasses and AdamVoice
-unsigned, and performs a normal fast-forward push. It never stages files,
-creates commits, or force-pushes.
+Set at least these values in the ignored `bridge/.env`:
 
-To retry a transient failed push without creating another commit:
+```dotenv
+HERMES_BRIDGE_TOKEN=<a-random-32-byte-or-longer-secret>
+HERMES_BRIDGE_HOST=127.0.0.1
+HERMES_BRIDGE_PORT=8765
+HERMES_BRIDGE_VISION=false
+HERMES_BRIDGE_BRAIN=hermes
+HERMES_BRIDGE_API_BASE=http://127.0.0.1:9119
+```
+
+For the optional Ajax/Home Assistant dry-contact gate relay, add only the
+allowlisted switch entity to `bridge/.env`:
+
+```dotenv
+HERMES_BRIDGE_GATE_ENTITY=switch.your_gate_relay
+HERMES_BRIDGE_GATE_COOLDOWN_SECONDS=5
+HERMES_BRIDGE_HASS_ENV_FILE=~/.hermes/.env
+```
+
+The bridge reuses `HASS_URL` and `HASS_TOKEN` from that existing ignored
+Hermes secret file. Both “open gates” and “close gates” issue the same relay
+pulse, fail closed without bridge authentication or a live entity, and never
+ask the agent to choose an actuator.
+
+The bridge refuses to bind without a token. Keep it on loopback and expose it
+only through Tailscale Serve:
 
 ```bash
-scripts/push-adam-testing.sh
+tailscale serve --https=8443 http://127.0.0.1:8765
+tailscale serve status
 ```
 
-## Device parity checklist
+The iPhone endpoint is then:
 
-After installing Adam, validate the following on the physical iPhone and
-glasses:
+```text
+wss://<mac-name>.<tailnet>.ts.net:8443/voice
+```
 
-- onboarding and every permission prompt;
-- Meta registration, pairing, reconnect, and disconnect states;
-- app navigation, settings persistence, and appearance;
-- voice session start/stop, transcription, reply playback, and cancellation;
-- camera preview, still capture, photo attachment, and vision requests;
-- display/glasses interactions supported by the paired model;
-- background transitions, errors, retry actions, and accessibility labels.
+Do not add the token to that URL. Adam sends it as a Bearer header.
 
-Build-time parity does not prove hardware behavior. Meta registration,
-provisioning, permissions, Bluetooth routing, camera streaming, and display
-behavior must be confirmed on the intended device and glasses.
+Recent Hermes versions protect fixed-port dashboards with password/OAuth.
+Leave that protection enabled. When port 9119 does not expose a loopback
+session token, Adam starts a second Hermes backend on an OS-assigned loopback
+port with a random per-process token. This backend uses the same `HERMES_HOME`,
+subscription logins, model settings, and plugins; it cannot be reached through
+Tailscale and is terminated with the bridge. Adam starts it and warms local
+STT/Kokoro in the background when the bridge launches, so model startup is not
+part of the first spoken turn. Set
+`HERMES_BRIDGE_PRIVATE_BACKEND=false` only if `HERMES_BRIDGE_API_BASE` already
+provides non-interactive authentication.
+
+For a foreground bridge test:
+
+```bash
+bridge/.venv/bin/python bridge/hermes_bridge.py
+```
+
+For an always-on Mac setup, run the same executable from a user LaunchAgent
+with its working directory set to `bridge`, `HERMES_HOME` set to the Hermes
+profile containing your provider logins, `RunAtLoad`/`KeepAlive` enabled, and
+`ProcessType` set to `Interactive`. The interactive process class matters for
+local faster-whisper latency; macOS heavily throttles CPU inference inherited
+from a `Background` LaunchAgent. The bridge-local `.env` remains the source of
+its secret and runtime settings.
+
+## 2. Provider subscriptions
+
+The bridge uses Hermes's local dashboard/gateway APIs, so subscription
+authentication lives in Hermes rather than in the iPhone app.
+
+- Authenticate OpenAI/Codex in Hermes and use `openai-codex` as the primary
+  provider.
+- Authenticate Anthropic with `hermes auth add anthropic --type oauth`, then
+  add an Anthropic model to Hermes's fallback providers.
+
+Hermes can also discover a valid Claude Code subscription credential in the
+user's standard Claude configuration. Do not paste either provider's token
+into Adam or `bridge/.env`.
+
+## 3. Install local speech on the Mac
+
+Install and enable the Kokoro MLX plugin, then install its two runtime
+dependencies into the same virtual environment as Hermes:
+
+```bash
+hermes plugins install JzSol/hermes-kokoro-mlx --enable
+uv pip install --python ~/.hermes/hermes-agent/.venv/bin/python \
+  "kokoro-mlx>=0.1.2,<0.2" \
+  "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+hermes plugins doctor kokoro-mlx
+```
+
+Configure the relevant voice sections in `~/.hermes/config.yaml`:
+
+```yaml
+plugins:
+  enabled:
+    - kokoro-mlx
+tts:
+  provider: kokoro-mlx
+  voice: bm_george
+  speed: 1.0
+  streaming:
+    provider: kokoro-mlx
+  kokoro-mlx:
+    voice: bm_george
+    speed: 1.0
+    sample_rate: 24000
+  edge:
+    voice: en-GB-RyanNeural
+stt:
+  provider: local
+  local:
+    model: small
+    language: ''
+    device: cpu
+    compute_type: int8
+    beam_size: 1
+    vad: true
+    vad_min_silence_ms: 350
+```
+
+Restart the Adam bridge after changing plugins or voice configuration. If you
+also keep the fixed-port dashboard running, restart that service separately:
+
+```bash
+hermes serve --host 127.0.0.1 --port 9119
+```
+
+The always-on LaunchAgent must use the same Hermes environment where the
+plugin dependencies were installed. Both `HERMES_BIN` and
+`HERMES_BRIDGE_PRIVATE_PYTHON` should point inside
+`~/.hermes/hermes-agent/.venv/`; a legacy `hermes-agent/venv/` environment
+without `kokoro_mlx` makes Adam fall back to the slower Edge voice.
+
+The plugin warms George in the background; its first start downloads the
+local model weights. Hermes also downloads faster-whisper `small` once.
+
+## 4. Build with a free Apple ID
+
+Create the ignored machine-local build configuration first:
+
+```bash
+cp Config/AdamVoice.example.xcconfig Config/AdamVoice.local.xcconfig
+```
+
+Set `ADAM_DEVELOPMENT_TEAM` to the Personal Team ID shown by Xcode and set
+`ADAM_BRIDGE_ALLOWED_HOST` to the exact `*.ts.net` hostname from the endpoint
+above. Set `ADAM_BRIDGE_DEFAULT_ENDPOINT` using the example's
+`wss:/$()/.../voice` spelling (`//` starts a comment in an xcconfig; Xcode
+expands this to `wss://`).
+Adam pins that host in the built app; it will not send the bearer token to some
+other tailnet hostname, and the endpoint is already filled on first launch.
+
+Open `HermesGlasses.xcodeproj`, choose the **AdamVoice** scheme, and select the
+connected iPhone. In **Signing & Capabilities**, choose the Personal Team tied
+to the Apple ID signed into Xcode, then Run.
+
+Free personal signing is enough for this prototype, but iOS normally requires
+the app to be rebuilt periodically. The AdamVoice target has no Meta SDK,
+camera, location, or glasses-registration permission.
+
+### Wireless Adam install
+
+Git publication and iPhone installation are separate. Adam changes are
+verified, committed, and pushed directly to `origin/main` under the repository
+delivery policy. The installer then refuses any dirty, unpublished, non-main,
+or USB-only checkout/device state.
+
+Pair wireless development once:
+
+1. Keep the unlocked iPhone connected by cable and put it and the Mac on the
+   same non-guest local network.
+2. Enable **Settings → Privacy & Security → Developer Mode** on the iPhone.
+3. Open **Xcode → Window → Devices and Simulators**, select the iPhone, and
+   enable **Connect via network** when that control is shown.
+4. Wait for Xcode to finish pairing, unplug USB, and keep the phone unlocked
+   until Xcode shows it as an available run destination again.
+
+Install the exact published `main` commit without uninstalling the existing
+app:
+
+```bash
+scripts/install-adam-wirelessly.sh
+```
+
+When more than one wireless iPhone is reachable, pass the intended CoreDevice
+identifier as the first argument. The helper requires a paired Developer Mode
+iPhone on a non-wired transport, uses the hardware UDID for the signed Xcode
+build, installs through CoreDevice, launches `com.vandret.adamvoice`, and
+verifies the installed version/build. Its stable temporary DerivedData path
+keeps later wireless builds incremental. It never reads or prints the ignored
+signing, endpoint, or bridge-token values.
+
+## 5. First run
+
+1. Pair the Ray-Bans to the iPhone in the Meta AI app and confirm they can act
+   as a Bluetooth call device.
+2. Keep the iPhone and Mac connected to the same tailnet.
+3. Open Adam's gear button and save the `wss://...:8443/voice` endpoint.
+4. Paste the bridge token in Settings; it is stored in iPhone Keychain.
+5. Select English or Latvian, close Settings, and grant microphone and speech
+   recognition access. Adam starts listening automatically while the app is open.
+6. In Settings, confirm the Ray-Ban audio card names the glasses HFP input. If
+   it names the iPhone microphone, reconnect the glasses' Bluetooth audio and
+   restart the session.
+7. Say “Adam, what time is it?” or say “Adam”, wait for the flute/listening
+   state, then speak the command. The terracotta user bubble is Hermes's final
+   local transcript; the white bubble is the answer. English replies use
+   George, a British male Kokoro voice.
+8. After Adam replies, speak the next command without repeating `Adam`. The
+   follow-up window lasts 30 seconds and resets after each completed answer.
+   Say `donzo` by itself to close it and return to wake-only listening.
+9. If the allowlisted gate relay is configured, say `open gates` or
+   `close gates`. Both commands pulse the same dry-contact relay without
+   entering the agent; Adam confirms only Home Assistant command acceptance,
+   not the gate's physical position.
+
+The **Listening sounds** switch is enabled by default. One short, quiet
+generated flute cue marks the open command window; recording itself stays
+silent so the cue cannot contaminate Whisper. A droplet confirms that the
+command was accepted. No recorded or licensed cue assets are used.
+
+If Adam reports that the input is very quiet, confirm the Input row still names
+the Ray-Bans. The app requests the route's highest supported hardware gain and
+applies bounded amplification to separate wake-recognition and bridge-upload
+copies; unsupported HFP gain controls are handled automatically. The original
+recording buffer is not modified.
+
+## Prototype limits
+
+- No camera or “what am I looking at?” capture in this target. The shared
+  attachment card remains available for data supplied by a future non-camera
+  source, but Adam never shows a fake capture control.
+- The app must have been opened and started; iOS does not provide a systemwide
+  third-party wake phrase from a terminated app.
+- Background and lock-screen continuity must be verified on the target iPhone;
+  iOS can restart long-running Speech recognition tasks.
+- Ray-Ban HFP uses call-quality audio. If another Bluetooth call device wins
+  the route, Adam reports the actual input instead of claiming it is the
+  glasses.
+- The generated flute is deliberately quiet and plays once when Adam begins
+  accepting a command, not while merely waiting for the wake word, recording,
+  processing, or speaking.

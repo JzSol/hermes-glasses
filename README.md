@@ -2,7 +2,7 @@
 
 Talk to your own AI through smart glasses - **Meta Ray-Ban**, or **AiSee**
 and other sub-$100 Realtek-based AI glasses (RTL8773D + RTL8735B reference
-design) - with hands-free voice conversations, live on-device transcription,
+design) - with hands-free voice conversations, live transcription,
 computer vision through the glasses camera ("what am I looking at?"),
 voice-started navigation on the lens, and a private, on-device memory of the
 people you meet. Bring your own
@@ -48,8 +48,10 @@ A standalone, MIT-licensed project.
 
 ### Talk
 
-- 🎙️ **Live transcription** - your words appear on screen as you speak, using
-  Apple's on-device speech recognition (no audio leaves the phone for STT)
+- 🎙️ **Live transcription** - Direct mode can use Apple's on-device speech
+  recognition; Adam bridge mode uses it only for the wake boundary and sends
+  the command audio to your Mac for an authoritative Hermes transcript. On
+  Apple silicon, Adam prefers MLX Whisper and falls back to faster-whisper
 - 🤖 **Ask anything** - finished utterances go straight to your chosen AI
   provider (Direct mode) or to a Hermes Agent running on your Mac (bridge
   mode), and the answer is spoken back through text-to-speech
@@ -125,27 +127,27 @@ memory), over a WebSocket:
 ```
 ┌─────────────┐   Bluetooth    ┌──────────────┐    WebSocket     ┌──────────────────┐
 │  Ray-Ban    │ ─────────────▶ │  iPhone app  │ ───────────────▶ │  Mac bridge      │
-│  glasses    │  (DAT SDK:     │  (SwiftUI)   │  text queries +  │  (Python)        │
-│             │   camera)      │              │  base64 photos   │                  │
-└─────────────┘                │  on-device   │ ◀─────────────── │  hermes chat CLI │
-                               │  live STT    │  responses + TTS │  + edge-tts      │
-                               └──────────────┘    (PCM 24 kHz)  └──────────────────┘
+│  glasses    │  (HFP audio /  │  (SwiftUI)   │  PCM utterance / │  (Python)        │
+│             │   DAT camera)  │              │  text / photos   │                  │
+└─────────────┘                │  Adam wake   │ ◀─────────────── │  Hermes gateway  │
+                               │  detection   │  deltas + PCM TTS│  Whisper + Kokoro│
+                               └──────────────┘                  └──────────────────┘
 ```
 
 - **iOS app** (`HermesGlasses/`) - SwiftUI app using the
   [Meta Wearables Device Access Toolkit](https://github.com/facebook/meta-wearables-dat-ios)
   0.8.0 for glasses registration, sessions, and camera capture, plus
-  `SFSpeechRecognizer` for live on-device transcription. In Direct mode,
+  `SFSpeechRecognizer` for live transcription and Adam wake detection. In Direct mode,
   `HermesGlasses/Services/Providers/` calls the provider API directly; in
   bridge mode, `HermesAPIClient` talks to the Mac bridge over WebSocket.
-- **Bridge** (`bridge/hermes_bridge.py`) - a small Python WebSocket server on
-  the Mac. Receives text queries, detects visual questions by keyword, requests
-  a photo from the app when needed, invokes `hermes chat -q ... [--image ...]`
-  (or calls a provider API directly), and streams back the reply text plus TTS
-  audio (Edge TTS with macOS `say` fallback). If one Home Assistant switch is
-  explicitly allowlisted, the complete commands "open gates" and "close
-  gates" bypass the model and pulse that relay directly; incidental mentions
-  of gates stay ordinary chat.
+- **Bridge** (`bridge/hermes_bridge.py`) - a small authenticated WebSocket
+  server on the Mac. Protocol v2 accepts Adam's 16 kHz PCM utterance, asks
+  Hermes's configured speech-to-text provider for the authoritative transcript,
+  keeps one Hermes gateway session alive, and pipelines response deltas into
+  local Kokoro MLX speech. Adam's recommended provider is the included MLX
+  Whisper plugin, with faster-whisper as its local fallback. The older
+  text/photo protocol remains available for the full app, with Edge TTS as a
+  fallback.
 
 ### WebSocket protocol (app ⇄ bridge, port 8765)
 
@@ -154,19 +156,52 @@ connection.
 
 | Direction | Message | Meaning |
 |---|---|---|
-| app → bridge | `{"type":"query","text":...}` | Transcribed utterance (STT is on-device) |
+| bridge → app | `welcome` with `protocol: 2` capabilities | Advertises PCM upload, server STT, streaming TTS and turn cancellation |
+| app → bridge | `audio_start` + binary PCM16 mono 16 kHz + `audio_end` | Adam command captured after the wake word |
+| bridge → app | `transcript` | Authoritative Hermes STT transcript |
+| bridge → app | `response_start` / `response_delta` / `response` | Correlated persistent-agent answer |
+| app → bridge | `cancel_turn` | Stop the request currently identified by `request_id` |
+| bridge → app | `turn_cancelled` | Confirms the active request was stopped |
+| app → bridge | `{"type":"query","text":...}` | Legacy text-query path |
 | bridge → app | `{"type":"capture_photo"}` | Take a photo with the glasses now |
 | app → bridge | `{"type":"photo","data":"<base64 jpeg>"}` | Captured photo |
 | app → bridge | `{"type":"photo_error","message":...}` | Capture failed - answer text-only |
 | bridge → app | `{"type":"response","text":...}` | Hermes's answer |
-| bridge → app | `audio_start` / binary PCM16 24 kHz / `audio_end` | Spoken reply |
+| bridge → app | `audio_start` / binary PCM16 24 kHz / `audio_segment` / `audio_end` | Kokoro/Edge spoken reply, queued at natural sentence boundaries |
 
-Binary frames from the app are reserved for mic audio (legacy server-side STT
-path, still supported by the bridge). The bridge's `HERMES_BRIDGE_BRAIN` env
+Binary frames are accepted only inside a bounded, request-correlated audio
+capture. The bridge's `HERMES_BRIDGE_BRAIN` env
 var now supports `anthropic` / `openai` / `gemini` (direct provider call) in
 addition to the default `hermes` (agentic CLI with tools + memory).
 
 ## Setup
+
+### Adam voice-only (no Meta camera toolkit)
+
+If you only want hands-free conversation through the Ray-Bans, build the
+separate **AdamVoice** scheme. It uses the glasses as a normal Bluetooth HFP
+headset, so it needs no Meta Wearables project, camera permission, App ID, or
+Client Token. The iPhone performs wake/boundary detection, then sends the
+captured command over the private bridge. Hermes performs final STT and agent
+reasoning; Kokoro MLX generates the British male response locally on the Mac.
+Adam shares the full app's chat-first UI components: conversation history,
+live transcript bubbles, response and attachment cards, session waveform and
+status controls, warm styling, appearance settings, and accessibility labels.
+Camera-only actions remain hidden and the interface states that photos are
+unavailable, while the underlying target stays free of Meta/camera dependencies.
+
+The first turn begins with **“Adam”**. After every completed reply, Adam opens
+a fresh 30-second follow-up window where the next command needs no wake word;
+say **“donzo”** by itself to end it immediately. A short generated flute cue
+marks the initial command window, recording is silent, and a droplet confirms
+upload. English replies use local Kokoro voice
+`bm_george`; Latvian uses the male Nils neural fallback. Adam applies bounded
+gain to quiet HFP wake audio and to the PCM copy sent to Whisper, stores the
+bridge token in iPhone Keychain, and accepts a release endpoint only when it is
+`wss://` on the pinned Tailscale host. Sentence one begins playing while Hermes
+is still generating and synthesizing the rest of the answer. See
+[Adam voice-only setup](docs/ADAM_VOICE_SETUP.md) for the bridge, Tailscale,
+free Apple-ID signing, and first-run steps.
 
 ### Requirements
 
@@ -186,21 +221,6 @@ addition to the default `hermes` (agentic CLI with tools + memory).
   working Hermes Agent install (`hermes chat` on PATH).
 
 Pick one of the two paths below - you don't need both.
-
-### Adam-branded Hermes clone
-
-The **AdamVoice** scheme builds this complete app as **Adam** with bundle ID
-`com.vandret.adamvoice`. It shares HermesGlasses' exact app entry point,
-sources, assets, frameworks, packages, entitlements, permissions, navigation,
-voice, camera, photo, transcription, pairing, settings, error, and
-accessibility implementations. It is not the former voice-only HFP companion.
-
-The only target-level differences are the installed product name, bundle
-identifier, Xcode target/scheme, and the signing profile selected for that
-bundle identifier. The same Meta App ID and Client Token are required, and the
-Adam bundle identifier must be registered in the Meta developer project. See
-[Adam Hermes clone setup](docs/ADAM_VOICE_SETUP.md) for build, pairing, and
-physical-device validation details.
 
 ### Path A - Direct (your API), zero infrastructure
 
@@ -235,29 +255,36 @@ on your Mac and point the app at it over WebSocket.
 2. Run the bridge:
    ```bash
    cd bridge
-   pip install websockets edge-tts
-   python hermes_bridge.py
-   # → listens on ws://0.0.0.0:8765/voice
+   python3 -m venv .venv
+   .venv/bin/pip install -r requirements.txt
+   cp .env.example .env
+   # Set a strong HERMES_BRIDGE_TOKEN in .env before starting.
+   .venv/bin/python hermes_bridge.py
+   # → listens on ws://127.0.0.1:8765/voice by default
    ```
    Copy `bridge/.env.example` to `bridge/.env` to configure it - in
-   particular, `HERMES_BRIDGE_TOKEN` is **required** if the bridge is
-   reachable from the internet. Enter
-   `ws://host:8765/voice?token=<value>` once; the app moves the token into
-   iPhone Keychain, removes it from the saved URL, and authenticates future
-   WebSocket connections with a bearer header.
+   particular, `HERMES_BRIDGE_TOKEN` is **always required**. Current clients
+   send it in the WebSocket `Authorization: Bearer` handshake header. Tokens
+   in endpoint query strings are rejected. If a current Hermes dashboard on
+   port 9119 is protected by password/OAuth, Adam automatically starts a
+   separate token-authenticated Hermes backend on a random loopback port. It
+   shares the same Hermes profile and plugins, is never exposed through
+   Tailscale, warms speech models in the background, and exits with the bridge;
+   no dashboard token needs to be copied.
+3. Keep the bridge bound to loopback and expose it privately with Tailscale
+   Serve (for example `tailscale serve --https=8443
+   http://127.0.0.1:8765`). In the app, choose **Settings → Assistant →
+   Backend: Bridge (server)** and set
+   `wss://<mac>.<tailnet>.ts.net:8443/voice`. The "Bridge" chip in the banner
+   turns green when the authenticated bridge is reachable. Insecure
+   `ws://localhost` is available only for a Debug simulator build.
 
-   To enable the narrow Ajax gate route, set
-   `HERMES_BRIDGE_GATE_ENTITY=switch.your_gate_relay` and provide `HASS_URL` /
-   `HASS_TOKEN`. By default, the bridge can
-   read those two values from the existing `~/.hermes/.env`, so the Home
-   Assistant token does not need to be copied into this repository. Gate
-   commands are refused when bridge authentication or the exact switch
-   allowlist is missing, and repeat activations are cooled down for five
-   seconds.
-3. In the app: build to your iPhone, **Connect Glasses**, then
-   **Settings → Assistant → Backend: Bridge (server)** and set the endpoint
-   to `ws://<your-mac-ip>:8765/voice`. The "Bridge" chip in the banner turns
-   green when the bridge is reachable.
+For an optional Ajax/Home Assistant gate relay, configure one exact
+`HERMES_BRIDGE_GATE_ENTITY` in the ignored bridge environment. Complete
+“open gates” and “close gates” commands bypass Hermes and pulse only that
+allowlisted dry-contact switch; bridge authentication and the relay's live
+Home Assistant state must both pass before activation. The response confirms
+command acceptance, not the gate's physical position.
 
 The bridge's `HERMES_BRIDGE_BRAIN` env var can also be set to `anthropic`,
 `openai`, or `gemini` to skip the Hermes CLI and call that provider's API
@@ -308,10 +335,6 @@ xcodebuild -project HermesGlasses.xcodeproj -scheme HermesGlasses \
 # iOS simulator
 xcodebuild -project HermesGlasses.xcodeproj -scheme HermesGlasses \
   -destination 'generic/platform=iOS Simulator' build
-
-# Adam-branded clone
-xcodebuild -project HermesGlasses.xcodeproj -scheme AdamVoice \
-  -destination 'generic/platform=iOS' build
 ```
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the standalone Swift provider

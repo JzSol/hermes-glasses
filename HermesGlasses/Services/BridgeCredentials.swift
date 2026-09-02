@@ -1,8 +1,9 @@
 //
 // BridgeCredentials.swift
 //
-// Keychain storage for an optional Hermes bridge bearer token. Tokens are
-// scoped by endpoint so multiple bridge presets cannot overwrite each other.
+// Small Keychain wrapper for the Hermes bridge bearer token. The query uses a
+// normal generic-password item and deliberately omits kSecAttrAccessGroup:
+// this app does not need a custom keychain sharing entitlement.
 //
 
 import Foundation
@@ -22,6 +23,7 @@ enum BridgeCredentialsError: LocalizedError, Equatable, Sendable {
     }
 }
 
+/// Stores exactly one bridge bearer token per service/account pair.
 struct BridgeCredentials: Sendable {
     static let defaultService = "com.flowsxr.hermesglasses.bridge"
     static let defaultAccount = "bearer-token"
@@ -37,6 +39,10 @@ struct BridgeCredentials: Sendable {
         self.account = account
     }
 
+    /// The camera-capable app supports named bridge presets. Give each
+    /// endpoint its own Keychain item so importing two old `?token=` URLs
+    /// cannot make the last migrated token overwrite every other preset.
+    /// Adam itself uses the default account because its bridge is pinned.
     init(
         endpoint: String,
         service: String = BridgeCredentials.defaultService
@@ -53,16 +59,19 @@ struct BridgeCredentials: Sendable {
         let scheme = components.scheme?.lowercased() ?? "wss"
         let normalizedPort = components.port
             ?? (scheme == "wss" ? 443 : (scheme == "ws" ? 80 : -1))
+        let port = String(normalizedPort)
         let path = components.percentEncodedPath.isEmpty
             ? "/" : components.percentEncodedPath
-        return "endpoint-v1|\(scheme)|\(host)|\(normalizedPort)|\(path)"
+        return "endpoint-v1|\(scheme)|\(host)|\(port)|\(path)"
     }
 
+    /// Save or replace the token. No UserDefaults write or URL construction is
+    /// involved, and no access-group entitlement is requested.
     func save(token: String) throws {
         let value = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { throw BridgeCredentialsError.emptyToken }
 
-        var item = query
+        var update = query
         let updateStatus = SecItemUpdate(
             query as CFDictionary,
             [kSecValueData as String: Data(value.utf8)] as CFDictionary
@@ -72,14 +81,16 @@ struct BridgeCredentials: Sendable {
             throw BridgeCredentialsError.keychain(updateStatus)
         }
 
-        item[kSecValueData as String] = Data(value.utf8)
-        item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let addStatus = SecItemAdd(item as CFDictionary, nil)
+        update[kSecValueData as String] = Data(value.utf8)
+        update[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let addStatus = SecItemAdd(update as CFDictionary, nil)
         guard addStatus == errSecSuccess else {
             throw BridgeCredentialsError.keychain(addStatus)
         }
     }
 
+    /// Read the token, returning nil for a missing item. Missing credentials
+    /// are not an exceptional condition during first-run onboarding.
     func load() throws -> String? {
         var read = query
         read[kSecReturnData as String] = true
@@ -97,6 +108,14 @@ struct BridgeCredentials: Sendable {
             throw BridgeCredentialsError.keychain(errSecDecode)
         }
         return token
+    }
+
+    /// Remove the token when the user signs out or rotates the bridge secret.
+    func delete() throws {
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw BridgeCredentialsError.keychain(status)
+        }
     }
 
     private var query: [String: Any] {
