@@ -120,36 +120,46 @@ class TestGateRelay(unittest.TestCase):
         self.assertEqual(values["HASS_TOKEN"], "secret value")
         self.assertNotIn("NOT VALID", values)
 
-    def test_activation_calls_only_the_allowlisted_switch(self):
-        opener = mock.Mock(side_effect=[
-            self.FakeResponse(b'{"state":"off"}'),
-            self.FakeResponse(b"[]"),
-        ])
-        with mock.patch.object(hb, "AUTH_TOKEN", "bridge-secret"), \
-             mock.patch.object(
-                 hb, "_home_assistant_config",
-                 return_value=("http://127.0.0.1:8123", "ha-secret"),
-             ), mock.patch.object(hb, "GATE_ENTITY", "switch.gate_relay"), \
-             mock.patch.object(hb.time, "monotonic", return_value=100.0), \
-             mock.patch.object(hb.urllib.request, "urlopen", opener):
-            accepted, message = hb.activate_gate_relay("open")
+    def test_open_and_close_pulse_only_the_allowlisted_ajax_relay(self):
+        for action in ("open", "close"):
+            with self.subTest(action=action):
+                hb._gate_last_accepted_at = 0.0
+                opener = mock.Mock(side_effect=[
+                    self.FakeResponse(b'{"state":"off"}'),
+                    self.FakeResponse(b"[]"),
+                ])
+                with mock.patch.object(hb, "AUTH_TOKEN", "bridge-secret"), \
+                     mock.patch.object(
+                         hb, "_home_assistant_config",
+                         return_value=(
+                             "http://127.0.0.1:8123", "ha-secret"
+                         ),
+                     ), mock.patch.object(
+                         hb, "GATE_ENTITY", "switch.gate_relay"
+                     ), mock.patch.object(
+                         hb.time, "monotonic", return_value=100.0
+                     ), mock.patch.object(
+                         hb.urllib.request, "urlopen", opener
+                     ):
+                    accepted, message = hb.activate_gate_relay(action)
 
-        self.assertTrue(accepted)
-        self.assertIn("accepted", message.lower())
-        state_request = opener.call_args_list[0].args[0]
-        self.assertEqual(
-            state_request.full_url,
-            "http://127.0.0.1:8123/api/states/switch.gate_relay",
-        )
-        pulse_request = opener.call_args_list[1].args[0]
-        self.assertEqual(
-            pulse_request.full_url,
-            "http://127.0.0.1:8123/api/services/switch/turn_on",
-        )
-        self.assertEqual(
-            json.loads(pulse_request.data.decode()),
-            {"entity_id": "switch.gate_relay"},
-        )
+                self.assertTrue(accepted)
+                self.assertIn("accepted", message.lower())
+                state_request = opener.call_args_list[0].args[0]
+                self.assertEqual(
+                    state_request.full_url,
+                    "http://127.0.0.1:8123/api/states/switch.gate_relay",
+                )
+                pulse_request = opener.call_args_list[1].args[0]
+                self.assertEqual(
+                    pulse_request.full_url,
+                    "http://127.0.0.1:8123/api/services/switch/turn_on",
+                )
+                self.assertEqual(
+                    json.loads(pulse_request.data.decode()),
+                    {"entity_id": "switch.gate_relay"},
+                )
+                self.assertEqual(opener.call_count, 2)
 
     def test_duplicate_command_is_cooled_down(self):
         opener = mock.Mock(side_effect=[
