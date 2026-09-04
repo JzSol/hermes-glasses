@@ -101,11 +101,14 @@ bridge/.venv/bin/python bridge/hermes_bridge.py
 
 For an always-on Mac setup, run the same executable from a user LaunchAgent
 with its working directory set to `bridge`, `HERMES_HOME` set to the Hermes
-profile containing your provider logins, `RunAtLoad`/`KeepAlive` enabled, and
-`ProcessType` set to `Interactive`. The interactive process class matters for
-local faster-whisper latency; macOS heavily throttles CPU inference inherited
-from a `Background` LaunchAgent. The bridge-local `.env` remains the source of
-its secret and runtime settings.
+profile containing your provider logins, `RunAtLoad` enabled, Boolean
+`KeepAlive` set to `true`, and `ProcessType` set to `Interactive`. Do not use
+`KeepAlive = { SuccessfulExit = false; }`: the bridge handles `SIGTERM`
+gracefully and exits successfully, so that policy leaves it stopped after an
+update or service refresh and makes the Tailscale route return HTTP 502. The
+interactive process class matters for local faster-whisper latency; macOS
+heavily throttles CPU inference inherited from a `Background` LaunchAgent. The
+bridge-local `.env` remains the source of its secret and runtime settings.
 
 ## 2. Provider subscriptions
 
